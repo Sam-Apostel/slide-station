@@ -90,7 +90,7 @@ export function Inspector({
                       label={label}
                       min={min}
                       max={max}
-                      step={0.05}
+                      step={0.01}
                       precision={2}
                       value={g.params[k]}
                       resetValue={k === "strength" ? session.defaults.strength : 0}

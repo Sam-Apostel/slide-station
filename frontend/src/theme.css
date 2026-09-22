@@ -284,3 +284,16 @@ body {
 .pro-titlebar-well[data-tone="bad"] {
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--ss-bad) 50%, transparent);
 }
+
+/* icons sized to the compact buttons (ProUI defaults to 14–16px, which crowds 22–25px buttons) */
+.pro-btn svg,
+.pro-ui-button svg {
+  width: 12px;
+  height: 12px;
+  stroke-width: 2.25;
+}
+/* size="lg" (the upload button) */
+.pro-btn.h-\[32px\] svg {
+  width: 13px;
+  height: 13px;
+}

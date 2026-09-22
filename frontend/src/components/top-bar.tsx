@@ -99,7 +99,7 @@ export function TopBar({
                 aria-hidden
                 className="size-2 shrink-0 rounded-full bg-[var(--pro-green)] shadow-[0_0_0_3px_color-mix(in_srgb,var(--pro-green)_20%,transparent)]"
               />
-              <Usb className="size-3.5 shrink-0 text-muted-foreground" aria-hidden />
+              <Usb className="size-3 shrink-0 text-muted-foreground" aria-hidden />
               <span className="min-w-0 flex-1 truncate text-foreground/80">
                 {sourceLabel(src)} ·{" "}
                 {src.new ? (
