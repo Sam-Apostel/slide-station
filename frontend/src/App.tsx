@@ -165,7 +165,10 @@ function SlideStationApp() {
   );
 }
 
-/** The keyboard map is the reason the app is fast for 10,000 slides — keep it identical to the original. */
+/**
+ * The keyboard map is the reason the app is fast for 10,000 slides — keep it identical to the
+ * original. Shortcuts win over whatever has focus, except text entry (and open dialogs).
+ */
 function useKeyboard(app: SlideStation, setBefore: (on: boolean) => void, openHelp: () => void) {
   const latest = React.useRef({ app, setBefore, openHelp });
   latest.current = { app, setBefore, openHelp };
@@ -175,8 +178,6 @@ function useKeyboard(app: SlideStation, setBefore: (on: boolean) => void, openHe
       t instanceof HTMLElement &&
       (t.isContentEditable ||
         t.matches("textarea, select, input:not([type=range]):not([type=checkbox]), [role=spinbutton]"));
-    const isSlider = (t: EventTarget | null) =>
-      t instanceof HTMLElement && t.matches("input[type=range], [role=slider]");
     const modalOpen = () => !!document.querySelector("[role=dialog], [role=alertdialog]");
 
     const down = (e: KeyboardEvent) => {
@@ -190,8 +191,6 @@ function useKeyboard(app: SlideStation, setBefore: (on: boolean) => void, openHe
         return;
       }
       if (!a.session?.groups.length) return;
-      const arrow = k.startsWith("Arrow");
-      if (arrow && isSlider(e.target)) return; // a focused slider keeps its arrow keys
       if (k === "ArrowRight" || k === "ArrowDown") a.select(a.sel + 1);
       else if (k === "ArrowLeft" || k === "ArrowUp") a.select(a.sel - 1);
       else if (k === " " || k === "Enter") a.review();
@@ -208,16 +207,19 @@ function useKeyboard(app: SlideStation, setBefore: (on: boolean) => void, openHe
         if (sc) a.toggleScan(sc);
       } else return;
       e.preventDefault();
+      // Runs in the capture phase, so a focused slider never sees keys that are shortcuts:
+      // after dragging a slider, ← → still move between slides instead of nudging it.
+      e.stopPropagation();
     };
     const up = (e: KeyboardEvent) => {
       if (e.key === "b" || e.key === "B") latest.current.setBefore(false);
     };
     const blur = () => latest.current.setBefore(false);
-    document.addEventListener("keydown", down);
+    document.addEventListener("keydown", down, true);
     document.addEventListener("keyup", up);
     window.addEventListener("blur", blur);
     return () => {
-      document.removeEventListener("keydown", down);
+      document.removeEventListener("keydown", down, true);
       document.removeEventListener("keyup", up);
       window.removeEventListener("blur", blur);
     };

@@ -91,7 +91,14 @@ def main():
             f"fetch('/api/sessions/{sid}/groups/{g['id']}/preview.jpg?size=320&v=stale').then(r=>r.headers.get('cache-control'))"
         )
         assert cc == "no-store", cc
-        pg.locator("body").click(position={"x": 700, "y": 400})  # move focus off the slider
+        # arrows move between slides even with a slider focused (they don't nudge it)
+        sat.focus()
+        pg.keyboard.press("ArrowRight")
+        expect(pg.get_by_text(re.compile(r"^Slide 5 of \d+$"))).to_be_visible()
+        pg.keyboard.press("ArrowLeft")
+        expect(pg.get_by_text(re.compile(r"^Slide 4 of \d+$"))).to_be_visible()
+        g = pg.evaluate(f"fetch('/api/sessions/{sid}').then(r=>r.json())")["groups"][3]
+        assert abs(g["params"]["saturation"] + 0.85) < 1e-6, g["params"]
         pg.keyboard.press("2")  # drop a scan from the stack, if there is one
         pg.wait_for_timeout(1200)
         pg.keyboard.down("b")  # hold B for before
