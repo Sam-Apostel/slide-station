@@ -74,6 +74,23 @@ def main():
         pg.get_by_role("slider", name="Warmth").fill("0.4")  # colour edit
         pg.wait_for_timeout(1000)
         expect(pg.get_by_text("Adjusted by hand")).to_be_visible()
+
+        # Rapid slider moves: the preview must settle on the server's saved render. Previews are
+        # cached forever by key, so one rendered before its edit was saved would stay wrong.
+        sat = pg.get_by_role("slider", name="Saturation")
+        for v in ("-0.5", "-0.6", "-0.7", "-0.8", "-0.85"):
+            sat.fill(v)
+            pg.wait_for_timeout(40)
+        pg.wait_for_timeout(1500)
+        wait_preview(pg)
+        g = pg.evaluate(f"fetch('/api/sessions/{sid}').then(r=>r.json())")["groups"][3]
+        assert abs(g["params"]["saturation"] + 0.85) < 1e-6, g["params"]
+        src = pg.get_by_role("img", name="Slide 4").get_attribute("src")
+        assert f"v={g['key']}" in src, (src, g["key"])
+        cc = pg.evaluate(
+            f"fetch('/api/sessions/{sid}/groups/{g['id']}/preview.jpg?size=320&v=stale').then(r=>r.headers.get('cache-control'))"
+        )
+        assert cc == "no-store", cc
         pg.locator("body").click(position={"x": 700, "y": 400})  # move focus off the slider
         pg.keyboard.press("2")  # drop a scan from the stack, if there is one
         pg.wait_for_timeout(1200)

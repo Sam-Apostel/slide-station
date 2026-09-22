@@ -19,6 +19,8 @@ export type Group = {
   scans: string[];
   excluded: string[];
   active: string[];
+  /** Server's render key for the current scans/rotation/params — the preview cache key. */
+  key: string;
   rotation: number;
   rot_reason: string;
   params: Params;
@@ -99,17 +101,13 @@ export async function api<T = unknown>(method: string, url: string, body?: unkno
   return j as T;
 }
 
-function hash(str: string) {
-  let h = 5381;
-  for (let i = 0; i < str.length; i++) h = ((h << 5) + h + str.charCodeAt(i)) | 0;
-  return (h >>> 0).toString(36);
-}
-
-/** Changes whenever the rendered image would change, so previews can be cached forever. */
-export const groupKey = (g: Group) => hash(JSON.stringify([g.active, g.rotation, g.params]));
-
+/**
+ * Previews are cached forever under the server's render key, so the URL only changes once the
+ * server has saved an edit. Never derive it from optimistic local params: the server renders what
+ * it has saved, and an image cached under a key it doesn't match stays wrong.
+ */
 export const previewUrl = (sid: string, g: Group, size: number, before = false) =>
-  `/api/sessions/${sid}/groups/${g.id}/preview.jpg?size=${size}&v=${groupKey(g)}${before ? "&before=1" : ""}`;
+  `/api/sessions/${sid}/groups/${g.id}/preview.jpg?size=${size}&v=${g.key}${before ? "&before=1" : ""}`;
 
 export const scanThumbUrl = (sid: string, scan: string) => `/api/sessions/${sid}/scans/${scan}/thumb.jpg`;
 

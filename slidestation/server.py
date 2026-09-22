@@ -14,7 +14,7 @@ from . import learning
 from . import workflow as wf
 from .imaging import Params
 from .immich import Immich, ImmichError
-from .store import Session, active_scans, group_status, load_config, lock, save_config, summary
+from .store import Session, active_scans, group_status, load_config, lock, render_key, save_config, summary
 
 app = FastAPI(title="Slide Station")
 # The UI is the React app in frontend/; its build is committed to slidestation/web so
@@ -94,6 +94,7 @@ def _session_payload(s: Session) -> dict:
             "params_source": g.get("params_source", ""),
             "status": group_status(g),
             "active": active_scans(g),
+            "key": render_key(g),  # preview cache key: the UI must use this, not its own guess
             "index": i,
         })
     return {
@@ -250,10 +251,14 @@ def resuggest(sid: str, gid: str, body: dict = Body(default={})):
 def group_preview(sid: str, gid: str, size: int = 1600, before: int = 0, v: str = ""):
     s = _session(sid)
     try:
+        g = s.group(gid)
         data = wf.preview(s, gid, min(size, 2400), bool(before))
     except KeyError:
         raise HTTPException(404)
-    return Response(data, media_type="image/jpeg", headers={"Cache-Control": "max-age=31536000" if v else "no-store"})
+    # Only let the browser keep it if it is the render the URL names. A preview requested while
+    # an edit is still being saved renders the older settings and must not be cached as the new.
+    fresh = v and v == render_key(g)
+    return Response(data, media_type="image/jpeg", headers={"Cache-Control": "max-age=31536000" if fresh else "no-store"})
 
 
 @app.get("/api/sessions/{sid}/scans/{scan}/thumb.jpg")

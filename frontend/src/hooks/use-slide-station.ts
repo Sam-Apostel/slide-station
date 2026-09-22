@@ -14,6 +14,14 @@ function storedSession() {
   }
 }
 
+type UnsavedParams = {
+  url: string;
+  params: Partial<Params>;
+  version: number; // bumped on every edit; a save is current if nothing changed while it ran
+  inFlight: boolean;
+  timer?: number;
+};
+
 const fail = (e: unknown) => toast.error(e instanceof Error ? e.message : String(e));
 
 /**
@@ -31,9 +39,10 @@ export function useSlideStation() {
   const ref = React.useRef({ state, session, sessionId, sel });
   ref.current = { state, session, sessionId, sel };
   const lastJobKey = React.useRef("");
-  // Unsaved slider moves, tied to the slide they were made on.
-  const pendingParams = React.useRef<{ gid: string; url: string; params: Partial<Params> } | null>(null);
-  const paramTimer = React.useRef<number | undefined>(undefined);
+  // Slider moves the server hasn't confirmed yet, per slide. Kept on screen over any payload
+  // until the save carrying them returns, and saved one request at a time so responses can't
+  // arrive out of order and snap a slider back.
+  const unsaved = React.useRef(new Map<string, UnsavedParams>());
 
   const current: Group | null = session?.groups[sel] ?? null;
 
@@ -41,11 +50,11 @@ export function useSlideStation() {
   const applyPayload = React.useCallback((p: SessionPayload, keepId?: string) => {
     const { session: prev, sel: prevSel } = ref.current;
     const id = keepId ?? prev?.groups[prevSel]?.id;
-    // Slider moves made while this request was in flight must survive the response.
-    const pending = pendingParams.current;
-    if (pending) {
-      const g = p.groups.find((x) => x.id === pending.gid);
-      if (g) g.params = { ...g.params, ...pending.params };
+    // Slider moves not yet saved must survive the response. The preview keeps the server's
+    // render key, so the image follows what is actually saved.
+    for (const [gid, u] of unsaved.current) {
+      const g = p.groups.find((x) => x.id === gid);
+      if (g) g.params = { ...g.params, ...u.params };
     }
     const i = id ? p.groups.findIndex((g) => g.id === id) : -1;
     const next = Math.max(0, Math.min(i >= 0 ? i : prevSel, p.groups.length - 1));
@@ -152,17 +161,25 @@ export function useSlideStation() {
     [applyPayload],
   );
 
-  const flushParams = React.useCallback(async () => {
-    window.clearTimeout(paramTimer.current);
-    const pending = pendingParams.current;
-    pendingParams.current = null;
-    if (!pending) return;
+  // Stable across renders (applyPayload is), and calls itself when edits arrived mid-request.
+  const flushParams = React.useRef(async (gid: string): Promise<void> => {
+    const u = unsaved.current.get(gid);
+    if (!u || u.inFlight) return;
+    window.clearTimeout(u.timer);
+    u.inFlight = true;
+    const version = u.version;
     try {
-      applyPayload(await api<SessionPayload>("PATCH", pending.url, { params: pending.params }));
+      const p = await api<SessionPayload>("PATCH", u.url, { params: { ...u.params } });
+      u.inFlight = false;
+      const caughtUp = u.version === version;
+      if (caughtUp) unsaved.current.delete(gid);
+      applyPayload(p);
+      if (!caughtUp) flushParams(gid);
     } catch (e) {
+      unsaved.current.delete(gid);
       fail(e);
     }
-  }, [applyPayload]);
+  }).current;
 
   /** Optimistic: the slider moves now, the server hears about it shortly after. */
   const setParam = React.useCallback(
@@ -171,15 +188,17 @@ export function useSlideStation() {
       const g = s?.groups[i];
       const url = groupUrl();
       if (!s || !g || !url) return;
-      if (pendingParams.current && pendingParams.current.gid !== g.id) flushParams();
+      const u = unsaved.current.get(g.id) ?? { url, params: {}, version: 0, inFlight: false };
+      u.params = { ...u.params, [k]: v };
+      u.version++;
+      unsaved.current.set(g.id, u);
       const groups = s.groups.slice();
       groups[i] = { ...g, params: { ...g.params, [k]: v } };
       const next = { ...s, groups };
       ref.current.session = next;
       setSession(next);
-      pendingParams.current = { gid: g.id, url, params: { ...pendingParams.current?.params, [k]: v } };
-      window.clearTimeout(paramTimer.current);
-      paramTimer.current = window.setTimeout(flushParams, immediate ? 0 : PARAM_DEBOUNCE_MS);
+      window.clearTimeout(u.timer);
+      u.timer = window.setTimeout(() => flushParams(g.id), immediate ? 0 : PARAM_DEBOUNCE_MS);
     },
     [flushParams],
   );
