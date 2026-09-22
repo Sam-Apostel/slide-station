@@ -152,6 +152,16 @@ body {
   opacity: 0.45;
   color: var(--ss-text);
 }
+/* A disabled primary goes neutral instead of fading: see-through amber over near-black reads
+   as muddy brown. Amber only ever appears at full strength. */
+.pro-btn[data-active]:disabled,
+.pro-ui-button.bg-primary:disabled {
+  opacity: 1;
+  background-color: var(--ss-panel-2);
+  color: var(--ss-dim);
+  font-weight: 500;
+  box-shadow: inset 0 0 0 1px var(--ss-line);
+}
 .pro-button-group {
   box-shadow: inset 0 0 0 1px var(--ss-line);
 }
