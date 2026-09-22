@@ -5,13 +5,20 @@
     SLIDESTATION_HOME=/tmp/ss-home SLIDESTATION_VOLUMES=/tmp SLIDESTATION_NO_BROWSER=1 \
         uv run --python 3.12 python -m slidestation &
     uv run --with playwright python tests/ui_flow.py
+
+Env: SS_APP (default http://localhost:8765), SS_SHOTS (screenshot folder, default /tmp/ss-shots),
+SS_BROWSER_CHANNEL=chrome to use the installed Chrome instead of `playwright install chromium`.
+Selectors are roles and labels, so they survive markup changes in the React UI.
 """
+import os
+import re
 import time
+from pathlib import Path
 
-from playwright.sync_api import sync_playwright
+from playwright.sync_api import expect, sync_playwright
 
-APP = "http://localhost:8765"
-SHOTS = "/tmp/ss-shots/"
+APP = os.environ.get("SS_APP", "http://localhost:8765")
+SHOTS = Path(os.environ.get("SS_SHOTS", "/tmp/ss-shots"))
 
 
 def wait_job(pg, timeout=900):
@@ -24,46 +31,75 @@ def wait_job(pg, timeout=900):
     raise TimeoutError("job did not finish")
 
 
+def wait_preview(pg):
+    pg.wait_for_timeout(50)
+    expect(pg.get_by_test_id("preview-loading")).to_have_count(0, timeout=30000)
+
+
+def confirm(pg, name):
+    pg.get_by_role("alertdialog").get_by_role("button", name=name).click()
+
+
 def main():
+    SHOTS.mkdir(parents=True, exist_ok=True)
     with sync_playwright() as p:
-        browser = p.chromium.launch()
+        browser = p.chromium.launch(channel=os.environ.get("SS_BROWSER_CHANNEL") or None)
         pg = browser.new_page(viewport={"width": 1512, "height": 900})
         errors = []
         pg.on("console", lambda m: m.type == "error" and errors.append(m.text))
         pg.on("pageerror", lambda e: errors.append(str(e)))
-        pg.on("dialog", lambda d: d.accept())
 
         pg.goto(APP)
-        pg.wait_for_timeout(2500)
-        pg.click("#emptyHint button, #importBtn")
-        pg.wait_for_timeout(300)
-        pg.fill("#nName", "Test tray")
-        pg.click("#nOk")
+        pg.get_by_role("button", name=re.compile(r"^Import \d+ scans? from")).click()
+        dlg = pg.get_by_role("dialog")
+        dlg.get_by_label("Name", exact=True).fill("Test tray")
+        dlg.get_by_label("Name", exact=True).press("Enter")  # Enter submits the form
         print("import:", wait_job(pg)["message"])
         pg.wait_for_timeout(2000)
-        pg.screenshot(path=SHOTS + "review.png")
+        wait_preview(pg)
+        pg.screenshot(path=SHOTS / "review.png")
 
         t0 = time.time()
         for _ in range(3):
             pg.keyboard.press("ArrowRight")
-            pg.wait_for_function("document.getElementById('spinner').hidden", timeout=30000)
+            wait_preview(pg)
         print(f"browsing 3 slides: {time.time() - t0:.2f}s")
+        expect(pg.get_by_text(re.compile(r"^Slide 4 of \d+$"))).to_be_visible()
 
-        pg.keyboard.press("r")                       # rotate
+        pg.keyboard.press("r")  # rotate
+        pg.wait_for_timeout(800)
+        sid = pg.evaluate("localStorage.getItem('session')")
+        g = pg.evaluate(f"fetch('/api/sessions/{sid}').then(r=>r.json())")["groups"][3]
+        assert g["rot_reason"] == "manual", g
+        pg.get_by_role("slider", name="Warmth").fill("0.4")  # colour edit
+        pg.wait_for_timeout(1000)
+        expect(pg.get_by_text("Adjusted by hand")).to_be_visible()
+        pg.locator("body").click(position={"x": 700, "y": 400})  # move focus off the slider
+        pg.keyboard.press("2")  # drop a scan from the stack, if there is one
         pg.wait_for_timeout(1200)
-        pg.fill("#p_warmth", "0.4")                  # colour edit
-        pg.dispatch_event("#p_warmth", "input")
-        pg.wait_for_timeout(2000)
-        pg.keyboard.press("2")                       # drop a scan from the stack
+        pg.keyboard.down("b")  # hold B for before
+        expect(pg.get_by_text("BEFORE", exact=True)).to_be_visible()
+        pg.keyboard.up("b")
+        expect(pg.get_by_text("BEFORE", exact=True)).to_have_count(0)
+        pg.keyboard.press(" ")  # approve -> next
         pg.wait_for_timeout(1200)
-        pg.keyboard.press(" ")                       # approve
-        pg.wait_for_timeout(1200)
+        expect(pg.get_by_text(re.compile(r"^Slide 5 of \d+$"))).to_be_visible()
+        pg.keyboard.press("?")
+        expect(pg.get_by_role("dialog", name="Keyboard")).to_be_visible()
+        pg.keyboard.press("Escape")
+        pg.screenshot(path=SHOTS / "edited.png")
 
-        pg.click("#uploadBtn")
+        pg.get_by_role("button", name=re.compile(r"^Upload \d+ slides? to Immich")).click()
+        confirm(pg, "Upload anyway")  # most slides are unreviewed
         print("upload:", wait_job(pg)["message"])
-        pg.click("#cleanBtn")
+        pg.wait_for_timeout(2500)
+        expect(pg.get_by_role("button", name="Everything is in Immich")).to_be_visible()
+        pg.get_by_role("button", name="Clean scanner card").click()
+        confirm(pg, "Delete from card")
         print("cleanup:", wait_job(pg)["message"])
-        pg.screenshot(path=SHOTS + "done.png")
+        pg.wait_for_timeout(2500)
+        expect(pg.get_by_text("Card cleaned")).to_be_visible()
+        pg.screenshot(path=SHOTS / "done.png")
         assert not errors, errors
         print("no console errors")
         browser.close()

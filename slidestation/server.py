@@ -17,10 +17,9 @@ from .immich import Immich, ImmichError
 from .store import Session, active_scans, group_status, load_config, lock, save_config, summary
 
 app = FastAPI(title="Slide Station")
-# The React build (frontend/, committed to slidestation/web) is used when present;
-# otherwise the plain-JS UI in slidestation/static is served.
+# The UI is the React app in frontend/; its build is committed to slidestation/web so
+# the launcher works without Node.
 WEB = Path(__file__).parent / "web"
-STATIC = WEB if (WEB / "index.html").exists() else Path(__file__).parent / "static"
 
 
 def _session(sid: str) -> Session:
@@ -309,12 +308,13 @@ def reveal(body: dict = Body(...)):
 
 @app.get("/")
 def index():
-    return FileResponse(STATIC / "index.html", headers={"Cache-Control": "no-store"})
+    if not (WEB / "index.html").exists():
+        return Response("UI not built: run `npm install && npm run build` in frontend/", status_code=500)
+    return FileResponse(WEB / "index.html", headers={"Cache-Control": "no-store"})
 
 
-app.mount("/static", StaticFiles(directory=STATIC), name="static")
-if STATIC is WEB:  # Vite emits ./assets/... paths
-    app.mount("/assets", StaticFiles(directory=WEB / "assets"), name="assets")
+# Vite emits hashed ./assets/... files, so they can be cached forever.
+app.mount("/assets", StaticFiles(directory=WEB / "assets", check_dir=False), name="assets")
 
 
 def main():

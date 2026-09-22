@@ -72,19 +72,22 @@ Face detection uses OpenCV's YuNet model (MIT licence, from opencv_zoo), bundled
 
 ## Development
 
-Backend only (the plain-JS UI in `slidestation/static` is served as-is):
+Backend (serves the committed UI build in `slidestation/web`):
 
 ```bash
 uv run --python 3.12 python -m slidestation
 ```
 
-The React UI (ProUI, see `NOTICE.md`) lives in `frontend/`:
+The UI is a React + Tailwind + ProUI app (see `NOTICE.md`) in `frontend/`:
 
 ```bash
 cd frontend && npm install
-npm run dev     # Vite on :5173, proxies /api to the Python server
-npm run build   # writes slidestation/web, which the server prefers when present
+npm run dev     # Vite on :5173, proxies /api to the Python server on :8765
+npm run build   # writes slidestation/web - commit it, the launcher runs without Node
 ```
+
+ProUI components are added with the shadcn CLI and a licence key in `frontend/.env.local`
+(`PROUI_LICENSE_KEY=...`, gitignored): `scripts/proui-add.sh <name>...` from `frontend/`.
 
 Tests and a mock Immich live in `tests/`. `HANDOFF.md` documents the architecture, the invariants
 worth keeping, and what is unfinished.

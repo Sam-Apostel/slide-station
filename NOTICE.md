@@ -5,8 +5,8 @@ third-party files listed here.
 
 ## ProUI — `frontend/src/components/ui/*`
 
-Commercial component library (<https://pro-ui.dev>), installed from its shadcn-style
-registry. ProUI is paid software; using it requires a licence from ProUI, and its terms state that
+Commercial component library (<https://pro-ui.dev>), installed from its shadcn-style registry
+with the owner's licence key. ProUI is paid software; using it requires a licence from ProUI, and its terms state that
 you may not "redistribute ProUI itself as a competing component library or template kit".
 
 These files are present in this repository at the project owner's decision. Anyone forking or
@@ -15,6 +15,9 @@ their own ProUI licence, or replace them with the free shadcn/ui equivalents (MI
 
 If ProUI would rather these files were not published, open an issue and they will be removed and
 replaced with a setup step that fetches them from the registry instead.
+
+Many ProUI components are adapted from shadcn/ui (<https://github.com/shadcn-ui/ui>),
+MIT licence, Copyright (c) 2023 shadcn.
 
 ## YuNet face detector — `slidestation/models/face_detection_yunet_2023mar.onnx`
 
