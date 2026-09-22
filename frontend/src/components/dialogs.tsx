@@ -346,9 +346,9 @@ export function HelpDialog({ open, onOpenChange }: { open: boolean; onOpenChange
         <table className="w-full text-[12px]">
           <tbody>
             {SHORTCUTS.map(([keys, what], i) => (
-              <tr key={i} className="border-b border-white/5 last:border-0">
+              <tr key={i} className="border-b border-(--ss-line-soft) last:border-0">
                 <td className="py-1.5 pr-4 whitespace-nowrap">{keys}</td>
-                <td className="py-1.5 text-white/75">{what}</td>
+                <td className="py-1.5 text-foreground/75">{what}</td>
               </tr>
             ))}
           </tbody>

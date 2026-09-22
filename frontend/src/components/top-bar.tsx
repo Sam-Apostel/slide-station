@@ -39,9 +39,9 @@ export function TopBar({
 
   return (
     <ProToolbar className="gap-2">
-      <div className="flex items-center gap-2 pr-2 text-[13px] font-semibold tracking-[0.01em] text-white/90">
+      <div className="flex items-center gap-2 pr-2 text-[13px] font-semibold tracking-[0.01em] text-foreground/90">
         <span aria-hidden className="relative size-[18px] rounded-[3px] bg-primary">
-          <span className="absolute inset-x-[4px] inset-y-[5px] rounded-[1px] bg-[#262626]" />
+          <span className="absolute inset-x-[4px] inset-y-[5px] rounded-[1px] bg-(--ss-ink)" />
         </span>
         Slide Station
       </div>
@@ -67,11 +67,17 @@ export function TopBar({
       </ProButton>
 
       <div className="flex min-w-0 flex-1 justify-center px-2">
-        <ProTitlebarWell className="h-[31px] w-full max-w-[440px] flex-row gap-2.5 px-3 text-[11px]">
+        <ProTitlebarWell
+          data-tone={job?.error ? "bad" : !job && src ? "ok" : undefined}
+          className="h-[31px] w-full max-w-[440px] flex-row gap-2.5 px-3 text-[11px]"
+        >
           {job ? (
             <div className="flex w-full min-w-0 flex-col gap-[3px]" role="status" aria-live="polite">
               <span
-                className={cn("truncate text-center font-medium", job.error ? "text-destructive" : "text-white/80")}
+                className={cn(
+                  "truncate text-center font-medium",
+                  job.error ? "text-destructive" : "text-foreground/80",
+                )}
               >
                 {job.error
                   ? `Failed: ${job.error}`
@@ -93,10 +99,14 @@ export function TopBar({
                 aria-hidden
                 className="size-2 shrink-0 rounded-full bg-[var(--pro-green)] shadow-[0_0_0_3px_color-mix(in_srgb,var(--pro-green)_20%,transparent)]"
               />
-              <Usb className="size-3.5 shrink-0 text-white/50" aria-hidden />
-              <span className="min-w-0 flex-1 truncate text-white/80">
+              <Usb className="size-3.5 shrink-0 text-muted-foreground" aria-hidden />
+              <span className="min-w-0 flex-1 truncate text-foreground/80">
                 {sourceLabel(src)} ·{" "}
-                {src.new ? <b className="font-semibold text-white">{plural(src.new, "new scan")}</b> : "nothing new"}
+                {src.new ? (
+                  <b className="font-semibold text-foreground">{plural(src.new, "new scan")}</b>
+                ) : (
+                  "nothing new"
+                )}
               </span>
               {src.new ? (
                 <ProButton active onClick={() => onImport(src)}>
@@ -107,7 +117,7 @@ export function TopBar({
               )}
             </>
           ) : (
-            <span className="text-white/45">Waiting for the scanner…</span>
+            <span className="text-muted-foreground">Waiting for the scanner…</span>
           )}
         </ProTitlebarWell>
       </div>

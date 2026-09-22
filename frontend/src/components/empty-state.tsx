@@ -23,14 +23,14 @@ export function EmptyState({
 }) {
   return (
     <div className="grid flex-1 place-items-center bg-[var(--pro-canvas)] p-6">
-      <Empty className="max-w-[520px] flex-none rounded-[12px] border-[0.5px] border-[#202020] bg-[#383838] px-8 py-8 shadow-[0_16px_60px_#0005,inset_0_0.5px_#ffffff12]">
+      <Empty className="max-w-[520px] flex-none rounded-[12px] border border-solid border-border bg-(--ss-panel) px-8 py-8 shadow-[0_16px_60px_#0005]">
         <EmptyHeader>
           <EmptyMedia variant="icon">
             <Images />
           </EmptyMedia>
           <EmptyTitle className="text-[18px]">Scan, review, upload</EmptyTitle>
           <EmptyDescription>
-            <ol className="mt-2 list-decimal space-y-1 pl-5 text-left leading-relaxed text-white/60 [&_b]:text-white/90">
+            <ol className="mt-2 list-decimal space-y-1 pl-5 text-left leading-relaxed text-muted-foreground [&_b]:text-foreground/90">
               {STEPS.map((s, i) => (
                 <li key={i}>{s}</li>
               ))}
@@ -44,7 +44,7 @@ export function EmptyState({
               Import {plural(source.new, "scan")} from {source.scanner ? "the Slide N Scan" : sourceLabel(source)}
             </Button>
           ) : (
-            <div className="flex items-center gap-2 text-white/50">
+            <div className="flex items-center gap-2 text-muted-foreground">
               Waiting for the scanner… or
               <Button onClick={onImportFolder}>
                 <FolderInput /> import a folder

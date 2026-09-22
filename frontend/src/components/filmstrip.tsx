@@ -21,11 +21,20 @@ export const STATUS_LABEL: Record<GroupStatus, string> = {
 };
 
 export const STATUS_DOT: Record<GroupStatus, string> = {
-  new: "bg-[#6a6a6a]",
+  new: "bg-[#55555f]",
   reviewed: "bg-primary",
   uploaded: "bg-[var(--pro-green)]",
-  changed: "bg-[#e1a13e]",
-  skipped: "bg-transparent border-[#777]",
+  changed: "bg-(--ss-warn)",
+  skipped: "bg-transparent border-[#666]",
+};
+
+/** Status pill tone, as in the original UI. */
+export const STATUS_TEXT: Record<GroupStatus, string> = {
+  new: "text-muted-foreground",
+  reviewed: "text-primary border-primary/40",
+  uploaded: "text-(--ss-ok) border-(--ss-ok)/40",
+  changed: "text-(--ss-warn) border-(--ss-warn)/40",
+  skipped: "text-(--ss-dim)",
 };
 
 const matches = (g: Group, f: Filter) => (f === "todo" ? needsReview(g) : f === "multi" ? g.scans.length > 1 : true);
@@ -54,10 +63,10 @@ export function Filmstrip({
   }, [sel, filter]);
 
   return (
-    <aside className="flex min-h-0 w-[250px] shrink-0 flex-col border-r border-[#202020] bg-[var(--pro-canvas)]">
-      <div className="border-b border-[#202020] bg-[#383838] px-3 pt-2.5 pb-2">
-        <div className="truncate text-[13px] font-semibold text-white/90">{sm.name}</div>
-        <div className="text-[11px] text-white/50">
+    <aside className="flex min-h-0 w-[250px] shrink-0 flex-col border-r border-border bg-[var(--pro-canvas)]">
+      <div className="border-b border-border bg-(--ss-panel) px-3 pt-2.5 pb-2">
+        <div className="truncate text-[13px] font-semibold text-foreground/90">{sm.name}</div>
+        <div className="text-[11px] text-muted-foreground">
           {plural(sm.slides, "slide")} · {plural(sm.scans, "scan")}
         </div>
       </div>
@@ -115,7 +124,7 @@ export function Filmstrip({
           );
         })}
         {!groups.length && (
-          <p className="col-span-2 py-6 text-center text-[11px] text-white/40">
+          <p className="col-span-2 py-6 text-center text-[11px] text-(--ss-dim)">
             {session.groups.length ? "No slides match this filter" : "No slides yet"}
           </p>
         )}

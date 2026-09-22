@@ -51,7 +51,7 @@ export function Inspector({
   const blockers = session.cleanup_blockers;
 
   return (
-    <ProInspector className="min-h-0 w-[300px] border-l border-[#202020]">
+    <ProInspector className="min-h-0 w-[300px] border-l border-border">
       <div className="min-h-0 flex-1 overflow-y-auto scrollbar-thin">
         {g && (
           <>
@@ -68,13 +68,15 @@ export function Inspector({
                     180°
                   </ProButton>
                 </ProButtonGroup>
-                <span className="ml-auto text-[11px] text-white/45">{rotationNote(g.rotation, g.rot_reason)}</span>
+                <span className="ml-auto text-[11px] text-muted-foreground">
+                  {rotationNote(g.rotation, g.rot_reason)}
+                </span>
               </div>
             </ProInspectorSection>
 
             <ProInspectorSection title="Colour">
               <div className="flex flex-col gap-1 px-3 py-2.5">
-                <div className="mb-1 flex items-center gap-1.5 text-[11px] text-white/45">
+                <div className="mb-1 flex items-center gap-1.5 text-[11px] text-muted-foreground">
                   {g.params_source.startsWith("learned:") && <Sparkles className="size-3 text-primary" aria-hidden />}
                   <span className="min-w-0 flex-1 truncate">{paramsNote(g.params_source)}</span>
                   <ProButton onClick={app.resetColour} title="Reset (0)">
@@ -83,7 +85,7 @@ export function Inspector({
                 </div>
                 {SLIDERS.map(([k, label, min, max]) => (
                   <div key={k} className="grid grid-cols-[76px_1fr] items-center gap-2">
-                    <span className="text-right text-[12px] text-white/50">{label}</span>
+                    <span className="text-right text-[12px] text-muted-foreground">{label}</span>
                     <ProSlider
                       label={label}
                       min={min}
@@ -170,7 +172,7 @@ export function Inspector({
       </div>
 
       {/* Pinned so the way out of a tray is always one click away. */}
-      <div className="flex shrink-0 flex-col gap-1.5 border-t border-black/30 bg-[#333] px-3 pt-2.5 pb-3">
+      <div className="flex shrink-0 flex-col gap-1.5 border-t border-border bg-(--ss-panel) px-3 pt-2.5 pb-3">
         <ProButton active size="lg" fullWidth onClick={onUpload} disabled={!sm.pending_upload || busy}>
           <Upload />
           {!sm.slides
@@ -187,7 +189,7 @@ export function Inspector({
             <FolderOpen /> Show files
           </ProButton>
         </div>
-        <p className="text-[11px] leading-snug text-white/45">
+        <p className="text-[11px] leading-snug text-muted-foreground">
           {sm.card_cleaned
             ? "Card cleaned — you can eject the scanner."
             : blockers.length
@@ -223,7 +225,7 @@ function TrayField({
   };
   return (
     <div className="flex flex-col gap-1">
-      <Label htmlFor={id} className="text-[11px] font-normal text-white/50">
+      <Label htmlFor={id} className="text-[11px] font-normal text-muted-foreground">
         {label}
       </Label>
       <Input

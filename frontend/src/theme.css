@@ -1,0 +1,276 @@
+/*
+ * Slide Station skin over ProUI: near-black cool tones, warm off-white text, amber accents.
+ *
+ * Kept out of index.css and components/ui on purpose: those belong to the shadcn CLI and get
+ * rewritten when ProUI components are (re)installed. This file is imported after index.css and
+ * is *unlayered*, so it wins over Tailwind's layered utilities — including the hex colours
+ * ProUI hardcodes in its class lists — without editing the registry files.
+ */
+
+:root,
+.dark {
+  /* palette (from the original UI) */
+  --ss-bg: #0e0e10;
+  --ss-sunken: #0a0a0b; /* behind the photo */
+  --ss-rail: #111114; /* filmstrip, inspector */
+  --ss-bar: #131316; /* top bar, stage bars, status bar */
+  --ss-panel: #16161a; /* raised: dialogs, headers */
+  --ss-panel-2: #1d1d22; /* controls */
+  --ss-field: #0c0c0e; /* text fields, wells */
+  --ss-line: #2a2a31;
+  --ss-line-soft: #202026;
+  --ss-text: #ebe8e2;
+  --ss-muted: #9b978e;
+  --ss-dim: #6f6c66;
+  --ss-accent: #f2b34b;
+  --ss-accent-hover: #f5c26a;
+  --ss-ink: #1a1305; /* text on amber */
+  --ss-ok: #6cc28a;
+  --ss-warn: #e8a13a;
+  --ss-bad: #e2675c;
+
+  /* ProUI / shadcn tokens */
+  --pro-accent: var(--ss-accent);
+  --pro-ink: var(--ss-text);
+  --pro-muted: var(--ss-muted);
+  --pro-dim: var(--ss-dim);
+  --pro-bar: var(--ss-bar);
+  --pro-panel: var(--ss-panel);
+  --pro-canvas: var(--ss-rail);
+  --pro-well: var(--ss-sunken);
+  --pro-line: var(--ss-line);
+  --pro-green: var(--ss-ok);
+  --pro-selection: #3a3228;
+  --pro-text-selection: color-mix(in srgb, var(--ss-accent) 40%, transparent);
+  --background: var(--ss-bg);
+  --foreground: var(--ss-text);
+  --card: var(--ss-panel);
+  --card-foreground: var(--ss-text);
+  --popover: var(--ss-panel);
+  --popover-foreground: var(--ss-text);
+  --primary: var(--ss-accent);
+  --primary-foreground: var(--ss-ink);
+  --secondary: var(--ss-panel-2);
+  --secondary-foreground: var(--ss-text);
+  --muted: var(--ss-panel-2);
+  --muted-foreground: var(--ss-muted);
+  --accent: #24242a;
+  --accent-foreground: var(--ss-text);
+  --destructive: var(--ss-bad);
+  --border: var(--ss-line);
+  --input: var(--ss-field);
+  --radius: 0.375rem;
+  --standard-button-default-fill: var(--ss-panel-2);
+  --standard-button-outline-fill: transparent;
+  --standard-button-secondary-fill: #24242a;
+  color-scheme: dark;
+}
+
+body {
+  background: var(--ss-bg);
+  color: var(--ss-text);
+}
+
+/* ------------------------------------------------------------------ bars */
+
+.pro-toolbar {
+  background: var(--ss-bar);
+  border-color: var(--ss-line);
+  box-shadow: none;
+}
+.pro-titlebar-well {
+  background: var(--ss-field);
+  box-shadow: inset 0 0 0 1px var(--ss-line-soft);
+}
+.pro-scopebar {
+  background: var(--ss-rail);
+  border-color: var(--ss-line);
+}
+.pro-scope {
+  color: var(--ss-muted);
+}
+.pro-scope[data-active] {
+  background: var(--ss-panel-2);
+  color: var(--ss-text);
+  box-shadow: inset 0 0 0 1px #45454f;
+}
+.pro-statusbar {
+  background: var(--ss-bar);
+  border-color: var(--ss-line);
+  color: var(--ss-dim);
+}
+
+/* ------------------------------------------------------------------ inspector */
+
+.pro-inspector {
+  background: var(--ss-rail);
+}
+.pro-inspector-section-heading {
+  background: transparent;
+  border-color: var(--ss-line);
+  color: var(--ss-muted);
+  letter-spacing: 0.1em;
+}
+[data-slot="pro-inspector-row"] {
+  border-color: var(--ss-line-soft);
+}
+[data-slot="pro-inspector-row"] dt {
+  color: var(--ss-muted);
+}
+[data-slot="pro-inspector-row"] dd {
+  color: var(--ss-text);
+  font-weight: 600;
+}
+
+/* ------------------------------------------------------------------ buttons */
+
+.pro-btn {
+  background-color: var(--ss-panel-2);
+  color: var(--ss-text);
+  box-shadow: inset 0 0 0 1px var(--ss-line);
+}
+.pro-btn::before {
+  display: none; /* ProUI's top highlight reads as grey chrome on this palette */
+}
+.pro-btn:hover:not(:disabled) {
+  background-color: #24242a;
+  box-shadow: inset 0 0 0 1px #3d3d46;
+}
+/* `active` ProButtons are the primary actions: solid amber with dark ink, like before */
+.pro-btn[data-active],
+.pro-button-group > .pro-btn[data-active] {
+  background-color: var(--ss-accent);
+  color: var(--ss-ink);
+  font-weight: 600;
+  box-shadow: inset 0 0 0 1px var(--ss-accent);
+}
+.pro-btn[data-active]:hover:not(:disabled) {
+  background-color: var(--ss-accent-hover);
+  box-shadow: inset 0 0 0 1px var(--ss-accent-hover);
+}
+.pro-btn:disabled {
+  opacity: 0.45;
+  color: var(--ss-text);
+}
+.pro-button-group {
+  box-shadow: inset 0 0 0 1px var(--ss-line);
+}
+.pro-button-group > .pro-btn {
+  box-shadow: none;
+}
+.pro-button-group > .pro-btn + .pro-btn::after {
+  background: var(--ss-line);
+}
+.pro-ui-button::before {
+  display: none;
+}
+.pro-ui-button {
+  box-shadow: inset 0 0 0 1px var(--ss-line);
+}
+.pro-ui-button.bg-primary {
+  font-weight: 600;
+  box-shadow: none;
+}
+.pro-ui-button.bg-primary:hover:not(:disabled) {
+  background-color: var(--ss-accent-hover);
+}
+
+/* ------------------------------------------------------------------ fields */
+
+.pro-ui-input,
+[data-slot="native-select"] {
+  background: var(--ss-field);
+  color: var(--ss-text);
+  box-shadow: inset 0 0 0 1px var(--ss-line);
+}
+.pro-ui-input:focus,
+[data-slot="native-select"]:focus-visible {
+  background: var(--ss-field);
+  box-shadow: inset 0 0 0 1px var(--ss-accent);
+}
+[data-slot="native-select"]:hover:not(:disabled) {
+  box-shadow: inset 0 0 0 1px #3d3d46;
+}
+[data-slot="checkbox"] {
+  background: var(--ss-field);
+  box-shadow: inset 0 0 0 1.4px #45454f;
+}
+[data-slot="checkbox"][data-state="checked"] {
+  background: var(--ss-accent);
+  color: var(--ss-ink);
+  box-shadow: none;
+}
+[data-slot="kbd"] {
+  background: #2a2a31;
+  border: 1px solid #3a3a42;
+  border-bottom-width: 2px;
+  color: var(--ss-text);
+  box-shadow: none;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+/* key hints inside buttons: flat, no key-cap */
+.pro-btn [data-slot="kbd"] {
+  height: auto;
+  padding: 1px 5px;
+  border: 0;
+  background: rgb(255 255 255 / 8%);
+  color: var(--ss-muted);
+}
+.pro-btn[data-active] [data-slot="kbd"] {
+  background: rgb(0 0 0 / 12%);
+  color: color-mix(in srgb, var(--ss-ink) 70%, transparent);
+}
+
+/* sliders: amber pointer on a dark rail, like the old accent-colour range inputs */
+.pro-pointer-rail {
+  background: #2a2a31;
+  box-shadow: none;
+}
+.pro-pointer {
+  fill: var(--ss-accent);
+  stroke: var(--ss-ink);
+}
+.group\/pro-slider:hover .pro-pointer,
+.group\/pro-slider:focus-within .pro-pointer {
+  fill: var(--ss-accent-hover);
+}
+
+[data-slot="progress"] {
+  background: var(--ss-line);
+  box-shadow: none;
+}
+
+/* ------------------------------------------------------------------ overlays */
+
+[data-slot="dialog-content"],
+[data-slot="alert-dialog-content"] {
+  background: var(--ss-panel);
+  border: 1px solid var(--ss-line);
+  color: var(--ss-text);
+  box-shadow: 0 24px 64px #000a;
+}
+[data-slot="dialog-overlay"],
+[data-slot="alert-dialog-overlay"] {
+  background: #0009;
+}
+[data-slot="dialog-description"],
+[data-slot="alert-dialog-description"],
+[data-slot="field-description"] {
+  color: var(--ss-muted);
+}
+[data-sonner-toast] {
+  --normal-bg: #26262c;
+  --normal-border: var(--ss-line);
+  --normal-text: var(--ss-text);
+}
+
+/* top-bar well: the old green "scanner connected" chip, or red on a failed job */
+.pro-titlebar-well[data-tone="ok"] {
+  background: rgb(108 194 138 / 12%);
+  box-shadow: inset 0 0 0 1px rgb(108 194 138 / 35%);
+  color: #cfeedd;
+}
+.pro-titlebar-well[data-tone="bad"] {
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--ss-bad) 50%, transparent);
+}

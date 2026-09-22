@@ -96,6 +96,11 @@ frontend/src/
   were made on, so pressing → mid-debounce can't save them onto the next slide.
 - Learning is surfaced: the Colour section says where the settings came from (tray defaults /
   learned from N slides / by hand) and "Use learned" calls `resuggest`.
+- **Look:** `frontend/src/theme.css` is the Slide Station skin — the original UI's near-black
+  cool tones, warm off-white text and amber (#f2b34b) primary actions with dark ink. It is
+  unlayered and loaded after `index.css`, so it overrides ProUI's tokens *and* the hex colours
+  ProUI hardcodes in its class lists, without touching the CLI-owned files. `ProButton active` =
+  amber primary action. Restyle there, not in `components/ui/`.
 - `slidestation/web` is committed so the launcher works without Node. Rebuild after UI changes.
 
 **Adding ProUI components.** `components.json` has the `@proui` registry with

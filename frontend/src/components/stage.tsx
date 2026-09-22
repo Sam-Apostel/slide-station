@@ -4,7 +4,7 @@ import { ProButton } from "@/components/ui/pro-button";
 import { Spinner } from "@/components/ui/spinner";
 import { previewUrl, scanThumbUrl, type Group, type SessionPayload } from "@/lib/api";
 import { cn } from "@/lib/utils";
-import { STATUS_DOT, STATUS_LABEL } from "@/components/filmstrip";
+import { STATUS_DOT, STATUS_LABEL, STATUS_TEXT } from "@/components/filmstrip";
 
 /** Loads the wanted preview off-screen and only swaps it in once decoded, so browsing never flashes. */
 function usePreloadedImage(url: string | null, warm: string | null) {
@@ -61,15 +61,18 @@ export function Stage({
 
   return (
     <section className="flex min-h-0 min-w-0 flex-1 flex-col bg-[var(--pro-well)]">
-      <div className="flex h-9 shrink-0 items-center justify-between border-b border-[#202020] bg-[#303030] px-3.5">
-        <div className="text-[12px] font-semibold text-white/90" aria-live="polite">
+      <div className="flex h-9 shrink-0 items-center justify-between border-b border-border bg-(--ss-bar) px-3.5">
+        <div className="text-[12px] font-semibold text-foreground/90" aria-live="polite">
           {g ? `Slide ${sel + 1} of ${session.groups.length}` : "No slides yet — import some scans"}
         </div>
         {g && (
           <div className="flex items-center gap-2">
             <span
               data-testid="slide-status"
-              className="flex items-center gap-1.5 rounded-full border border-white/10 px-2 py-px text-[11px] text-white/70"
+              className={cn(
+                "flex items-center gap-1.5 rounded-full border border-border px-2 py-px text-[11px]",
+                STATUS_TEXT[g.status],
+              )}
             >
               <span className={cn("size-[7px] rounded-full border border-transparent", STATUS_DOT[g.status])} />
               {STATUS_LABEL[g.status]}
@@ -106,10 +109,10 @@ export function Stage({
 
       {g && (
         <div
-          className="flex min-h-[72px] shrink-0 items-center gap-1.5 overflow-x-auto border-t border-[#202020] bg-[#303030] px-3.5 py-2"
+          className="flex min-h-[72px] shrink-0 items-center gap-1.5 overflow-x-auto border-t border-border bg-(--ss-bar) px-3.5 py-2"
           aria-label="Scans in this slide"
         >
-          <span className="mr-1.5 text-[11px] whitespace-nowrap text-white/50">
+          <span className="mr-1.5 text-[11px] whitespace-nowrap text-muted-foreground">
             {g.scans.length > 1 ? `Stack of ${g.scans.length} scans · click to leave one out` : "Single scan"}
           </span>
           {g.scans.map((sc, k) => {
@@ -122,7 +125,7 @@ export function Stage({
                     onClick={() => onSplit(sc)}
                     title="Split: this scan and the ones after it are a different slide"
                     aria-label={`Split before scan ${k + 1}`}
-                    className="group grid h-[52px] w-4 shrink-0 cursor-default place-items-center rounded border border-dashed border-transparent text-transparent hover:border-white/30 hover:text-white/60 focus-visible:border-white/30 focus-visible:text-white/60"
+                    className="group grid h-[52px] w-4 shrink-0 cursor-default place-items-center rounded border border-dashed border-transparent text-transparent hover:border-(--ss-line) hover:text-muted-foreground focus-visible:border-(--ss-line) focus-visible:text-muted-foreground"
                   >
                     <Scissors className="size-3" />
                   </button>
@@ -134,7 +137,7 @@ export function Stage({
                   aria-pressed={!off}
                   aria-label={`Scan ${k + 1}${off ? " (left out)" : ""}`}
                   className={cn(
-                    "relative shrink-0 cursor-default overflow-hidden rounded border-2 border-[#4c4c4c]",
+                    "relative shrink-0 cursor-default overflow-hidden rounded border-2 border-border",
                     off && "border-dashed opacity-35",
                   )}
                 >
