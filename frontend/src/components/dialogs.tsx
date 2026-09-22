@@ -16,10 +16,41 @@ import { Input } from "@/components/ui/input";
 import { Kbd } from "@/components/ui/kbd";
 import { Label } from "@/components/ui/label";
 import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select";
+import { desktop } from "@/lib/desktop";
 import { api, sourceLabel, type AppState, type Config, type Source } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
 const primary = "bg-primary text-primary-foreground";
+
+/** A path field; in the desktop app it gets a native “Choose…” folder picker next to it. */
+function FolderInput({
+  id,
+  value,
+  onChange,
+  placeholder,
+  pickerTitle,
+}: {
+  id: string;
+  value: string;
+  onChange: (v: string) => void;
+  placeholder?: string;
+  pickerTitle: string;
+}) {
+  const input = <Input id={id} value={value} onChange={(e) => onChange(e.target.value)} placeholder={placeholder} />;
+  if (!desktop) return input;
+  const pick = async () => {
+    const p = await desktop!.pickFolder({ title: pickerTitle, defaultPath: value || undefined });
+    if (p) onChange(p);
+  };
+  return (
+    <div className="flex gap-1.5">
+      <div className="min-w-0 flex-1">{input}</div>
+      <Button type="button" onClick={pick}>
+        Choose…
+      </Button>
+    </div>
+  );
+}
 
 // ------------------------------------------------------------------ settings
 
@@ -130,7 +161,7 @@ export function SettingsDialog({
             </div>
             <Field>
               <FieldLabel htmlFor="cfg-lib">Library folder</FieldLabel>
-              <Input id="cfg-lib" value={library} onChange={(e) => setLibrary(e.target.value)} />
+              <FolderInput id="cfg-lib" value={library} onChange={setLibrary} pickerTitle="Library folder" />
               <FieldDescription>
                 Originals, previews and finished JPEGs live here. With the defaults that's about 6 MB per slide (60 GB
                 for 10,000), so an external drive is a good home.
@@ -190,12 +221,15 @@ export function NewTrayDialog({
   onOpenChange,
   state,
   preferSource,
+  preferFolder,
   onCreate,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   state: AppState | null;
   preferSource?: Source;
+  /** Opened from a dropped or picked folder: import that. */
+  preferFolder?: string;
   onCreate: (body: { name: string; album: string; date: string }, source: string) => void;
 }) {
   const sources = (state?.sources ?? []).filter((x) => x.count > 0);
@@ -210,8 +244,8 @@ export function NewTrayDialog({
     setName("");
     setAlbum("");
     setDate("");
-    setFolder("");
-    setSource(preferSource?.path ?? sources[0]?.path ?? NOTHING);
+    setFolder(preferFolder ?? "");
+    setSource(preferFolder !== undefined ? FOLDER : (preferSource?.path ?? sources[0]?.path ?? NOTHING));
     // only when the dialog opens; the source list refreshes every poll
   }, [open]);
 
@@ -276,11 +310,12 @@ export function NewTrayDialog({
             {source === FOLDER && (
               <Field>
                 <FieldLabel htmlFor="n-path">Folder path</FieldLabel>
-                <Input
+                <FolderInput
                   id="n-path"
                   value={folder}
-                  onChange={(e) => setFolder(e.target.value)}
+                  onChange={setFolder}
                   placeholder="/Users/you/Pictures/slides/box 4"
+                  pickerTitle="Import scans from a folder"
                 />
               </Field>
             )}

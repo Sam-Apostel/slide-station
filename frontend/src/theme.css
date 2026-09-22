@@ -78,6 +78,21 @@ body {
   border-color: var(--ss-line);
   box-shadow: none;
 }
+/* ProTitlebar (desktop app only): the window's top edge, one step darker than the toolbar so the
+   two read as frame and tools, like ProUI's app shells. */
+.pro-titlebar {
+  background: var(--ss-sunken);
+  border-color: var(--ss-line-soft);
+  box-shadow: none;
+}
+.pro-titlebar-center {
+  color: var(--ss-muted);
+  text-shadow: none;
+  font-size: 12px;
+}
+.pro-titlebar-center > span > span:first-child {
+  color: var(--ss-text);
+}
 .pro-titlebar-well {
   background: var(--ss-field);
   box-shadow: inset 0 0 0 1px var(--ss-line-soft);
@@ -296,4 +311,18 @@ body {
 .pro-btn.h-\[32px\] svg {
   width: 13px;
   height: 13px;
+}
+
+/* layout toggles: pressed = the panel is showing. Neutral on purpose — amber means "primary action" */
+.pro-btn[aria-pressed="false"] {
+  color: var(--ss-dim);
+}
+.pro-btn[data-on] {
+  background-color: #2a2a31;
+}
+
+/* a folder being dragged over the window (desktop app) */
+.ss-drop {
+  background: color-mix(in srgb, var(--ss-bg) 70%, transparent);
+  box-shadow: inset 0 0 0 2px var(--ss-accent);
 }

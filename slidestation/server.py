@@ -306,7 +306,9 @@ def eject(body: dict = Body(...)):
 def reveal(body: dict = Body(...)):
     """Open the session's export folder in Finder."""
     s = _session(body["session"])
-    if os.uname().sysname == "Darwin":
+    s.export_dir.mkdir(parents=True, exist_ok=True)  # doesn't exist until the first render
+    # The desktop app opens it itself, through the OS shell.
+    if os.uname().sysname == "Darwin" and not os.environ.get("SLIDESTATION_DESKTOP"):
         os.system(f'open "{s.export_dir}"')
     return {"ok": True, "path": str(s.export_dir)}
 

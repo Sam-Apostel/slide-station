@@ -9,5 +9,5 @@ export default defineConfig({
   resolve: { alias: { "@": path.resolve(import.meta.dirname, "src") } },
   base: "./",
   build: { outDir: "../slidestation/web", emptyOutDir: true },
-  server: { proxy: { "/api": "http://localhost:8765" } },
+  server: { proxy: { "/api": `http://localhost:${process.env.SLIDESTATION_PORT || 8765}` } },
 });

@@ -9,8 +9,22 @@ import { Stage } from "@/components/stage";
 import { Inspector } from "@/components/inspector";
 import { EmptyState } from "@/components/empty-state";
 import { HelpDialog, NewTrayDialog, SettingsDialog } from "@/components/dialogs";
+import { PanelToggles, WindowTitlebar } from "@/components/window-titlebar";
 import { useSlideStation, type SlideStation } from "@/hooks/use-slide-station";
+import { useDesktop, useFolderDrop } from "@/hooks/use-desktop";
 import { needsReview, plural, type Source } from "@/lib/api";
+import { desktop } from "@/lib/desktop";
+
+type Panels = { filmstrip: boolean; inspector: boolean };
+const ALL_PANELS: Panels = { filmstrip: true, inspector: true };
+
+function storedPanels(): Panels {
+  try {
+    return { ...ALL_PANELS, ...JSON.parse(localStorage.getItem("panels") || "{}") };
+  } catch {
+    return ALL_PANELS;
+  }
+}
 
 export default function App() {
   return (
@@ -30,13 +44,40 @@ function SlideStationApp() {
   const [before, setBefore] = React.useState(false);
   const [settingsOpen, setSettingsOpen] = React.useState(false);
   const [helpOpen, setHelpOpen] = React.useState(false);
-  const [newTray, setNewTray] = React.useState<{ open: boolean; source?: Source }>({ open: false });
+  const [newTray, setNewTray] = React.useState<{ open: boolean; source?: Source; folder?: string }>({ open: false });
+  const [panels, setPanels] = React.useState(storedPanels);
+  // What focus mode hid, so the same shortcut brings exactly that back.
+  const beforeFocus = React.useRef<Panels | null>(null);
+
+  const changePanels = (fn: (p: Panels) => Panels) =>
+    setPanels((p) => {
+      const next = fn(p);
+      try {
+        localStorage.setItem("panels", JSON.stringify(next));
+      } catch {
+        /* private mode */
+      }
+      return next;
+    });
+  const toggleFilmstrip = () => changePanels((p) => ({ ...p, filmstrip: !p.filmstrip }));
+  const toggleInspector = () => changePanels((p) => ({ ...p, inspector: !p.inspector }));
+  const focusMode = () =>
+    changePanels((p) => {
+      if (!p.filmstrip && !p.inspector) return beforeFocus.current ?? ALL_PANELS;
+      beforeFocus.current = p;
+      return { filmstrip: false, inspector: false };
+    });
 
   const busy = !!state?.job && !state.job.finished;
   const hasTrays = !!state?.sessions.length;
   const source = state?.sources.find((x) => x.new > 0) ?? state?.sources[0];
 
-  const openNew = (src?: Source) => setNewTray({ open: true, source: src });
+  const openNew = (src?: Source, folder?: string) => setNewTray({ open: true, source: src, folder });
+  const importFolder = async (folder?: string) => {
+    const path = folder ?? (await desktop?.pickFolder({ title: "Import scans from a folder", buttonLabel: "Import" }));
+    if (desktop && !path) return; // cancelled the picker
+    openNew(undefined, path ?? "");
+  };
 
   /** Import into the open tray while it is unfinished (asking first if it has progress), else start a new one. */
   const openImport = async (src: Source) => {
@@ -82,10 +123,51 @@ function SlideStationApp() {
   };
 
   useKeyboard(app, setBefore, () => setHelpOpen(true));
+  useDesktop(app, panels, {
+    settings: () => setSettingsOpen(true),
+    newTray: () => openNew(),
+    importFrom: openImport,
+    importFolder,
+    upload,
+    help: () => setHelpOpen(true),
+    toggleFilmstrip,
+    toggleInspector,
+    focusMode,
+  });
+  const dropping = useFolderDrop((path) => importFolder(path));
+
+  const toggles = session ? (
+    <PanelToggles
+      filmstrip={panels.filmstrip}
+      inspector={panels.inspector}
+      onFilmstrip={toggleFilmstrip}
+      onInspector={toggleInspector}
+    />
+  ) : null;
+  const todo = session ? session.groups.filter(needsReview).length : 0;
 
   return (
     <div className="flex h-dvh flex-col overflow-hidden bg-background text-foreground">
+      {desktop && (
+        <WindowTitlebar
+          title={session?.summary.name ?? "Slide Station"}
+          detail={
+            session
+              ? todo
+                ? `${plural(todo, "slide")} to review`
+                : session.summary.pending_upload
+                  ? `${session.summary.pending_upload} to upload`
+                  : session.summary.slides
+                    ? "all in Immich"
+                    : undefined
+              : undefined
+          }
+          right={toggles}
+        />
+      )}
       <TopBar
+        compact={!!desktop}
+        panelToggles={desktop ? null : toggles}
         state={state}
         sessionId={sessionId}
         onSelectSession={(id) => app.loadSession(id)}
@@ -98,17 +180,19 @@ function SlideStationApp() {
 
       <main className="flex min-h-0 flex-1">
         {!state ? null : !hasTrays ? (
-          <EmptyState source={source} onImport={openImport} onImportFolder={() => openNew()} />
+          <EmptyState source={source} onImport={openImport} onImportFolder={() => importFolder()} />
         ) : session ? (
           <>
-            <Filmstrip
-              session={session}
-              sessionId={sessionId}
-              sel={app.sel}
-              filter={filter}
-              onFilter={setFilter}
-              onSelect={app.select}
-            />
+            {panels.filmstrip && (
+              <Filmstrip
+                session={session}
+                sessionId={sessionId}
+                sel={app.sel}
+                filter={filter}
+                onFilter={setFilter}
+                onSelect={app.select}
+              />
+            )}
             <Stage
               session={session}
               sessionId={sessionId}
@@ -118,7 +202,9 @@ function SlideStationApp() {
               onToggleScan={app.toggleScan}
               onSplit={app.splitAt}
             />
-            <Inspector app={app} session={session} busy={busy} onUpload={upload} onClean={clean} />
+            {panels.inspector && (
+              <Inspector app={app} session={session} busy={busy} onUpload={upload} onClean={clean} />
+            )}
           </>
         ) : null}
       </main>
@@ -158,9 +244,18 @@ function SlideStationApp() {
         onOpenChange={(open) => setNewTray((s) => ({ ...s, open }))}
         state={state}
         preferSource={newTray.source}
+        preferFolder={newTray.folder}
         onCreate={app.createSession}
       />
       <HelpDialog open={helpOpen} onOpenChange={setHelpOpen} />
+      {dropping && (
+        <div className="ss-drop pointer-events-none fixed inset-0 z-50 flex items-center justify-center">
+          <div className="rounded-lg border border-primary/60 bg-(--ss-panel) px-6 py-4 text-center shadow-2xl">
+            <div className="text-[14px] font-semibold">Drop a folder of scans</div>
+            <div className="mt-1 text-[12px] text-muted-foreground">It becomes a new tray</div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

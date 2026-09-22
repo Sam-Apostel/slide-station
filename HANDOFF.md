@@ -39,6 +39,7 @@ slidestation/
   models/                 YuNet face detector (MIT, from opencv_zoo)
   web/                    UI build output (`npm run build` in frontend/), committed
 frontend/                 the UI: React 19 + Vite 7 + Tailwind 4 + ProUI (§4)
+desktop/                  Electron shell around server + UI (§4a, desktop/README.md)
 tests/                    fake scanner card + mock Immich + Playwright flow (§7)
 ```
 
@@ -121,6 +122,29 @@ is fine; bundling the whole kit is not ("don't leak the product"). So, in this p
 - Git history was rewritten (2026-09-23) so no commit contains unused ProUI components or the
   old notes on fetching the registry. `NOTICE.md` records this.
 
+## 4a. Desktop app (`desktop/`)
+
+Electron, plain CommonJS (no build step): `main.cjs` starts the Python server on a free port with
+`SLIDESTATION_DESKTOP=1` and loads it; `preload.cjs` exposes `window.slideStation`, typed in
+`frontend/src/lib/desktop.ts`. **The UI must keep working without the bridge** — every desktop
+feature is behind `if (desktop)`, and the browser build is the same bundle.
+
+- `ProTitlebar` renders only in the desktop app (`components/window-titlebar.tsx`), as ProUI
+  intends for Electron: drag region, `trafficLights={false}` because macOS draws the real ones
+  (`trafficLightPosition` in `main.cjs` centres them on the 34 px bar), `pro-no-drag` on controls.
+- Menu → UI goes through `onCommand` (`hooks/use-desktop.ts`); UI → menu enabled/checked state
+  through `setMenuState`. Single-letter shortcuts are menu *hints* only
+  (`registerAccelerator: false`): the keyboard map in `App.tsx` stays the single source of truth.
+- `/api/reveal` creates the export folder and, in desktop mode, leaves opening it to
+  `shell.openPath` instead of shelling out to `open`.
+- Packaged: the Python sources ship in `Resources/backend`; uv builds the venv under the app's
+  userData (`UV_PROJECT_ENVIRONMENT`), never inside the signed bundle.
+- Quitting kills the server's whole process group (uv → python); verified nothing is left behind.
+
+Tested under Xvfb on Linux with Playwright's Electron driver (menus, commands, panel toggles,
+import, packaged uv first start). Not yet tried on a real Mac: traffic-light position, dock badge
+and the Removable Volumes prompt for the .app are the things to look at first.
+
 ## 5. Learning from past edits (new, working, untested in the wild)
 
 `learning.py`. Every approved slide is stored as one example: 14 image features from the *blended,
@@ -201,6 +225,9 @@ proprietary, see §4; YuNet — MIT).
 1. Report the `/r/r/` registry bug to ProUI (§4).
 2. Learning in the UI: a tray-level "re-apply learned" (`resuggest` with `all: true`) and a
    learning on/off switch in Settings (`learning_enabled` already exists in the config API).
-3. Optional, previously discussed: wrap as a real macOS app so it isn't a Terminal window; an
-   ESP32 button macro for the scanner to automate bracketing; a camera-based scanning rig, which
+3. Desktop app (§4a): try it on a Mac, then consider signing/notarising and auto-update.
+   With a ProUI licence key, worth adding: `context-menu` (right-click a filmstrip slide: skip,
+   merge, rotate), `command` (⌘K palette over every action), `tooltip` (replace `title=`),
+   `pro-disclosure` (collapsible inspector sections) and `resizable` (draggable panel widths).
+4. Optional, previously discussed: an ESP32 button macro for the scanner to automate bracketing; a camera-based scanning rig, which
    would make most of the HDR work unnecessary.

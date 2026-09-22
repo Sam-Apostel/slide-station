@@ -1,3 +1,4 @@
+import type * as React from "react";
 import { CircleHelp, HardDriveDownload, Plus, Settings, Usb } from "lucide-react";
 import { ProButton } from "@/components/ui/pro-button";
 import { ProSeparator, ProToolbar } from "@/components/ui/pro-toolbar";
@@ -15,6 +16,8 @@ export function visibleJob(state: AppState | null) {
 }
 
 export function TopBar({
+  compact,
+  panelToggles,
   state,
   sessionId,
   onSelectSession,
@@ -24,6 +27,9 @@ export function TopBar({
   onHelp,
   onSettings,
 }: {
+  /** In the desktop app the window titlebar carries the name, so the toolbar drops its brand. */
+  compact?: boolean;
+  panelToggles?: React.ReactNode;
   state: AppState | null;
   sessionId: string;
   onSelectSession: (id: string) => void;
@@ -39,13 +45,17 @@ export function TopBar({
 
   return (
     <ProToolbar className="gap-2">
-      <div className="flex items-center gap-2 pr-2 text-[13px] font-semibold tracking-[0.01em] text-foreground/90">
-        <span aria-hidden className="relative size-[18px] rounded-[3px] bg-primary">
-          <span className="absolute inset-x-[4px] inset-y-[5px] rounded-[1px] bg-(--ss-ink)" />
-        </span>
-        Slide Station
-      </div>
-      <ProSeparator />
+      {!compact && (
+        <>
+          <div className="flex items-center gap-2 pr-2 text-[13px] font-semibold tracking-[0.01em] text-foreground/90">
+            <span aria-hidden className="relative size-[18px] rounded-[3px] bg-primary">
+              <span className="absolute inset-x-[4px] inset-y-[5px] rounded-[1px] bg-(--ss-ink)" />
+            </span>
+            Slide Station
+          </div>
+          <ProSeparator />
+        </>
+      )}
       <NativeSelect
         size="sm"
         aria-label="Tray"
@@ -122,6 +132,12 @@ export function TopBar({
         </ProTitlebarWell>
       </div>
 
+      {panelToggles && (
+        <>
+          {panelToggles}
+          <ProSeparator />
+        </>
+      )}
       <ProButton onClick={onHelp} title="Keyboard shortcuts (?)" aria-label="Keyboard shortcuts">
         <CircleHelp />
       </ProButton>

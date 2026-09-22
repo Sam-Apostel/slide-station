@@ -1,5 +1,6 @@
 import * as React from "react";
 import { toast } from "sonner";
+import { desktop } from "@/lib/desktop";
 import { api, needsReview, type AppState, type Group, type Params, type SessionPayload } from "@/lib/api";
 
 const NEUTRAL = { brightness: 0, contrast: 0, warmth: 0, tint: 0, saturation: 0 };
@@ -352,7 +353,8 @@ export function useSlideStation() {
 
   const reveal = async () => {
     try {
-      toast((await api<{ path: string }>("POST", "/api/reveal", { session: ref.current.sessionId })).path);
+      const { path } = await api<{ path: string }>("POST", "/api/reveal", { session: ref.current.sessionId });
+      if (!desktop || !(await desktop.showFolder(path))) toast(path);
     } catch (e) {
       fail(e);
     }
