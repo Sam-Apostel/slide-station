@@ -108,14 +108,18 @@ frontend/src/
 Plain `npx shadcn add @proui/<name>` currently fails: every ProUI item lists its dependency as
 `https://pro-ui.dev/r/r/pro-theme.json` (doubled `/r/`, 404). Use `frontend/scripts/proui-add.sh
 <name>...`, which fetches the items, points dependencies at local copies and runs the CLI
-(verified idempotent). Only components the app imports are kept, to limit the ProUI source in
-this public repo — add what you need, delete what you stop using.
+(verified idempotent). It leaves the ProUI theme out unless you pass `--with-theme` (see below).
 
-**Licensing caveat (unresolved).** ProUI's stated rule is "you cannot redistribute ProUI itself as
-a competing component library or template kit". This repo is public and now contains ProUI source,
-which is arguably that. The owner decided to proceed; he was advised to confirm with ProUI. If they
-object, the fallback is free shadcn/ui (MIT) — the same primitives ProUI builds on — or fetching
-ProUI into a gitignored folder at setup. `NOTICE.md` records the situation.
+**ProUI licensing — agreed with ProUI's owner.** Including the components this app genuinely uses
+is fine; bundling the whole kit is not ("don't leak the product"). So, in this public repo:
+- `components/ui/` holds only components the app imports (directly or via another shipped one).
+  When a component stops being used, delete it in the same commit.
+- `src/index.css` holds the ProUI theme **trimmed** to those components (no knob, drawer, action
+  bar, menu, disclosure, button/toggle/input groups…). Don't re-merge the full theme; if a new
+  component needs trimmed rules, add back only those.
+- The licence key stays in `frontend/.env.local` (gitignored); never commit registry JSON dumps.
+- Git history was rewritten (2026-09-23) so no commit contains unused ProUI components or the
+  old notes on fetching the registry. `NOTICE.md` records this.
 
 ## 5. Learning from past edits (new, working, untested in the wild)
 
@@ -194,7 +198,7 @@ proprietary, see §4; YuNet — MIT).
 
 ## 10. Immediate next steps
 
-1. Resolve the ProUI redistribution question (§4) — and report the `/r/r/` registry bug to ProUI.
+1. Report the `/r/r/` registry bug to ProUI (§4).
 2. Learning in the UI: a tray-level "re-apply learned" (`resuggest` with `all: true`) and a
    learning on/off switch in Settings (`learning_enabled` already exists in the config API).
 3. Optional, previously discussed: wrap as a real macOS app so it isn't a Terminal window; an

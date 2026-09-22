@@ -6,15 +6,14 @@ third-party files listed here.
 ## ProUI — `frontend/src/components/ui/*`
 
 Commercial component library (<https://pro-ui.dev>), installed from its shadcn-style registry
-with the owner's licence key. ProUI is paid software; using it requires a licence from ProUI, and its terms state that
-you may not "redistribute ProUI itself as a competing component library or template kit".
+with the project owner's licence. ProUI is paid software; its terms state that you may not
+"redistribute ProUI itself as a competing component library or template kit".
 
-These files are present in this repository at the project owner's decision. Anyone forking or
-copying this repository should assume the ProUI files are **not** theirs to reuse and should obtain
-their own ProUI licence, or replace them with the free shadcn/ui equivalents (MIT).
-
-If ProUI would rather these files were not published, open an issue and they will be removed and
-replaced with a setup step that fetches them from the registry instead.
+ProUI's owner agreed to this repository including the components the app genuinely uses, as long
+as the kit itself isn't bundled. Only those components are here, and the ProUI theme in
+`frontend/src/index.css` is trimmed to them. They are **not** licensed for reuse: anyone forking or
+copying this repository needs their own ProUI licence, or should replace them with the free
+shadcn/ui equivalents (MIT).
 
 Many ProUI components are adapted from shadcn/ui (<https://github.com/shadcn-ui/ui>),
 MIT licence, Copyright (c) 2023 shadcn.

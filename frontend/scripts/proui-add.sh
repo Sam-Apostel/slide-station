@@ -8,20 +8,29 @@
 # This fetches the items and their dependencies, points the dependencies at the local copies, and
 # hands those files to the CLI, which then installs files, npm packages and CSS as usual.
 # Once ProUI fixes the URL, `npx shadcn add @proui/<name>` works directly (see components.json).
+#
+# The ProUI theme (pro-theme) is left out by default: src/index.css holds a copy trimmed to the
+# components this repo ships (ProUI's owner asked us not to publish the whole kit), and letting the
+# CLI re-merge it would bring every component's styles back. Pass --with-theme only if a new
+# component needs theme rules that were trimmed — then trim src/index.css again before committing.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 [ -f .env.local ] || { echo "frontend/.env.local with PROUI_LICENSE_KEY is missing" >&2; exit 1; }
 set -a; . ./.env.local; set +a
 
-flags=(); names=()
-for a in "$@"; do [[ $a == -* ]] && flags+=("$a") || names+=("$a"); done
+flags=(); names=(); with_theme=0
+for a in "$@"; do
+  if [[ $a == --with-theme ]]; then with_theme=1
+  elif [[ $a == -* ]]; then flags+=("$a")
+  else names+=("$a"); fi
+done
 [ ${#names[@]} -gt 0 ] || { sed -n '2,3p' "$0"; exit 1; }
 
 tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
-python3 - "$tmp" "${names[@]}" <<'EOF'
+python3 - "$tmp" "$with_theme" "${names[@]}" <<'EOF'
 import json, os, re, sys, urllib.request
 
-out, names = sys.argv[1], sys.argv[2:]
+out, with_theme, names = sys.argv[1], sys.argv[2] == "1", sys.argv[3:]
 headers = {"Authorization": f"Bearer {os.environ['PROUI_LICENSE_KEY']}", "User-Agent": "shadcn"}
 local = lambda n: os.path.join(out, f"{n}.json")
 
@@ -38,6 +47,8 @@ def fetch(name):
         m = re.match(r"^(?:https://pro-ui\.dev/r/(?:r/)?|@proui/)([\w-]+?)(?:\.json)?$", d)
         if not m:
             deps.append(d)  # not a ProUI item: leave it for the CLI
+            continue
+        if m.group(1) == "pro-theme" and not with_theme:
             continue
         fetch(m.group(1))
         deps.append(local(m.group(1)))
