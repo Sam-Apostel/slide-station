@@ -18,7 +18,7 @@ import { PanelToggles, WindowTitlebar } from "@/components/window-titlebar";
 import { useSlideStation, type SlideStation } from "@/hooks/use-slide-station";
 import { useDesktop, useFolderDrop, type DesktopHandlers } from "@/hooks/use-desktop";
 import { needsReview, plural, type Source } from "@/lib/api";
-import { desktop } from "@/lib/desktop";
+import { desktop, isMac } from "@/lib/desktop";
 
 type Panels = { filmstrip: boolean; inspector: boolean };
 const ALL_PANELS: Panels = { filmstrip: true, inspector: true };
@@ -69,7 +69,13 @@ function SlideStationApp() {
   const [before, setBefore] = React.useState(false);
   // the neutral-point eyedropper: the next click on the photo sets the white balance
   const [picking, setPicking] = React.useState(false);
-  React.useEffect(() => setPicking(false), [app.sel, sessionId]);
+  // the crop tool: the photo shows uncropped with a crop frame over it until Done / Cancel
+  const [cropping, setCropping] = React.useState(false);
+  const [compare, setCompare] = React.useState(false);
+  React.useEffect(() => {
+    setPicking(false);
+    setCropping(false);
+  }, [app.sel, sessionId]);
   const [settingsOpen, setSettingsOpen] = React.useState(false);
   const [helpOpen, setHelpOpen] = React.useState(false);
   const [paletteOpen, setPaletteOpen] = React.useState(false);
@@ -171,7 +177,7 @@ function SlideStationApp() {
     toggleInspector,
     focusMode,
   };
-  useKeyboard(app, setBefore, () => setHelpOpen(true), () => setPaletteOpen(true), setPicking);
+  useKeyboard(app, setBefore, () => setHelpOpen(true), () => setPaletteOpen(true), setPicking, setCropping, setCompare);
   useDesktop(app, panels, handlers);
   const dropping = useFolderDrop((path) => importFolder(path));
 
@@ -270,7 +276,19 @@ function SlideStationApp() {
                 onBefore={setBefore}
                 onToggleScan={app.toggleScan}
                 onSplit={app.splitAt}
+                compare={compare}
+                onCompare={() => setCompare((v) => !v)}
+                onUndo={app.undo}
+                onRedo={app.redo}
                 slideMenu={slideMenu}
+                cropping={cropping}
+                onAngle={(a) => app.setParam("angle", Math.round(a * 10) / 10)}
+                onCropEnd={(rect, restoreAngle) => {
+                  setCropping(false);
+                  if (rect !== undefined) app.setParam("crop", rect, true);
+                  else if (restoreAngle !== undefined && restoreAngle !== (app.current?.params.angle ?? 0))
+                    app.setParam("angle", restoreAngle, true);
+                }}
                 picking={picking}
                 onPicked={(x, y) => {
                   setPicking(false);
@@ -297,6 +315,8 @@ function SlideStationApp() {
                     onClean={clean}
                     picking={picking}
                     onPick={() => setPicking((v) => !v)}
+                    cropping={cropping}
+                    onCrop={() => setCropping((v) => !v)}
                   />
                 </ResizablePanel>
               </>
@@ -378,9 +398,11 @@ function useKeyboard(
   openHelp: () => void,
   openPalette: () => void,
   setPicking: React.Dispatch<React.SetStateAction<boolean>>,
+  setCropping: React.Dispatch<React.SetStateAction<boolean>>,
+  setCompare: React.Dispatch<React.SetStateAction<boolean>>,
 ) {
-  const latest = React.useRef({ app, setBefore, openHelp, openPalette, setPicking });
-  latest.current = { app, setBefore, openHelp, openPalette, setPicking };
+  const latest = React.useRef({ app, setBefore, openHelp, openPalette, setPicking, setCropping, setCompare });
+  latest.current = { app, setBefore, openHelp, openPalette, setPicking, setCropping, setCompare };
 
   React.useEffect(() => {
     const isTextEntry = (t: EventTarget | null) =>
@@ -398,8 +420,19 @@ function useKeyboard(
         latest.current.openPalette();
         return;
       }
+      // ⌘Z / ⇧⌘Z (Ctrl on Windows / Linux): the slide's edit history, unless a text field has focus.
+      // In the desktop app the Edit menu catches these first and sends "undo" / "redo".
+      if ((isMac ? e.metaKey : e.ctrlKey) && !e.altKey && e.key.toLowerCase() === "z") {
+        if (isTextEntry(e.target) || modalOpen() || document.querySelector(".ss-crop")) return;
+        e.preventDefault();
+        if (e.shiftKey) latest.current.app.redo();
+        else latest.current.app.undo();
+        return;
+      }
       if (e.metaKey || e.ctrlKey || e.altKey) return;
       if (isTextEntry(e.target) || modalOpen()) return;
+      // the crop tool takes Enter / Esc itself; nothing else may change the slide under it
+      if (document.querySelector(".ss-crop")) return;
       const { app: a, setBefore: sb, openHelp: help } = latest.current;
       const k = e.key;
       if (k === "?") {
@@ -418,6 +451,8 @@ function useKeyboard(
       else if (k === "c" || k === "C") a.copyPrev();
       else if (k === "0") a.resetColour();
       else if (k === "w" || k === "W") latest.current.setPicking((v) => !v);
+      else if (k === "k" || k === "K") latest.current.setCropping(true);
+      else if (k === "y" || k === "Y") latest.current.setCompare((v) => !v);
       else if (k === "Escape") latest.current.setPicking(false);
       else if (k === "f") a.fitCurves();
       else if (k === "F") a.fitCurves(true);

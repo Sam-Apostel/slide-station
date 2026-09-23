@@ -72,6 +72,47 @@ def group_sequence(sigs: list[np.ndarray], prev_group: list[np.ndarray] | None =
     return groups, continues
 
 
+# --------------------------------------------------------------------------- best of a bracket
+
+
+def scan_quality(rgb: np.ndarray) -> dict:
+    """Sharpness (independent of exposure) and how much of the frame is clipped, for one scan."""
+    g = cv2.cvtColor((np.clip(rgb, 0, 1) * 255).astype(np.uint8), cv2.COLOR_RGB2GRAY)
+    g = cv2.resize(g, (800, int(800 * g.shape[0] / g.shape[1])), interpolation=cv2.INTER_AREA)
+    h, w = g.shape
+    core = g[h // 10 : -h // 10, w // 10 : -w // 10].astype(np.float32)
+    lit = core[(core > 12) & (core < 243)]  # detail can only show where nothing is clipped
+    clipped = 1 - lit.size / core.size
+    if lit.size < core.size * 0.05:
+        return {"sharp": 0.0, "clipped": round(float(clipped), 3)}
+    lap = cv2.Laplacian(cv2.GaussianBlur(core, (0, 0), 0.8), cv2.CV_32F)
+    mask = (core > 12) & (core < 243)
+    # edge energy relative to local contrast, so a darker exposure of a sharp slide still scores high
+    sharp = float(np.abs(lap[mask]).mean() / (lit.std() + 1e-3))
+    return {"sharp": round(sharp, 4), "clipped": round(float(clipped), 3)}
+
+
+BLURRY = 0.6  # below this share of the stack's sharpest scan, a scan is left out
+CLIPPED = 0.85
+
+
+def weak_scans(q: list[dict]) -> dict[int, str]:
+    """Which scans of a bracket to leave out, and why ("blurry" / "clipped"). Always keeps one."""
+    if len(q) < 2:
+        return {}
+    best = max(x["sharp"] for x in q) or 1
+    out = {}
+    for i, x in enumerate(q):
+        if x["clipped"] > CLIPPED:
+            out[i] = "clipped"
+        elif x["sharp"] < BLURRY * best:
+            out[i] = "blurry"
+    if len(out) == len(q):
+        keep = max(range(len(q)), key=lambda i: q[i]["sharp"])
+        out.pop(keep)
+    return out
+
+
 # --------------------------------------------------------------------------- rotation
 
 _MODEL = str(Path(__file__).parent / "models" / "face_detection_yunet_2023mar.onnx")
@@ -177,6 +218,8 @@ class Params:
     trim: bool = True  # crop dark slide-mount edges
     # point curves per channel: {"rgb"|"r"|"g"|"b": [[x, y], ...]} in 0..1; a missing channel is straight
     curves: dict = field(default_factory=dict)
+    angle: float = 0.0  # straighten, degrees clockwise (-15..15), zoomed in so no corners show
+    crop: list | None = None  # [left, top, right, bottom] in 0..1 of the straightened frame
 
     @classmethod
     def from_dict(cls, d: dict | None) -> "Params":
@@ -184,6 +227,8 @@ class Params:
         for k, v in (d or {}).items():
             if k == "curves":
                 p.curves = clean_curves(v)
+            elif k == "crop":
+                p.crop = clean_crop(v)
             elif hasattr(p, k):
                 setattr(p, k, type(getattr(p, k))(v))
         return p
@@ -221,6 +266,12 @@ def auto_restore(a: np.ndarray, strength: float) -> np.ndarray:
 
 def trim_borders(a: np.ndarray, max_frac: float = 0.05) -> np.ndarray:
     """Remove dark mount edges (rows/cols that are much darker than the picture)."""
+    t, b, l, r = trim_bounds(a, max_frac)
+    return a[t:b, l:r]
+
+
+def trim_bounds(a: np.ndarray, max_frac: float = 0.05) -> tuple[int, int, int, int]:
+    """(top, bottom, left, right) slice bounds that trim_borders keeps."""
     lum = a.mean(2)
     ref = float(np.median(lum))
     thr = min(0.12, ref * 0.35)
@@ -237,7 +288,7 @@ def trim_borders(a: np.ndarray, max_frac: float = 0.05) -> np.ndarray:
     b = cut(rows[::-1], int(h * max_frac))
     l = cut(cols, int(w * max_frac))
     r = cut(cols[::-1], int(w * max_frac))
-    return a[t : h - b or None, l : w - r or None]
+    return t, h - b, l, w - r
 
 
 # --------------------------------------------------------------------------- tone curves
@@ -313,10 +364,43 @@ def apply_curves(a: np.ndarray, curves: dict) -> np.ndarray:
     return out
 
 
-def tone_base(a: np.ndarray, p: Params) -> np.ndarray:
-    """The image the tone curve works on: auto-restored and trimmed, nothing else yet."""
+def clean_crop(v) -> list | None:
+    """[l, t, r, b] in 0..1, at least 5 % each way; the whole frame (or junk) means no crop."""
+    try:
+        l, t, r, b = (min(1.0, max(0.0, float(x))) for x in v)
+    except (TypeError, ValueError):
+        return None
+    if r - l < 0.05 or b - t < 0.05 or (l <= 0.001 and t <= 0.001 and r >= 0.999 and b >= 0.999):
+        return None
+    return [round(l, 4), round(t, 4), round(r, 4), round(b, 4)]
+
+
+def straighten(a: np.ndarray, angle: float) -> np.ndarray:
+    """Rotate by a small angle about the centre, zoomed just enough that no empty corner shows."""
+    if abs(angle) < 0.01:
+        return a
+    h, w = a.shape[:2]
+    th = np.deg2rad(abs(angle))
+    scale = np.cos(th) + np.sin(th) * max(w, h) / min(w, h)
+    m = cv2.getRotationMatrix2D((w / 2, h / 2), -angle, scale)
+    return cv2.warpAffine(a, m, (w, h), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REFLECT)
+
+
+def geometry(a: np.ndarray, p: Params, crop: bool = True) -> np.ndarray:
+    out = straighten(a, p.angle)
+    if crop and p.crop:
+        h, w = out.shape[:2]
+        l, t, r, b = p.crop
+        out = out[int(t * h) : max(int(t * h) + 1, int(b * h)), int(l * w) : max(int(l * w) + 1, int(r * w))]
+    return out
+
+
+def tone_base(a: np.ndarray, p: Params, crop: bool = True) -> np.ndarray:
+    """The image the tone curve works on: auto-restored, trimmed, straightened and cropped."""
     out = auto_restore(a, p.strength)
-    return trim_borders(out) if p.trim else out
+    if p.trim:
+        out = trim_borders(out)
+    return geometry(out, p, crop)
 
 
 def _inner(a: np.ndarray, frac: float = 0.03) -> np.ndarray:
@@ -378,8 +462,19 @@ def neutral_balance(a: np.ndarray, p: Params, x: float, y: float) -> tuple[float
     return round(warmth, 3), round(tint, 3)
 
 
-def develop(a: np.ndarray, p: Params) -> np.ndarray:
-    out = apply_curves(tone_base(a, p), p.curves)
+def before_view(a: np.ndarray, p: Params, crop: bool = True) -> np.ndarray:
+    """The untouched scan in the developed photo's exact frame (same trim, straighten and crop), so
+    before and after line up pixel for pixel in a split view."""
+    out = a
+    if p.trim:  # trim where the developed image trims, which is decided on the restored pixels
+        t, b, l, r = trim_bounds(auto_restore(a, p.strength))
+        out = a[t:b, l:r]
+    return geometry(out, p, crop)
+
+
+def develop(a: np.ndarray, p: Params, crop: bool = True) -> np.ndarray:
+    """crop=False: everything but the crop, for the crop tool to draw its frame over."""
+    out = apply_curves(tone_base(a, p, crop), p.curves)
     eps = 1e-5
     if p.warmth or p.tint:
         gam = np.array([1 - 0.25 * p.warmth, 1 + 0.25 * p.tint, 1 + 0.25 * p.warmth], np.float32)

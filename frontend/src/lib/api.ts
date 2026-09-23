@@ -10,8 +10,12 @@ export type Params = {
   saturation: number;
   trim: boolean;
   curves: Curves;
+  /** Straighten, degrees clockwise. */
+  angle: number;
+  /** [left, top, right, bottom], 0..1 of the straightened frame; null = whole frame. */
+  crop: [number, number, number, number] | null;
 };
-export type ParamKey = Exclude<keyof Params, "trim" | "curves">;
+export type ParamKey = Exclude<keyof Params, "trim" | "curves" | "crop" | "angle">;
 
 export type GroupStatus = "new" | "reviewed" | "uploaded" | "changed" | "skipped";
 
@@ -25,13 +29,24 @@ export type Group = {
   key: string;
   /** Changes when the tone curve's input does (scans, auto restore, trim) — the histogram cache key. */
   tone_key: string;
+  can_undo: boolean;
+  can_redo: boolean;
   rotation: number;
   rot_reason: string;
   params: Params;
   params_source: string;
+  /** Scans the import left out of the blend, and why ("blurry" / "clipped"). */
+  auto_excluded: Record<string, string>;
+  /** The original scans were deleted after upload ("keep originals" off): edits can't be exported. */
+  originals_missing: boolean;
   reviewed: boolean;
   skip: boolean;
   status: GroupStatus;
+  /** The slide's own date ("" = none) and caption. */
+  date: string;
+  caption: string;
+  /** The date it goes to Immich with: its own, or estimated from the dated slides around it. */
+  date_est: { value: string; source: "own" | "between" | "near" | "tray" | "scan"; from?: number[] };
 };
 
 export type Summary = {
@@ -112,8 +127,10 @@ export async function api<T = unknown>(method: string, url: string, body?: unkno
  * server has saved an edit. Never derive it from optimistic local params: the server renders what
  * it has saved, and an image cached under a key it doesn't match stays wrong.
  */
-export const previewUrl = (sid: string, g: Group, size: number, before = false) =>
-  `/api/sessions/${sid}/groups/${g.id}/preview.jpg?size=${size}&v=${g.key}${before ? "&before=1" : ""}`;
+export const previewUrl = (sid: string, g: Group, size: number, before = false, uncropped = false) =>
+  `/api/sessions/${sid}/groups/${g.id}/preview.jpg?size=${size}&v=${g.key}${before ? "&before=1" : ""}${
+    uncropped ? "&uncropped=1" : ""
+  }`;
 
 export const histogramUrl = (sid: string, g: Group) =>
   `/api/sessions/${sid}/groups/${g.id}/histogram?v=${g.tone_key}`;

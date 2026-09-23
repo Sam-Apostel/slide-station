@@ -96,9 +96,5 @@ export function WindowTitlebar({
 }
 
 export function AppMark() {
-  return (
-    <span aria-hidden className="relative block size-[16px] rounded-[3px] bg-primary">
-      <span className="absolute inset-x-[4px] inset-y-[4px] rounded-[1px] bg-(--ss-ink)" />
-    </span>
-  );
+  return <img src="./favicon.svg" alt="" aria-hidden className="block size-[18px]" />;
 }

@@ -8,6 +8,7 @@ import re
 import threading
 import time
 import uuid
+from datetime import datetime
 from pathlib import Path
 
 from .imaging import Params
@@ -190,35 +191,103 @@ def active_scans(g: dict) -> list[str]:
     return s or g["scans"][:1]
 
 
+NEUTRAL_EXTRAS = {"curves": {}, "angle": 0.0, "crop": None}
+
+
 def render_key(g: dict) -> str:
     """Identifies the exact output of a group; changes whenever the result would change."""
-    # straight curves are left out, so slides uploaded before curves existed don't become "changed"
-    params = {k: v for k, v in g["params"].items() if not (k == "curves" and not v)}
+    # settings still at their neutral value are left out, so slides uploaded before a setting
+    # existed (curves, straighten, crop) don't become "changed"
+    params = {k: v for k, v in g["params"].items() if not (k in NEUTRAL_EXTRAS and v == NEUTRAL_EXTRAS[k])}
     k = json.dumps([active_scans(g), g["rotation"], params], sort_keys=True)
     return hashlib.sha1(k.encode()).hexdigest()[:12]
 
 
 def tone_key(g: dict) -> str:
-    """Identifies the tone curve's input (what its histogram shows): scans, auto restore, trim."""
+    """Identifies the tone curve's input (what its histogram shows): scans, restore, trim, geometry."""
     p = g["params"]
-    k = json.dumps([active_scans(g), p.get("strength"), p.get("trim")])
+    k = json.dumps([active_scans(g), g["rotation"], p.get("strength"), p.get("trim"), p.get("angle", 0.0),
+                    p.get("crop")])
     return hashlib.sha1(k.encode()).hexdigest()[:12]
 
 
-def group_status(g: dict) -> str:
+# --------------------------------------------------------------------------- dates
+
+
+DATE_RE = re.compile(r"^(\d{4})(?:-(\d{1,2})(?:-(\d{1,2}))?)?$")
+
+
+def parse_date(v: str) -> tuple[datetime, int] | None:
+    """'1978', '1978-06' or '1978-06-14' -> (start of that period, precision 1..3)."""
+    m = DATE_RE.match((v or "").strip().replace("/", "-"))
+    if not m:
+        return None
+    y, mo, d = int(m[1]), int(m[2] or 1), int(m[3] or 1)
+    try:
+        return datetime(y, max(1, min(12, mo)), max(1, min(31, d))), 1 + bool(m[2]) + bool(m[3])
+    except ValueError:
+        return None
+
+
+def format_date(t: datetime, precision: int) -> str:
+    return t.strftime(["%Y", "%Y-%m", "%Y-%m-%d"][precision - 1])
+
+
+def slide_dates(d: dict) -> list[dict]:
+    """The date each slide goes to Immich with, and where it came from.
+
+    A slide's own date wins. Slides without one are estimated from the dated slides around them in
+    tray order — a tray is one stretch of time, so slides between an August 1978 and a July 1979
+    slide are interpolated between the two — then the tray's date, then (empty) the scan's EXIF."""
+    groups = d["groups"]
+    own = [parse_date(g.get("date", "")) for g in groups]
+    dated = [i for i, x in enumerate(own) if x]
+    tray = parse_date(d.get("date", ""))
+    out = []
+    for i, g in enumerate(groups):
+        if own[i]:
+            out.append({"value": format_date(*own[i]), "source": "own"})
+            continue
+        before = max((j for j in dated if j < i), default=None)
+        after = min((j for j in dated if j > i), default=None)
+        if before is not None and after is not None:
+            (t0, p0), (t1, p1) = own[before], own[after]
+            t = t0 + (t1 - t0) * ((i - before) / (after - before))
+            out.append({"value": format_date(t, min(p0, p1)), "source": "between", "from": [before, after]})
+        elif before is not None or after is not None:
+            j = before if before is not None else after
+            out.append({"value": format_date(*own[j]), "source": "near", "from": [j]})
+        elif tray:
+            out.append({"value": format_date(*tray), "source": "tray"})
+        else:
+            out.append({"value": "", "source": "scan"})
+    return out
+
+
+def meta_key(g: dict, date: dict) -> str:
+    """What besides the pixels goes to Immich with a slide: its date and caption."""
+    return hashlib.sha1(json.dumps([date.get("value", ""), g.get("caption", "")]).encode()).hexdigest()[:12]
+
+
+def group_status(g: dict, meta: str | None = None) -> str:
     if g.get("skip"):
         return "skipped"
     im = g.get("immich")
-    if im and im.get("key") == render_key(g):
+    if im and im.get("key") == render_key(g) and (meta is None or im.get("meta", meta) == meta):
         return "uploaded"
     if im:
         return "changed"
     return "reviewed" if g.get("reviewed") else "new"
 
 
+def statuses(d: dict) -> list[str]:
+    dates = slide_dates(d)
+    return [group_status(g, meta_key(g, dt)) for g, dt in zip(d["groups"], dates)]
+
+
 def summary(d: dict) -> dict:
     groups = d["groups"]
-    st = [group_status(g) for g in groups]
+    st = statuses(d)
     return {
         "id": d["id"],
         "name": d["name"],

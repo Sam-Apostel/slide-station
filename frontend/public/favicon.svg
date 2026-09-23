@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <!-- Slide Station: a slide mount with a sunset in its window, as in the app icon, simplified for 16-32 px -->
+  <defs>
+    <linearGradient id="mount" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#fac97a"/>
+      <stop offset="1" stop-color="#e49a2c"/>
+    </linearGradient>
+    <linearGradient id="sky" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#26346e"/>
+      <stop offset="1" stop-color="#f79646"/>
+    </linearGradient>
+    <clipPath id="window"><rect x="15" y="17" width="34" height="24" rx="2"/></clipPath>
+  </defs>
+  <rect x="9" y="3" width="50" height="50" rx="7" fill="#8f6424"/>
+  <rect x="4" y="8" width="52" height="52" rx="7" fill="url(#mount)"/>
+  <rect x="4.75" y="8.75" width="50.5" height="50.5" rx="6.5" fill="none" stroke="#ffecc4" stroke-opacity=".5" stroke-width="1.5"/>
+  <g clip-path="url(#window)">
+    <rect x="15" y="17" width="34" height="24" fill="url(#sky)"/>
+    <circle cx="37" cy="32" r="4.5" fill="#ffe296"/>
+    <path d="M15 33 C22 30 30 31 36 33 S46 34 49 32 V41 H15 Z" fill="#5c283c"/>
+    <path d="M15 37 C24 35 32 36.5 40 38 S47 38 49 37 V41 H15 Z" fill="#26122a"/>
+  </g>
+  <rect x="15" y="17" width="34" height="24" rx="2" fill="none" stroke="#50290a" stroke-opacity=".7" stroke-width="1.2"/>
+  <rect x="24" y="48" width="16" height="3" rx="1.5" fill="#8f5a14" fill-opacity=".45"/>
+</svg>

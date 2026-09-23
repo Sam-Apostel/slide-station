@@ -101,7 +101,13 @@ export function CommandPalette({
               keys: "⇧F",
               run: () => app.fitCurves(true),
             },
-            { id: "learned", label: "Use learned colour", icon: <Sparkles />, hidden: g.reviewed, run: app.resuggest },
+            { id: "learned", label: "Use learned colour", icon: <Sparkles />, hidden: g.reviewed, run: () => app.resuggest() },
+            {
+              id: "learned-all",
+              label: "Use learned colour on every slide to develop",
+              icon: <Sparkles />,
+              run: () => app.resuggest(true),
+            },
             { id: "rest", label: "Apply colour to the rest", icon: <Layers />, run: app.applyRest },
             {
               id: "skip",

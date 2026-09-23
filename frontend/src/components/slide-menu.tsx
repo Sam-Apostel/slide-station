@@ -60,7 +60,7 @@ export function SlideMenu({
             <ContextMenuShortcut>F</ContextMenuShortcut>
           </ContextMenuItem>
           {!g.reviewed && (
-            <ContextMenuItem onSelect={app.resuggest}>
+            <ContextMenuItem onSelect={() => app.resuggest()}>
               <Sparkles /> Use learned colour
             </ContextMenuItem>
           )}

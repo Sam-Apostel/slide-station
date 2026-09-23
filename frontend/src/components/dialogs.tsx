@@ -70,6 +70,8 @@ export function SettingsDialog({
   const [library, setLibrary] = React.useState("");
   const [keepOriginals, setKeepOriginals] = React.useState(true);
   const [keepExports, setKeepExports] = React.useState(false);
+  const [learning, setLearning] = React.useState(true);
+  const [learned, setLearned] = React.useState<{ examples: number; min_examples: number } | null>(null);
   const [test, setTest] = React.useState<{ ok?: boolean; message: string } | null>(null);
 
   React.useEffect(() => {
@@ -79,6 +81,8 @@ export function SettingsDialog({
     setLibrary(config.library);
     setKeepOriginals(config.keep_originals);
     setKeepExports(config.keep_exports);
+    setLearning(config.learning_enabled ?? true);
+    api<{ examples: number; min_examples: number }>("GET", "/api/learning").then(setLearned, () => setLearned(null));
     setTest(null);
     // only when the dialog opens; config is a new object on every poll
   }, [open]);
@@ -101,6 +105,7 @@ export function SettingsDialog({
         library: library.trim(),
         keep_originals: keepOriginals,
         keep_exports: keepExports,
+        learning_enabled: learning,
       });
       toast.success("Settings saved");
       onOpenChange(false);
@@ -173,6 +178,34 @@ export function SettingsDialog({
             <CheckRow id="cfg-keep-exp" checked={keepExports} onChange={setKeepExports}>
               Also keep the finished JPEGs locally (~6 MB per slide)
             </CheckRow>
+            <Field>
+              <CheckRow id="cfg-learn" checked={learning} onChange={setLearning}>
+                Learn from my edits and suggest settings for new slides
+              </CheckRow>
+              <FieldDescription className="flex items-center gap-2">
+                <span className="flex-1">
+                  {!learned
+                    ? "Every developed slide becomes an example."
+                    : learned.examples < learned.min_examples
+                      ? `${learned.examples} of ${learned.min_examples} developed slides needed before it suggests anything.`
+                      : `Learned from ${learned.examples} developed slides.`}
+                </span>
+                {!!learned?.examples && (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={async () => {
+                      await api("POST", "/api/learning/reset");
+                      setLearned({ ...learned, examples: 0 });
+                      toast("Forgot everything it learned");
+                    }}
+                  >
+                    Forget
+                  </Button>
+                )}
+              </FieldDescription>
+            </Field>
           </FieldGroup>
           <DialogFooter>
             <DialogClose asChild>
@@ -358,9 +391,17 @@ export const SHORTCUTS: [React.ReactNode, string][] = [
     </>,
     "Show before",
   ],
+  [<Kbd>Y</Kbd>, "Split view: before | after (drag the divider)"],
   [<Kbd>C</Kbd>, "Copy colour from previous slide"],
   [<Kbd>0</Kbd>, "Reset all adjustments"],
   [<Kbd>W</Kbd>, "White balance: click a neutral spot on the photo"],
+  [<Kbd>K</Kbd>, "Crop & straighten (Enter applies, Esc cancels)"],
+  [
+    <>
+      <Kbd>⌘ Z</Kbd> / <Kbd>⇧ ⌘ Z</Kbd>
+    </>,
+    "Undo / redo this slide's edits",
+  ],
   [<Kbd>F</Kbd>, "Fit the tone curves to the scan's data"],
   [<Kbd>⇧ F</Kbd>, "Fit the curves of every slide still to develop"],
   [<Kbd>X</Kbd>, "Skip slide (not uploaded)"],

@@ -332,7 +332,22 @@ function buildMenu() {
         ...(isMac ? [{ type: "separator" }, { role: "close" }] : []),
       ],
     },
-    { role: "editMenu" }, // copy/paste in text fields needs this on macOS
+    {
+      // Undo / Redo go to the UI, which undoes the text field being typed in or else the slide's
+      // last edit. The rest are the standard roles (copy/paste in text fields needs them on macOS).
+      label: "Edit",
+      submenu: [
+        { label: "Undo", accelerator: "CmdOrCtrl+Z", click: cmd("undo") },
+        { label: "Redo", accelerator: isMac ? "Shift+Cmd+Z" : "Ctrl+Y", click: cmd("redo") },
+        { type: "separator" },
+        { role: "cut" },
+        { role: "copy" },
+        { role: "paste" },
+        ...(isMac ? [{ role: "pasteAndMatchStyle" }] : []),
+        { role: "delete" },
+        { role: "selectAll" },
+      ],
+    },
     {
       label: "Slide",
       submenu: [
@@ -472,6 +487,8 @@ app.on("second-instance", () => {
 });
 
 app.whenReady().then(async () => {
+  // A packaged app gets its icon from the bundle; while developing, show it in the Dock too.
+  if (isMac && !app.isPackaged) app.dock?.setIcon(path.join(__dirname, "build", "icon.png"));
   buildMenu();
   registerIpc();
   createWindow();

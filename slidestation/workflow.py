@@ -20,7 +20,7 @@ from .imaging import Params
 from . import learning
 from .immich import Immich, ImmichError
 from .store import (Session, active_scans, add_to_index, group_status, imported_index, load_config, lock,
-                    render_key, sha1_file, slugify)
+                    meta_key, parse_date, render_key, sha1_file, slide_dates, slugify, statuses)
 
 VOLUMES = Path(os.environ.get("SLIDESTATION_VOLUMES", "/Volumes"))
 SCANNER_MODELS = {"RODFS50"}  # Kodak Slide N Scan
@@ -210,6 +210,16 @@ def import_scans(job: Job, sid: str, source: str) -> None:
         ids = [new_ids[i] for i in ig]
         extend = k == 0 and continues
         g = dict(last, scans=last["scans"] + ids) if extend else s.new_group(ids)
+        # best of the bracket: leave out scans that are blurry (the slide moved or the focus
+        # drifted) or almost entirely clipped; the user can put them back with 1-9
+        auto_out = {}
+        if len(g["scans"]) > 1 and not g.get("reviewed"):
+            qual = [im.scan_quality(im.load_rgb(str(s.cache / f"{x}.proxy.jpg"))) for x in g["scans"]]
+            auto_out = {g["scans"][i]: why for i, why in im.weak_scans(qual).items()}
+            # scans the user put back after an earlier import left them out stay in
+            manual_in = set(g.get("auto_excluded", {})) - set(g.get("excluded", []))
+            g["excluded"] = sorted(set(g.get("excluded", [])) | (set(auto_out) - manual_in))
+            g["auto_excluded"] = auto_out
         rot = None
         if not g["reviewed"] and g.get("rot_reason") != "manual":
             proxies = [im.load_rgb(str(s.cache / f"{x}.proxy.jpg")) for x in active_scans(g)]
@@ -225,6 +235,8 @@ def import_scans(job: Job, sid: str, source: str) -> None:
             if extend:
                 target = fresh.group(last["id"])
                 target["scans"] += ids
+                if "auto_excluded" in g:
+                    target["excluded"], target["auto_excluded"] = g["excluded"], g["auto_excluded"]
             else:
                 g["params"] = dict(fresh.data["defaults"])
                 fresh.data["groups"].append(g)
@@ -283,7 +295,7 @@ def fused_proxy(s: Session, g: dict) -> np.ndarray:
     return a
 
 
-def preview(s: Session, gid: str, size: int, before: bool = False) -> bytes:
+def preview(s: Session, gid: str, size: int, before: bool = False, uncropped: bool = False) -> bytes:
     g = s.group(gid)
     a = fused_proxy(s, g)
     if size <= 400:  # develop on a smaller image for thumbnails
@@ -291,8 +303,9 @@ def preview(s: Session, gid: str, size: int, before: bool = False) -> bytes:
         f = 480 / max(h, w)
         a = np.asarray(Image.fromarray((a * 255).astype(np.uint8)).resize((int(w * f), int(h * f)), Image.BILINEAR)).astype(np.float32) / 255
     a = im.rotate_arr(a, g["rotation"])
-    if not before:
-        a = im.develop(a, im.Params.from_dict(g["params"]))
+    p = im.Params.from_dict(g["params"])
+    # "before" is the untouched scan, but framed like the developed photo so the two line up
+    a = im.before_view(a, p, crop=not uncropped) if before else im.develop(a, p, crop=not uncropped)
     return im.to_jpeg_bytes(a, 85, size)
 
 
@@ -318,12 +331,12 @@ def update_session(sid: str, fn) -> Session:
 
 
 def _photo_datetime(s: Session, g: dict, index: int) -> datetime:
-    """Date override (YYYY, YYYY-MM or YYYY-MM-DD) keeps tray order by adding one minute per slide."""
-    d = (s.data.get("date") or "").strip()
-    if d:
-        parts = [int(x) for x in d.replace("/", "-").split("-") if x.strip()] + [1, 1]
-        base = datetime(parts[0], max(1, parts[1]), max(1, parts[2]), 12, 0, 0)
-        return datetime.fromtimestamp(base.timestamp() + 60 * index)
+    """The slide's own or estimated date (see store.slide_dates), one minute per slide to keep tray
+    order; the scan's EXIF time when nothing is known."""
+    est = slide_dates(s.data)[index]
+    parsed = parse_date(est["value"])
+    if parsed:
+        return datetime.fromtimestamp(parsed[0].replace(hour=12).timestamp() + 60 * index)
     t = s.data["scans"][active_scans(g)[0]]["taken"]
     try:
         return datetime.strptime(t, "%Y:%m:%d %H:%M:%S")
@@ -331,8 +344,12 @@ def _photo_datetime(s: Session, g: dict, index: int) -> datetime:
         return datetime.now()
 
 
+def slide_meta(s: Session, g: dict, index: int) -> str:
+    return meta_key(g, slide_dates(s.data)[index])
+
+
 def export_key(s: Session, g: dict, index: int) -> str:
-    return hashlib.sha1(f"{render_key(g)}|{s.data.get('date', '')}|{index}".encode()).hexdigest()[:12]
+    return hashlib.sha1(f"{render_key(g)}|{slide_meta(s, g, index)}|{index}".encode()).hexdigest()[:12]
 
 
 def export_fresh(s: Session, g: dict, index: int) -> bool:
@@ -341,6 +358,12 @@ def export_fresh(s: Session, g: dict, index: int) -> bool:
 
 
 _export_lock = threading.Lock()
+
+
+def originals_missing(s: Session, g: dict) -> bool:
+    """With "keep originals" off they're deleted after upload: such a slide can still be previewed
+    (from the cached proxies) but not rendered at full resolution again."""
+    return any(not s.original_path(x).exists() for x in active_scans(g))
 
 
 def render_export(sid: str, gid: str, quality: int) -> Path | None:
@@ -361,6 +384,8 @@ def render_export(sid: str, gid: str, quality: int) -> Path | None:
     exif = Image.open(s.original_path(scans[0])).getexif()
     exif[274] = 1  # orientation: pixels are already upright
     exif[305] = "Slide Station"
+    if g.get("caption"):
+        exif[270] = g["caption"]  # ImageDescription: Immich shows it as the photo's description
     when = _photo_datetime(s, g, index).strftime("%Y:%m:%d %H:%M:%S")
     exif[306] = when
     sub = exif.get_ifd(0x8769)
@@ -400,7 +425,7 @@ def _background_renderer():
             s = Session(active_session)
             for i, g in enumerate(s.data["groups"]):
                 if (g.get("reviewed") and not g.get("skip") and group_status(g) != "uploaded"
-                        and not export_fresh(s, g, i)):
+                        and not export_fresh(s, g, i) and not originals_missing(s, g)):
                     render_export(s.id, g["id"], int(load_config().get("jpeg_quality", 95)))
                     break
         except Exception as e:  # never let the helper thread die
@@ -417,8 +442,11 @@ def finish_session(job: Job, sid: str, only_ready: bool = False) -> None:
     cfg = load_config()
     s = Session(sid)
     redate = s.data.get("date_key") != s.data.get("date")  # date changed: every slide needs new EXIF
-    todo = [g["id"] for g in s.data["groups"] if not g.get("skip") and (redate or group_status(g) != "uploaded")
+    st = dict(zip((g["id"] for g in s.data["groups"]), statuses(s.data)))
+    todo = [g["id"] for g in s.data["groups"] if not g.get("skip") and (redate or st[g["id"]] != "uploaded")
             and (g.get("reviewed") or not only_ready)]
+    lost = [g["id"] for g in s.data["groups"] if g["id"] in todo and originals_missing(s, g)]
+    todo = [x for x in todo if x not in lost]  # nothing to render them from: keep what Immich has
     job.total = len(todo) * 2
     client = Immich(cfg["immich_url"], cfg["immich_key"])
     try:
@@ -449,12 +477,14 @@ def finish_session(job: Job, sid: str, only_ready: bool = False) -> None:
             client.add_to_album(album, [asset_id])
             rkey = g["export"]["key"]
 
-            def commit(fresh: Session, asset_id=asset_id, status=status, rkey=rkey):
+            meta = slide_meta(s, g, idx)
+
+            def commit(fresh: Session, asset_id=asset_id, status=status, rkey=rkey, meta=meta):
                 fg = fresh.group(gid)
                 old = (fg.get("immich") or {}).get("asset_id")
                 if old and old != asset_id:
                     to_trash.append(old)
-                fg["immich"] = {"asset_id": asset_id, "key": rkey, "status": status}
+                fg["immich"] = {"asset_id": asset_id, "key": rkey, "status": status, "meta": meta}
 
             update_session(sid, commit)
             if not cfg.get("keep_exports", False):
@@ -477,7 +507,8 @@ def finish_session(job: Job, sid: str, only_ready: bool = False) -> None:
         client.trash(to_trash)
         if not cfg.get("keep_originals", True):
             _drop_local_originals(Session(sid))
-        job.message = f"Done - {uploaded} slides uploaded to '{s.data['album']}'"
+        job.message = f"Done - {uploaded} slides uploaded to '{s.data['album']}'" + (
+            f"; {len(lost)} skipped: their original scans were deleted after the last upload" if lost else "")
     finally:
         client.close()
 

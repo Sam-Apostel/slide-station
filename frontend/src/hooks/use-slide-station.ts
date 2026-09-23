@@ -250,7 +250,9 @@ export function useSlideStation() {
   const copyPrev = () => {
     const { session: s, sel: i } = ref.current;
     if (!s || i === 0) return;
-    patchGroup({ params: { ...s.groups[i - 1].params } });
+    // colour only: crop and straighten belong to each slide
+    const { crop: _c, angle: _a, ...colour } = s.groups[i - 1].params;
+    patchGroup({ params: colour });
     toast(`Copied colour from slide ${i}`);
   };
 
@@ -278,13 +280,20 @@ export function useSlideStation() {
     }
   };
 
-  const resuggest = async () => {
+  /** What past edits suggest, for this slide or every slide still to develop in the tray. */
+  const resuggest = async (all = false) => {
     const url = groupUrl();
     if (!url) return;
     try {
-      const p = await api<SessionPayload & { applied: number }>("POST", `${url}/resuggest`, {});
+      const p = await api<SessionPayload & { applied: number }>("POST", `${url}/resuggest`, { all });
       applyPayload(p);
-      toast(p.applied ? "Applied the learned colour settings" : "Not enough similar approved slides to learn from yet");
+      toast(
+        p.applied
+          ? all
+            ? `Applied learned settings to ${plural(p.applied, "slide")}`
+            : "Applied the learned colour settings"
+          : "Not enough similar developed slides to learn from yet",
+      );
     } catch (e) {
       fail(e);
     }
@@ -318,6 +327,34 @@ export function useSlideStation() {
       fail(e);
     }
   };
+
+  const STEP_LABEL: Record<string, string> = {
+    rotation: "rotation",
+    fit: "curve fit",
+    neutral: "white balance pick",
+    learned: "learned settings",
+    apply: "applied settings",
+  };
+  /** Step this slide's look back / forward (settings + rotation, drags count as one step). */
+  const step = async (direction: "undo" | "redo") => {
+    const url = groupUrl();
+    const g = ref.current.session?.groups[ref.current.sel];
+    if (!url || !g) return;
+    if (unsaved.current.has(g.id)) await flushParams(g.id); // a pending drag is the step to undo
+    try {
+      const p = await api<SessionPayload & { stepped: string | null }>("POST", `${url}/${direction}`);
+      applyPayload(p);
+      if (!p.stepped) return void toast(direction === "undo" ? "Nothing to undo on this slide" : "Nothing to redo");
+      const what = p.stepped.startsWith("params:")
+        ? p.stepped.slice(7).split(",").join(", ")
+        : (STEP_LABEL[p.stepped] ?? p.stepped);
+      toast(`${direction === "undo" ? "Undid" : "Redid"} ${what}`, { duration: 1500 });
+    } catch (e) {
+      fail(e);
+    }
+  };
+  const undo = () => step("undo");
+  const redo = () => step("redo");
 
   // ---------------------------------------------------------------- tray
 
@@ -411,6 +448,9 @@ export function useSlideStation() {
     resuggest,
     fitCurves,
     pickNeutral,
+    patchGroup,
+    undo,
+    redo,
     patchSession,
     startImport,
     createSession,

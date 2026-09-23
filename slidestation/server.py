@@ -1,8 +1,10 @@
 """HTTP API + static UI. Run with:  python -m slidestation"""
 from __future__ import annotations
 
+import json
 import os
 import threading
+import time
 import webbrowser
 from pathlib import Path
 
@@ -15,8 +17,8 @@ from . import workflow as wf
 from . import imaging as im
 from .imaging import Params
 from .immich import Immich, ImmichError
-from .store import (Session, active_scans, group_status, load_config, lock, render_key, save_config, summary,
-                    tone_key)
+from .store import (Session, active_scans, load_config, lock, parse_date, render_key, save_config, slide_dates,
+                    statuses, summary, tone_key)
 
 app = FastAPI(title="Slide Station")
 # The UI is the React app in frontend/; its build is committed to slidestation/web so
@@ -76,6 +78,9 @@ def immich_test(body: dict = Body(default={})):
 # --------------------------------------------------------------------------- sessions
 
 
+FRAMING = {"angle": 0.0, "crop": None}
+
+
 def _learn(s: Session, g: dict) -> None:
     """Remember an approved slide's settings; drop it again if it gets skipped."""
     if not load_config().get("learning_enabled", True) or not g.get("feat"):
@@ -90,14 +95,23 @@ def _learn(s: Session, g: dict) -> None:
 def _session_payload(s: Session) -> dict:
     d = s.data
     groups = []
+    dates = slide_dates(d)
+    st = statuses(d)
     for i, g in enumerate(d["groups"]):
         groups.append({
             **{k: g[k] for k in ("id", "scans", "excluded", "rotation", "rot_reason", "params", "reviewed", "skip")},
             "params_source": g.get("params_source", ""),
-            "status": group_status(g),
+            "auto_excluded": g.get("auto_excluded", {}),  # scan -> "blurry" / "clipped"
+            "originals_missing": wf.originals_missing(s, g),
+            "status": st[i],
+            "date": g.get("date", ""),
+            "caption": g.get("caption", ""),
+            "date_est": dates[i],  # {"value", "source": own|between|near|tray|scan, "from": [indices]}
             "active": active_scans(g),
             "key": render_key(g),  # preview cache key: the UI must use this, not its own guess
             "tone_key": tone_key(g),  # histogram cache key
+            "can_undo": bool((g.get("history") or {}).get("undo")),
+            "can_redo": bool((g.get("history") or {}).get("redo")),
             "index": i,
         })
     return {
@@ -145,11 +159,75 @@ def import_into(sid: str, body: dict = Body(...)):
     return {"ok": True}
 
 
+HISTORY_MAX = 60
+COALESCE_S = 1.5  # edits to the same settings closer together than this are one undo step
+
+
+def _snapshot(g: dict) -> dict:
+    return {"params": json.loads(json.dumps(g["params"])), "rotation": g["rotation"],
+            "rot_reason": g.get("rot_reason", ""), "params_source": g.get("params_source", "")}
+
+
+def _remember(g: dict, what: str) -> None:
+    """Push the slide's look before an edit onto its undo stack (a slider drag is one step)."""
+    h = g.setdefault("history", {"undo": [], "redo": []})
+    now = time.time()
+    last = h["undo"][-1] if h["undo"] else None
+    if last and last.get("what") == what and now - last.get("t", 0) < COALESCE_S:
+        last["t"] = now  # same drag: keep the state from before it started
+    else:
+        h["undo"] = (h["undo"] + [{**_snapshot(g), "what": what, "t": now}])[-HISTORY_MAX:]
+    h["redo"] = []
+
+
+def _restore(g: dict, snap: dict) -> None:
+    g["params"], g["rotation"] = snap["params"], snap["rotation"]
+    g["rot_reason"], g["params_source"] = snap.get("rot_reason", ""), snap.get("params_source", "")
+
+
+@app.post("/api/sessions/{sid}/groups/{gid}/undo")
+def undo(sid: str, gid: str):
+    return _step(sid, gid, "undo")
+
+
+@app.post("/api/sessions/{sid}/groups/{gid}/redo")
+def redo(sid: str, gid: str):
+    return _step(sid, gid, "redo")
+
+
+def _step(sid: str, gid: str, direction: str):
+    """Step a slide's look (settings + rotation) back or forward through its history."""
+    with lock:
+        s = _session(sid)
+        g = s.group(gid)
+        h = g.setdefault("history", {"undo": [], "redo": []})
+        src, dst = (h["undo"], h["redo"]) if direction == "undo" else (h["redo"], h["undo"])
+        if not src:
+            return {**_session_payload(s), "stepped": None}
+        snap = src.pop()
+        dst.append({**_snapshot(g), "what": snap.get("what"), "t": 0})
+        _restore(g, snap)
+        _learn(s, g)
+        s.save()
+    return {**_session_payload(s), "stepped": snap.get("what")}
+
+
+def _edit_label(body: dict) -> str | None:
+    if "rotation" in body:
+        return "rotation"
+    if "params" in body:
+        return "params:" + ",".join(sorted(body["params"]))
+    return None
+
+
 @app.patch("/api/sessions/{sid}/groups/{gid}")
 def patch_group(sid: str, gid: str, body: dict = Body(...)):
     with lock:
         s = _session(sid)
         g = s.group(gid)
+        what = _edit_label(body)
+        if what:
+            _remember(g, what)
         if "rotation" in body:
             g["rotation"] = int(body["rotation"]) % 360
             g["rot_reason"] = "manual"
@@ -159,6 +237,13 @@ def patch_group(sid: str, gid: str, body: dict = Body(...)):
         for k in ("reviewed", "skip"):
             if k in body:
                 g[k] = bool(body[k])
+        if "date" in body:
+            v = str(body["date"]).strip().replace("/", "-")
+            if v and not parse_date(v):
+                raise HTTPException(400, "Use a year, year-month or full date: 1978, 1978-06, 1978-06-14")
+            g["date"] = v
+        if "caption" in body:
+            g["caption"] = str(body["caption"]).strip()[:2000]
         _learn(s, g)
         if "excluded" in body:
             g["excluded"] = [x for x in body["excluded"] if x in g["scans"]]
@@ -213,9 +298,11 @@ def apply_params(sid: str, body: dict = Body(...)):
         start = s.group_index(body["from"]) if body.get("from") else 0
         for i, g in enumerate(s.data["groups"]):
             if body.get("scope") == "all" or (not g["reviewed"] and (body.get("scope") != "rest" or i > start)):
-                g["params"] = dict(p)
+                # colour carries over, framing (crop / straighten) is each slide's own
+                _remember(g, "apply")
+                g["params"] = {**p, **{k: g["params"].get(k, v) for k, v in FRAMING.items()}}
         if body.get("as_default"):
-            s.data["defaults"] = dict(p)
+            s.data["defaults"] = {**p, **FRAMING}
         s.save()
     return _session_payload(s)
 
@@ -243,6 +330,7 @@ def resuggest(sid: str, gid: str, body: dict = Body(default={})):
                 continue
             sug, n = learning.model().suggest(g["feat"])
             if sug:
+                _remember(g, "learned")
                 g["params"] = Params.from_dict({**g["params"], **sug}).to_dict()
                 g["params_source"] = f"learned:{n}"
                 n_applied += 1
@@ -267,6 +355,7 @@ def fit_curves(sid: str, gid: str, body: dict = Body(default={})):
         s = _session(sid)
         for fg in s.data["groups"]:
             if fg["id"] in fitted and active_scans(fg) == fitted[fg["id"]][0]:
+                _remember(fg, "fit")
                 fg["params"] = Params.from_dict({**fg["params"], "strength": 0, "curves": fitted[fg["id"]][1]}).to_dict()
                 fg["params_source"] = "manual"
                 _learn(s, fg)
@@ -285,6 +374,7 @@ def pick_neutral(sid: str, gid: str, body: dict = Body(...)):
     with lock:
         s = _session(sid)
         g = s.group(gid)
+        _remember(g, "neutral")
         g["params"] = Params.from_dict({**g["params"], "warmth": warmth, "tint": tint}).to_dict()
         g["params_source"] = "manual"
         _learn(s, g)
@@ -306,11 +396,11 @@ def group_histogram(sid: str, gid: str, v: str = ""):
 
 
 @app.get("/api/sessions/{sid}/groups/{gid}/preview.jpg")
-def group_preview(sid: str, gid: str, size: int = 1600, before: int = 0, v: str = ""):
+def group_preview(sid: str, gid: str, size: int = 1600, before: int = 0, uncropped: int = 0, v: str = ""):
     s = _session(sid)
     try:
         g = s.group(gid)
-        data = wf.preview(s, gid, min(size, 2400), bool(before))
+        data = wf.preview(s, gid, min(size, 2400), bool(before), bool(uncropped))
     except KeyError:
         raise HTTPException(404)
     # Only let the browser keep it if it is the render the URL names. A preview requested while
@@ -377,6 +467,17 @@ def index():
     if not (WEB / "index.html").exists():
         return Response("UI not built: run `npm install && npm run build` in frontend/", status_code=500)
     return FileResponse(WEB / "index.html", headers={"Cache-Control": "no-store"})
+
+
+# frontend/public: the favicons, served from the root like Vite does in development
+PUBLIC = ("favicon.svg", "favicon-32.png", "apple-touch-icon.png")
+
+
+@app.get("/{name}")
+def public_file(name: str):
+    if name not in PUBLIC or not (WEB / name).exists():
+        raise HTTPException(404)
+    return FileResponse(WEB / name, headers={"Cache-Control": "max-age=86400"})
 
 
 # Vite emits hashed ./assets/... files, so they can be cached forever.

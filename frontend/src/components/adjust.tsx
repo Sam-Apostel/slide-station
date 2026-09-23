@@ -1,5 +1,5 @@
 import * as React from "react";
-import { Copy, Layers, Pipette, RotateCcw, Sparkles } from "lucide-react";
+import { Pipette, RotateCcw } from "lucide-react";
 import { ProButton } from "@/components/ui/pro-button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
@@ -321,11 +321,14 @@ function BalancePad({
 
 function Section({
   title,
+  note,
   changed,
   onReset,
   children,
 }: {
   title: string;
+  /** A short state chip next to the title. */
+  note?: string;
   changed: boolean;
   onReset: () => void;
   children: React.ReactNode;
@@ -334,6 +337,8 @@ function Section({
     <div className="ss-adj-group">
       <div className="ss-adj-group-head">
         <span>{title}</span>
+        {note && <span className="ss-adj-note">{note}</span>}
+        <span className="flex-1" />
         {changed && (
           <Tip label={`Reset ${title.toLowerCase()}`}>
             <button type="button" aria-label={`Reset ${title.toLowerCase()}`} onClick={onReset}>
@@ -347,12 +352,6 @@ function Section({
   );
 }
 
-export function paramsNote(source: string) {
-  if (source.startsWith("learned:")) return `Learned from ${source.split(":")[1]} similar slides`;
-  if (source === "manual") return "Adjusted by hand";
-  return "Tray defaults";
-}
-
 const off = (v: number, d = 0) => Math.abs(v - d) > 0.004;
 
 /** How many adjustments differ from neutral, for the collapsed section's summary. */
@@ -361,7 +360,11 @@ export function adjustSummary(g: Group, defaults: Params) {
   const n =
     [off(p.brightness), off(p.contrast), off(p.saturation), off(p.warmth) || off(p.tint)].filter(Boolean).length +
     (off(p.strength, defaults.strength) ? 1 : 0);
-  const src = g.params_source.startsWith("learned:") ? "learned" : g.params_source === "manual" ? "by hand" : "defaults";
+  const src = g.params_source.startsWith("learned:")
+    ? `learned from ${g.params_source.split(":")[1]}`
+    : g.params_source === "manual"
+      ? "by hand"
+      : "tray defaults";
   return n ? `${src} · ${n} changed` : src;
 }
 
@@ -388,21 +391,10 @@ export function AdjustPanel({
   const curvesOn = CHANNELS.some((c) => !isStraight(p.curves?.[c]));
 
   return (
-    <div className="flex flex-col">
-      <div className="flex items-center gap-1.5 px-3 pt-2.5 pb-1 text-[11px] text-muted-foreground">
-        {g.params_source.startsWith("learned:") && <Sparkles className="size-3 text-primary" aria-hidden />}
-        <span className="min-w-0 flex-1 truncate">{paramsNote(g.params_source)}</span>
-        {!g.reviewed && (
-          <Tip label="Use what your developed slides suggest for this one">
-            <button type="button" className="ss-link" onClick={app.resuggest}>
-              Use learned
-            </button>
-          </Tip>
-        )}
-      </div>
-
+    <div className="flex flex-col pb-1">
       <Section
         title="Restore"
+        note={curvesOn && p.strength === 0 ? "by the tone curve" : undefined}
         changed={off(p.strength, d.strength) || p.trim !== d.trim}
         onReset={() => {
           app.setParam("strength", d.strength, true);
@@ -410,11 +402,7 @@ export function AdjustPanel({
         }}
       >
         <AdjustSlider spec={SPECS.strength} value={p.strength} resetValue={d.strength} onChange={set("strength")} />
-        {curvesOn && p.strength === 0 && (
-          <p className="-mt-1 text-[11px] leading-snug text-muted-foreground">
-            The tone curve is doing the restoring on this slide.
-          </p>
-        )}
+
         <div className="flex items-center gap-2">
           <Checkbox id="trim" checked={p.trim} onCheckedChange={(v) => app.setParam("trim", v === true, true)} />
           <Label htmlFor="trim" className="text-[12px] font-normal text-muted-foreground">
@@ -451,18 +439,6 @@ export function AdjustPanel({
         <AdjustSlider spec={SPECS.saturation} value={p.saturation} resetValue={0} onChange={set("saturation")} />
       </Section>
 
-      <div className="flex gap-1.5 px-3 pt-1 pb-3">
-        <Tip label="Copy all adjustments from the previous slide" keys="C">
-          <ProButton className="flex-1" onClick={app.copyPrev} disabled={app.sel === 0}>
-            <Copy /> Copy previous
-          </ProButton>
-        </Tip>
-        <Tip label="Apply to all following slides still to develop (and future imports)">
-          <ProButton className="flex-1" onClick={app.applyRest}>
-            <Layers /> Apply to rest
-          </ProButton>
-        </Tip>
-      </div>
     </div>
   );
 }

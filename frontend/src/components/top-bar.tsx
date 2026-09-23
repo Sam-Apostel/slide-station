@@ -6,7 +6,6 @@ import { desktop, isMac } from "@/lib/desktop";
 import { ProSeparator, ProToolbar } from "@/components/ui/pro-toolbar";
 import { ProTitlebarWell } from "@/components/ui/pro-titlebar";
 import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select";
-import { Progress } from "@/components/ui/progress";
 import { plural, sourceLabel, type AppState, type Source } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
@@ -78,29 +77,34 @@ export function ActivityWell({
       // sized to what it says, like the first version's scanner chip; a job gets room for its bar
       className={cn(
         "ss-well h-[28px] max-w-full flex-row gap-2 text-[12px]",
-        job ? "w-[300px] px-3" : "w-auto py-0 pr-[3px] pl-3",
+        job ? "relative w-[320px] px-3" : "w-auto py-0 pr-[3px] pl-3",
         className,
       )}
     >
       {job ? (
-        <div className="flex w-full min-w-0 flex-col gap-[3px]" role="status" aria-live="polite">
+        <>
+          {/* the pill itself is the progress bar: it fills up as the job goes */}
           <span
-            className={cn("truncate text-center font-medium", job.error ? "text-destructive" : "text-foreground/80")}
+            aria-hidden
+            className="ss-well-fill"
+            data-state={job.error ? "error" : job.finished ? "done" : job.total ? "running" : "waiting"}
+            style={{ width: `${job.error || job.finished ? 100 : job.total ? (100 * job.done) / job.total : 100}%` }}
+          />
+          <span
+            role="status"
+            aria-live="polite"
+            className={cn(
+              "relative min-w-0 flex-1 truncate text-center font-medium",
+              job.error ? "text-destructive" : "text-foreground/90",
+            )}
           >
             {job.error
               ? `Failed: ${job.error}`
               : job.finished
                 ? job.message
-                : `${job.message} (${job.done}/${job.total || "?"})`}
+                : `${job.message} · ${job.done}/${job.total || "?"}`}
           </span>
-          {!job.error && (
-            <Progress
-              aria-label="Job progress"
-              value={job.total ? (100 * job.done) / job.total : job.finished ? 100 : 5}
-              className="h-[3px]"
-            />
-          )}
-        </div>
+        </>
       ) : src ? (
         <>
           <span
@@ -149,9 +153,7 @@ export function TopBar({ panelToggles, ...props }: TopBarProps & { panelToggles?
   return (
     <ProToolbar className="gap-2">
       <div className="flex items-center gap-2 pr-2 text-[13px] font-semibold tracking-[0.01em] text-foreground/90">
-        <span aria-hidden className="relative size-[18px] rounded-[3px] bg-primary">
-          <span className="absolute inset-x-[4px] inset-y-[5px] rounded-[1px] bg-(--ss-ink)" />
-        </span>
+        <img src="./favicon.svg" alt="" aria-hidden className="size-[20px]" />
         Slide Station
       </div>
       <ProSeparator />

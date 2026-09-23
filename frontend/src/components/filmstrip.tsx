@@ -72,6 +72,7 @@ export function Filmstrip({
         <div className="text-[11px] text-muted-foreground">
           {plural(sm.slides, "slide")} · {plural(sm.scans, "scan")}
         </div>
+        <TrayGauge session={session} sel={sel} onSelect={onSelect} />
       </div>
       <ProScopebar role="toolbar" aria-label="Filter slides">
         {FILTERS.map(([f, label]) => (
@@ -80,7 +81,7 @@ export function Filmstrip({
           </ProScope>
         ))}
       </ProScopebar>
-      <div className="grid min-h-0 flex-1 auto-rows-min grid-cols-[repeat(auto-fill,minmax(104px,1fr))] gap-2 overflow-y-auto p-2 scrollbar-thin">
+      <div className="grid min-h-0 flex-1 auto-rows-min grid-cols-[repeat(auto-fill,minmax(104px,1fr))] gap-3 overflow-y-auto p-3 scrollbar-thin">
         {groups.map((g) => {
           const isSel = g.index === sel;
           const autoRot = g.rot_reason && g.rot_reason !== "manual" && g.rotation;
@@ -93,23 +94,31 @@ export function Filmstrip({
               onClick={() => onSelect(g.index)}
               aria-label={`Slide ${g.index + 1}, ${STATUS_LABEL[g.status]}`}
               aria-current={isSel || undefined}
-              className={cn(
-                "relative aspect-square cursor-default overflow-hidden rounded-[5px] bg-black outline-none",
-                "shadow-[inset_0_0_0_0.5px_#0008]",
-                isSel ? "ring-2 ring-primary" : "hover:ring-1 hover:ring-white/20",
-              )}
+              data-status={g.status}
+              className="ss-mount"
             >
-              <img
-                loading="lazy"
-                src={previewUrl(sessionId, g, 320)}
-                alt=""
-                draggable={false}
-                className={cn("absolute inset-0 size-full object-contain", g.skip && "opacity-25 grayscale")}
-              />
-              <span className="absolute top-[3px] left-1 text-[11px] text-white [text-shadow:0_1px_2px_#000]">
-                {g.index + 1}
+              {/* the mount's window, with the photo sunk into it */}
+              <span className="ss-mount-window">
+                <img
+                  loading="lazy"
+                  src={previewUrl(sessionId, g, 320)}
+                  alt=""
+                  draggable={false}
+                  onLoad={(e) => {
+                    const i = e.currentTarget;
+                    i.parentElement!.dataset.portrait = String(i.naturalHeight > i.naturalWidth);
+                  }}
+                  className={cn("size-full object-cover", g.skip && "opacity-25 grayscale")}
+                />
               </span>
-              <span className="absolute top-[3px] right-[3px] flex gap-[3px]">
+              <span className="ss-mount-number">{String(g.index + 1).padStart(2, "0")}</span>
+              {g.date_est?.value && (
+                // stamped on the mount like the lab did, dimmer when it's an estimate
+                <span className="ss-mount-year" data-estimated={g.date_est.source !== "own" || undefined}>
+                  ’{g.date_est.value.slice(2, 4)}
+                </span>
+              )}
+              <span className="absolute top-[5px] right-[5px] flex gap-[3px]">
                 {g.active.length > 1 && <TileBadge>HDR ×{g.active.length}</TileBadge>}
                 {autoRot ? (
                   <TileBadge title={`Auto-rotated (${g.rot_reason})`} className="text-primary">
@@ -119,10 +128,7 @@ export function Filmstrip({
               </span>
               <span
                 title={STATUS_LABEL[g.status]}
-                className={cn(
-                  "absolute bottom-1 left-1 size-[9px] rounded-full border-[1.5px] border-black/60",
-                  STATUS_DOT[g.status],
-                )}
+                className={cn("ss-mount-dot border-[1.5px] border-black/50", STATUS_DOT[g.status])}
               />
             </button>,
           );
@@ -134,6 +140,31 @@ export function Filmstrip({
         )}
       </div>
     </aside>
+  );
+}
+
+/**
+ * The tray seen from above: every slide stands on edge in its slot, coloured by where it is in the
+ * workflow. The current one is pulled up out of the tray. Click a slot to go to that slide.
+ */
+function TrayGauge({ session, sel, onSelect }: { session: SessionPayload; sel: number; onSelect: (i: number) => void }) {
+  const n = session.groups.length;
+  if (!n) return null;
+  return (
+    <div className="ss-tray" role="group" aria-label="Tray overview">
+      {session.groups.map((g) => (
+        <button
+          key={g.id}
+          type="button"
+          tabIndex={-1}
+          aria-label={`Slide ${g.index + 1}, ${STATUS_LABEL[g.status]}`}
+          data-status={g.status}
+          data-current={g.index === sel || undefined}
+          className="ss-tray-slide"
+          onClick={() => onSelect(g.index)}
+        />
+      ))}
+    </div>
   );
 }
 

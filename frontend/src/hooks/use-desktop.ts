@@ -71,6 +71,14 @@ export function useDesktop(
         case "reset-colour": return a.resetColour();
         case "skip": return a.toggleSkip();
         case "merge": return a.mergeNext();
+        // Edit → Undo / Redo: text fields keep their own undo, everything else is the slide's
+        case "undo":
+        case "redo": {
+          const t = document.activeElement;
+          const text = t instanceof HTMLElement && (t.isContentEditable || t.matches("textarea, input:not([type=range]):not([type=checkbox])"));
+          if (text) return void document.execCommand(name);
+          return name === "undo" ? a.undo() : a.redo();
+        }
       }
     });
   }, []);

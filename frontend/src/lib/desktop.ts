@@ -21,7 +21,9 @@ export type DesktopCommand =
   | "copy-prev"
   | "reset-colour"
   | "skip"
-  | "merge";
+  | "merge"
+  | "undo"
+  | "redo";
 
 export type MenuState = {
   hasTray: boolean;
