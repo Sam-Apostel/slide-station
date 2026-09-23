@@ -410,12 +410,15 @@ def _background_renderer():
 threading.Thread(target=_background_renderer, daemon=True).start()
 
 
-def finish_session(job: Job, sid: str) -> None:
-    """Export every slide that is not skipped and upload new/changed ones to the session's Immich album."""
+def finish_session(job: Job, sid: str, only_ready: bool = False) -> None:
+    """Export every slide that is not skipped and upload new/changed ones to the session's Immich album.
+
+    only_ready: just the slides marked developed; the others stay behind to keep working on."""
     cfg = load_config()
     s = Session(sid)
     redate = s.data.get("date_key") != s.data.get("date")  # date changed: every slide needs new EXIF
-    todo = [g["id"] for g in s.data["groups"] if not g.get("skip") and (redate or group_status(g) != "uploaded")]
+    todo = [g["id"] for g in s.data["groups"] if not g.get("skip") and (redate or group_status(g) != "uploaded")
+            and (g.get("reviewed") or not only_ready)]
     job.total = len(todo) * 2
     client = Immich(cfg["immich_url"], cfg["immich_key"])
     try:
@@ -437,7 +440,7 @@ def finish_session(job: Job, sid: str) -> None:
             except KeyError:  # merged away meanwhile
                 job.done += 1
                 continue
-            if not path or g.get("skip"):
+            if not path or g.get("skip") or (only_ready and not g.get("reviewed")):
                 job.done += 1
                 continue
             job.message = f"Uploading slide {n} of {len(todo)}"
@@ -466,7 +469,8 @@ def finish_session(job: Job, sid: str) -> None:
                 if g.get("skip") and g.get("immich"):
                     to_trash.append(g["immich"]["asset_id"])
                     g["immich"] = None
-            fresh.data["date_key"] = fresh.data.get("date")
+            if not only_ready or all(g.get("reviewed") or g.get("skip") for g in fresh.data["groups"]):
+                fresh.data["date_key"] = fresh.data.get("date")  # every slide now carries the date
             fresh.log(f"Uploaded {uploaded} slides to album '{fresh.data['album']}'")
 
         update_session(sid, tidy)

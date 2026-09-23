@@ -18,8 +18,10 @@ One window that takes a tray of slides from the scanner's SD card to an Immich a
    are detected and exposure-fused (Mertens) into one image.
 3. **Orient** — rotation guessed from faces (OpenCV YuNet) and, failing that, from where the sky is.
 4. **Restore** — auto colour restoration for faded film + manual sliders.
-5. **Review** — keyboard-first: →, Space, R, B, C, X, M, 1–9.
-6. **Upload** — full-resolution JPEG with EXIF date into a per-tray Immich album.
+5. **Develop** — keyboard-first: →, Space (develop = mark ready), R, B, C, X, M, F, 1–9. Tone curves
+   per channel, with "Fit to data" (F, ⇧F for the tray) pulling each channel's ends in to the scan.
+6. **Upload** — full-resolution JPEG with EXIF date into a per-tray Immich album; either only the
+   developed slides (the rest stay to work on) or everything.
 7. **Clean the card** — deletes only scans that still match verified local copies.
 
 Status: **working end to end** and tested (see §7). The owner has run it on his own Mac.
@@ -135,6 +137,27 @@ is fine; bundling the whole kit is not ("don't leak the product"). So, in this p
 - Git history was rewritten (2026-09-23) so no commit contains unused ProUI components or the
   old notes on fetching the registry. `NOTICE.md` records this.
 
+### Tone curves
+
+`Params.curves` = `{"rgb"|"r"|"g"|"b": [[x, y], ...]}` (0..1, missing channel = straight). Applied in
+`imaging.develop` right after `tone_base` (auto restore + trim), per-colour curves first, then RGB.
+The spline is a monotone cubic implemented twice — `imaging.curve_lut` and `frontend/src/lib/curves.ts`
+— keep them identical. `render_key` leaves out empty curves so slides uploaded before curves existed
+don't turn `changed`.
+
+- `GET …/histogram?v=<tone_key>`: histograms of the curve's input, cached by `tone_key` (scans,
+  strength, trim).
+- `POST …/fit_curves` (`{"all": true}` = every undeveloped slide): sets strength to 0 and puts each
+  colour channel's end points at its 0.1 / 99.9 percentile, keeping inner points and output levels.
+  Setting strength 0 is deliberate: the curves take over from auto restore, so the histogram shows
+  the scan itself.
+- Editor: `components/tone-curve.tsx`. Click adds, drag moves, double-click or dragging an inner
+  point out of the box removes. Curves are not learned by `learning.py` (only the sliders are).
+
+"Reviewed" is called **developed** in the UI (the Space button is "Develop"); the data field is
+still `reviewed`. `POST /finish {"only_ready": true}` uploads developed slides only;
+`summary.ready_upload` counts them.
+
 ## 4a. Desktop app (`desktop/`)
 
 Electron, plain CommonJS (no build step): `main.cjs` starts the Python server on a free port with
@@ -144,7 +167,9 @@ feature is behind `if (desktop)`, and the browser build is the same bundle.
 
 - `ProTitlebar` renders only in the desktop app (`components/window-titlebar.tsx`), as ProUI
   intends for Electron: drag region, `trafficLights={false}` because macOS draws the real ones
-  (`trafficLightPosition` in `main.cjs` centres them on the 34 px bar), `pro-no-drag` on controls.
+  (`trafficLightPosition` in `main.cjs` centres them on the 44 px bar), `pro-no-drag` on controls.
+  It is the desktop app's only bar: tray switcher + New tray, the activity well, panel toggles,
+  help and settings (the same pieces `TopBar` shows in a browser tab).
 - Menu → UI goes through `onCommand` (`hooks/use-desktop.ts`); UI → menu enabled/checked state
   through `setMenuState`. Single-letter shortcuts are menu *hints* only
   (`registerAccelerator: false`): the keyboard map in `App.tsx` stays the single source of truth.

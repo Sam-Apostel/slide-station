@@ -53,24 +53,39 @@ function useFullscreen() {
 }
 
 /**
- * The window's top edge in the desktop app: ProTitlebar as ProUI intends it for Electron — the bar
- * is the drag region, the OS draws the real window controls (`trafficLights={false}` with room left
- * for them on macOS, the caption-button overlay on the right elsewhere), and controls opt out of
- * dragging through `pro-no-drag` (ProButton does that itself).
+ * The window's top edge in the desktop app, and its only bar: ProTitlebar as ProUI intends it for
+ * Electron — the bar is the drag region, the OS draws the real window controls
+ * (`trafficLights={false}` with room left for them on macOS, the caption-button overlay on the
+ * right elsewhere), and controls opt out of dragging through `pro-no-drag` (ProButton does that
+ * itself). The tray switcher names the window, so there is no separate title.
  */
-export function WindowTitlebar({ title, detail, right }: { title: string; detail?: string; right?: React.ReactNode }) {
+export function WindowTitlebar({
+  title,
+  left,
+  center,
+  right,
+}: {
+  title: string;
+  left?: React.ReactNode;
+  center?: React.ReactNode;
+  right?: React.ReactNode;
+}) {
   const fullscreen = useFullscreen();
   return (
     <ProTitlebar
-      className="ss-titlebar"
+      // the left slot grows to hold the activity well, centred in the space between the two ends
+      className="ss-titlebar h-[44px] gap-2 [&_.pro-titlebar-left]:min-w-0 [&_.pro-titlebar-left]:flex-1"
       trafficLights={false}
-      // macOS traffic lights sit over this spacer (see trafficLightPosition in desktop/main.cjs)
-      left={isMac && !fullscreen ? <span className="block w-[64px]" /> : <AppMark />}
-      title={
-        <span className="flex items-center gap-1.5">
-          <span>{title}</span>
-          {detail && <span className="font-normal text-(--ss-dim)">— {detail}</span>}
-        </span>
+      title={<span className="sr-only">{title}</span>}
+      left={
+        <>
+          {/* macOS traffic lights sit over this spacer (see trafficLightPosition in desktop/main.cjs) */}
+          {isMac && !fullscreen ? <span className="block w-[64px] shrink-0" /> : <AppMark />}
+          {left}
+          <div className="pro-drag flex h-full min-w-0 flex-1 items-center justify-center px-2">
+            <div className="pro-no-drag flex w-full max-w-[440px] justify-center">{center}</div>
+          </div>
+        </>
       }
       right={
         // Windows / Linux draw their caption buttons over the right 140 px of the bar.

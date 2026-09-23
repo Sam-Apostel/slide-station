@@ -6,7 +6,7 @@ import { Kbd } from "@/components/ui/kbd";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/components/ui/resizable";
 import { ConfirmProvider, useConfirm } from "@/components/confirm";
-import { TopBar } from "@/components/top-bar";
+import { ActivityWell, AppActions, TopBar, TraySwitcher } from "@/components/top-bar";
 import { Filmstrip, type Filter } from "@/components/filmstrip";
 import { Stage } from "@/components/stage";
 import { Inspector } from "@/components/inspector";
@@ -121,14 +121,21 @@ function SlideStationApp() {
     openNew(src);
   };
 
-  const upload = async () => {
+  /**
+   * "ready": only the developed slides, the rest stay to work on. "all": everything not skipped,
+   * undeveloped slides with their automatic settings (asks first). Without a scope, the developed
+   * ones if there are any.
+   */
+  const upload = async (scope?: "ready" | "all") => {
     if (!session || !state) return;
     if (!state.config.has_key || !state.config.immich_url) return setSettingsOpen(true);
-    const unreviewed = session.groups.filter(needsReview).length;
+    const undeveloped = session.groups.filter(needsReview).length;
+    const ready = session.summary.ready_upload;
+    if ((scope ?? (ready ? "ready" : "all")) === "ready" && undeveloped) return app.startUpload(true);
     if (
-      unreviewed &&
+      undeveloped &&
       !(await confirm({
-        title: `${plural(unreviewed, "slide")} ${unreviewed === 1 ? "hasn't" : "haven't"} been reviewed yet`,
+        title: `${plural(undeveloped, "slide")} ${undeveloped === 1 ? "hasn't" : "haven't"} been developed yet`,
         description: "Upload them with the automatic settings anyway?",
         confirmLabel: "Upload anyway",
       }))
@@ -153,7 +160,8 @@ function SlideStationApp() {
     newTray: () => openNew(),
     importFrom: openImport,
     importFolder,
-    upload,
+    upload: () => upload(),
+    uploadAll: () => upload("all"),
     help: () => setHelpOpen(true),
     palette: () => setPaletteOpen(true),
     toggleFilmstrip,
@@ -172,7 +180,6 @@ function SlideStationApp() {
       onInspector={toggleInspector}
     />
   ) : null;
-  const todo = session ? session.groups.filter(needsReview).length : 0;
 
   // Panel widths are remembered per combination of visible panels; the key remounts the group
   // so showing or hiding a panel restores the widths saved for that combination.
@@ -186,35 +193,38 @@ function SlideStationApp() {
 
   return (
     <div className="flex h-dvh flex-col overflow-hidden bg-background text-foreground">
-      {desktop && (
+      {desktop ? (
         <WindowTitlebar
           title={session?.summary.name ?? "Slide Station"}
-          detail={
-            session
-              ? todo
-                ? `${plural(todo, "slide")} to review`
-                : session.summary.pending_upload
-                  ? `${session.summary.pending_upload} to upload`
-                  : session.summary.slides
-                    ? "all in Immich"
-                    : undefined
-              : undefined
+          left={
+            <TraySwitcher
+              state={state}
+              sessionId={sessionId}
+              onSelectSession={(id) => app.loadSession(id)}
+              onNewTray={() => openNew()}
+            />
           }
-          right={toggles}
+          center={<ActivityWell state={state} onImport={openImport} onEject={(src) => app.eject(src.path)} />}
+          right={
+            <>
+              {toggles}
+              <AppActions onHelp={() => setHelpOpen(true)} onSettings={() => setSettingsOpen(true)} />
+            </>
+          }
+        />
+      ) : (
+        <TopBar
+          panelToggles={toggles}
+          state={state}
+          sessionId={sessionId}
+          onSelectSession={(id) => app.loadSession(id)}
+          onNewTray={() => openNew()}
+          onImport={openImport}
+          onEject={(src) => app.eject(src.path)}
+          onHelp={() => setHelpOpen(true)}
+          onSettings={() => setSettingsOpen(true)}
         />
       )}
-      <TopBar
-        compact={!!desktop}
-        panelToggles={desktop ? null : toggles}
-        state={state}
-        sessionId={sessionId}
-        onSelectSession={(id) => app.loadSession(id)}
-        onNewTray={() => openNew()}
-        onImport={openImport}
-        onEject={(src) => app.eject(src.path)}
-        onHelp={() => setHelpOpen(true)}
-        onSettings={() => setSettingsOpen(true)}
-      />
 
       <main className="flex min-h-0 flex-1">
         {!state ? null : !hasTrays ? (
@@ -270,7 +280,14 @@ function SlideStationApp() {
                   maxSize={480}
                   groupResizeBehavior="preserve-pixel-size"
                 >
-                  <Inspector app={app} session={session} busy={busy} onUpload={upload} onClean={clean} />
+                  <Inspector
+                    app={app}
+                    session={session}
+                    sessionId={sessionId}
+                    busy={busy}
+                    onUpload={upload}
+                    onClean={clean}
+                  />
                 </ResizablePanel>
               </>
             )}
@@ -282,7 +299,11 @@ function SlideStationApp() {
         {session ? (
           <>
             <span>{plural(session.summary.slides, "slide")}</span>
-            <span>{session.summary.reviewed} reviewed</span>
+            {session.summary.slides > 0 && !session.groups.some(needsReview) ? (
+              <span className="ss-all-developed">✓ All developed</span>
+            ) : (
+              <span>{session.groups.filter(needsReview).length} to develop</span>
+            )}
             <span>{session.summary.uploaded} in Immich</span>
             {session.summary.skipped > 0 && <span>{session.summary.skipped} skipped</span>}
           </>
@@ -294,7 +315,7 @@ function SlideStationApp() {
             <Kbd>←</Kbd> <Kbd>→</Kbd> browse
           </span>
           <span>
-            <Kbd>Space</Kbd> looks good
+            <Kbd>Space</Kbd> develop
           </span>
           <span>
             <Kbd>?</Kbd> all shortcuts
@@ -385,6 +406,8 @@ function useKeyboard(
       else if (k === "m" || k === "M") a.mergeNext();
       else if (k === "c" || k === "C") a.copyPrev();
       else if (k === "0") a.resetColour();
+      else if (k === "f") a.fitCurves();
+      else if (k === "F") a.fitCurves(true);
       else if (k === "b" || k === "B") {
         if (!e.repeat) sb(true);
       } else if (/^[1-9]$/.test(k)) {

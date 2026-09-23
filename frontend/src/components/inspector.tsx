@@ -1,6 +1,18 @@
 import * as React from "react";
 import { toast } from "sonner";
-import { ArrowRight, FolderOpen, Merge, RotateCcw, RotateCw, SkipForward, Sparkles, Undo2, Upload } from "lucide-react";
+import {
+  Aperture,
+  ArrowRight,
+  CheckCheck,
+  FolderOpen,
+  Merge,
+  RotateCcw,
+  RotateCw,
+  SkipForward,
+  Sparkles,
+  Undo2,
+  Upload,
+} from "lucide-react";
 import { ProInspector, ProInspectorRow } from "@/components/ui/pro-inspector";
 import { ProDisclosureGroup } from "@/components/ui/pro-disclosure";
 import { ProSlider } from "@/components/ui/pro-slider";
@@ -11,7 +23,9 @@ import { Label } from "@/components/ui/label";
 import { Kbd } from "@/components/ui/kbd";
 import { Tip } from "@/components/tip";
 import { STATUS_LABEL } from "@/components/filmstrip";
-import type { ParamKey, SessionPayload } from "@/lib/api";
+import { ToneCurve } from "@/components/tone-curve";
+import { needsReview, plural, type ParamKey, type SessionPayload } from "@/lib/api";
+import { CHANNELS, isStraight } from "@/lib/curves";
 import type { SlideStation } from "@/hooks/use-slide-station";
 
 const SLIDERS: [ParamKey, string, number, number][] = [
@@ -30,7 +44,7 @@ function rotationNote(rotation: number, reason: string) {
   return `${rotation}°`;
 }
 
-type SectionId = "rotation" | "colour" | "slide" | "tray";
+type SectionId = "rotation" | "curve" | "colour" | "slide" | "tray";
 
 function storedSections(): Record<string, boolean> {
   try {
@@ -65,23 +79,32 @@ function paramsNote(source: string) {
   return "Tray defaults";
 }
 
+function curveNote(curves: Record<string, unknown> | undefined) {
+  const edited = CHANNELS.filter((c) => !isStraight(curves?.[c] as never));
+  if (!edited.length) return "straight";
+  return edited.map((c) => (c === "rgb" ? "RGB" : c.toUpperCase())).join(" · ");
+}
+
 export function Inspector({
   app,
   session,
+  sessionId,
   busy,
   onUpload,
   onClean,
 }: {
   app: SlideStation;
   session: SessionPayload;
+  sessionId: string;
   busy: boolean;
-  onUpload: () => void;
+  onUpload: (scope?: "ready" | "all") => void;
   onClean: () => void;
 }) {
   const { current: g, sel } = app;
   const sm = session.summary;
   const blockers = session.cleanup_blockers;
   const section = useSections();
+  const undeveloped = session.groups.filter(needsReview).length;
 
   return (
     <ProInspector className="size-full min-h-0 border-l border-border">
@@ -114,6 +137,18 @@ export function Inspector({
                 <span className="ml-auto text-[11px] text-muted-foreground">
                   {rotationNote(g.rotation, g.rot_reason)}
                 </span>
+              </div>
+            </ProDisclosureGroup>
+
+            <ProDisclosureGroup title="Tone curve" summary={curveNote(g.params.curves)} {...section("curve")}>
+              <div className="px-3 py-2.5">
+                <ToneCurve
+                  sessionId={sessionId}
+                  group={g}
+                  onChange={(c) => app.setParam("curves", c)}
+                  onFit={() => app.fitCurves()}
+                  onFitAll={() => app.fitCurves(true)}
+                />
               </div>
             </ProDisclosureGroup>
 
@@ -181,10 +216,18 @@ export function Inspector({
 
             <ProDisclosureGroup title="Slide" summary={STATUS_LABEL[g.status]} {...section("slide")}>
               <div className="flex flex-col gap-1.5 px-3 py-2.5">
-                <ProButton active size="md" fullWidth onClick={app.review}>
-                  Looks good <ArrowRight /> next
-                  <Kbd className="ml-1 opacity-70">Space</Kbd>
-                </ProButton>
+                <button
+                  type="button"
+                  className="ss-develop"
+                  data-done={g.reviewed || undefined}
+                  onClick={app.review}
+                  aria-label={g.reviewed ? "Developed, go to the next slide to develop" : "Develop and go to next"}
+                >
+                  {g.reviewed ? <CheckCheck aria-hidden /> : <Aperture aria-hidden />}
+                  <span>{g.reviewed ? "Developed" : "Develop"}</span>
+                  <ArrowRight aria-hidden className="ss-develop-arrow" />
+                  <Kbd>Space</Kbd>
+                </button>
                 <div className="flex gap-1.5">
                   <Tip label={g.skip ? "Unskip slide" : "Leave this slide out of the upload"} keys="X">
                     <ProButton className="flex-1" onClick={app.toggleSkip}>
@@ -204,7 +247,7 @@ export function Inspector({
 
         <ProDisclosureGroup
           title="Tray"
-          summary={`${sm.reviewed} / ${sm.slides} reviewed`}
+          summary={`${sm.reviewed} / ${sm.slides} developed`}
           showsBottomSeparator={false}
           {...section("tray")}
         >
@@ -222,7 +265,7 @@ export function Inspector({
             />
           </div>
           <div className="py-1">
-            <ProInspectorRow label="Reviewed" value={`${sm.reviewed} / ${sm.slides}`} />
+            <ProInspectorRow label="Developed" value={`${sm.reviewed} / ${sm.slides}`} />
             <ProInspectorRow label="In Immich" value={sm.uploaded} />
             <ProInspectorRow label="Skipped" value={sm.skipped} />
             <ProInspectorRow label="To upload" value={sm.pending_upload} />
@@ -232,14 +275,7 @@ export function Inspector({
 
       {/* Pinned so the way out of a tray is always one click away. */}
       <div className="flex shrink-0 flex-col gap-1.5 border-t border-border bg-(--ss-panel) px-3 pt-2.5 pb-3">
-        <ProButton active size="lg" fullWidth onClick={onUpload} disabled={!sm.pending_upload || busy}>
-          <Upload />
-          {!sm.slides
-            ? "Nothing to upload yet"
-            : sm.pending_upload
-              ? `Upload ${sm.pending_upload} slide${sm.pending_upload === 1 ? "" : "s"} to Immich`
-              : "Everything is in Immich"}
-        </ProButton>
+        <UploadArea sm={sm} undeveloped={undeveloped} busy={busy} onUpload={onUpload} />
         <div className="flex gap-1.5">
           <ProButton className="flex-1" onClick={onClean} disabled={blockers.length > 0 || busy || sm.card_cleaned}>
             Clean scanner card
@@ -257,6 +293,73 @@ export function Inspector({
         </p>
       </div>
     </ProInspector>
+  );
+}
+
+/**
+ * The way into Immich. Quiet while there's developing left to do; once every slide is developed it
+ * turns into the tray's finish line. Developed slides can go up early while the rest stay here.
+ */
+function UploadArea({
+  sm,
+  undeveloped,
+  busy,
+  onUpload,
+}: {
+  sm: SessionPayload["summary"];
+  undeveloped: number;
+  busy: boolean;
+  onUpload: (scope?: "ready" | "all") => void;
+}) {
+  if (!sm.slides || !sm.pending_upload) {
+    return (
+      <ProButton size="lg" fullWidth disabled>
+        <Upload />
+        {!sm.slides ? "Nothing to upload yet" : "Everything is in Immich"}
+      </ProButton>
+    );
+  }
+  if (!undeveloped) {
+    return (
+      <div className="ss-ready" role="status">
+        <div className="flex items-center gap-2 text-[12px]">
+          <CheckCheck className="size-4 shrink-0 text-primary" aria-hidden />
+          <span>
+            <b className="font-semibold text-foreground">All {plural(sm.slides - sm.skipped, "slide")} developed</b>
+            <span className="block text-[11px] text-muted-foreground">Ready for Immich</span>
+          </span>
+        </div>
+        <ProButton active size="lg" fullWidth className="ss-upload-ready" onClick={() => onUpload()} disabled={busy}>
+          <Upload />
+          Upload {plural(sm.pending_upload, "slide")} to Immich
+        </ProButton>
+      </div>
+    );
+  }
+  return (
+    <div className="flex flex-col gap-1">
+      {sm.ready_upload > 0 && (
+        <ProButton active size="lg" fullWidth onClick={() => onUpload("ready")} disabled={busy}>
+          <Upload />
+          Upload {plural(sm.ready_upload, "developed slide")}
+        </ProButton>
+      )}
+      <ProButton size={sm.ready_upload ? "md" : "lg"} fullWidth onClick={() => onUpload("all")} disabled={busy}>
+        {sm.ready_upload ? (
+          `Upload all ${sm.pending_upload}, undeveloped too`
+        ) : (
+          <>
+            <Upload /> Upload {plural(sm.pending_upload, "slide")} to Immich
+          </>
+        )}
+      </ProButton>
+      <p className="text-[11px] leading-snug text-muted-foreground">
+        {plural(undeveloped, "slide")} still to develop
+        {sm.ready_upload
+          ? " — uploading the developed ones leaves them here to keep working on."
+          : " — press Space on each one you're happy with."}
+      </p>
+    </div>
   );
 }
 

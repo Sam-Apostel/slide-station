@@ -345,7 +345,7 @@ export const SHORTCUTS: [React.ReactNode, string][] = [
     </>,
     "Previous / next slide",
   ],
-  [<Kbd>Space</Kbd>, "Looks good, go to next"],
+  [<Kbd>Space</Kbd>, "Develop (mark ready for Immich), go to next"],
   [
     <>
       <Kbd>R</Kbd> / <Kbd>⇧ R</Kbd>
@@ -360,6 +360,8 @@ export const SHORTCUTS: [React.ReactNode, string][] = [
   ],
   [<Kbd>C</Kbd>, "Copy colour from previous slide"],
   [<Kbd>0</Kbd>, "Reset colour"],
+  [<Kbd>F</Kbd>, "Fit the tone curves to the scan's data"],
+  [<Kbd>⇧ F</Kbd>, "Fit the curves of every slide still to develop"],
   [<Kbd>X</Kbd>, "Skip slide (not uploaded)"],
   [<Kbd>M</Kbd>, "Merge with next slide"],
   [

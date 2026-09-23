@@ -12,9 +12,11 @@ from fastapi.staticfiles import StaticFiles
 
 from . import learning
 from . import workflow as wf
+from . import imaging as im
 from .imaging import Params
 from .immich import Immich, ImmichError
-from .store import Session, active_scans, group_status, load_config, lock, render_key, save_config, summary
+from .store import (Session, active_scans, group_status, load_config, lock, render_key, save_config, summary,
+                    tone_key)
 
 app = FastAPI(title="Slide Station")
 # The UI is the React app in frontend/; its build is committed to slidestation/web so
@@ -95,6 +97,7 @@ def _session_payload(s: Session) -> dict:
             "status": group_status(g),
             "active": active_scans(g),
             "key": render_key(g),  # preview cache key: the UI must use this, not its own guess
+            "tone_key": tone_key(g),  # histogram cache key
             "index": i,
         })
     return {
@@ -247,6 +250,43 @@ def resuggest(sid: str, gid: str, body: dict = Body(default={})):
     return {**_session_payload(s), "applied": n_applied}
 
 
+@app.post("/api/sessions/{sid}/groups/{gid}/fit_curves")
+def fit_curves(sid: str, gid: str, body: dict = Body(default={})):
+    """Pull each colour channel's curve end points in to where the scan's data sits.
+
+    The curves take over from auto restore (strength 0), so the histogram behind them is the
+    scan itself. `all` fits every slide still to develop in the tray, each to its own data."""
+    s = _session(sid)
+    targets = [g for g in s.data["groups"] if not g.get("reviewed") and not g.get("skip")] if body.get("all") \
+        else [s.group(gid)]
+    fitted = {}
+    for g in targets:  # the slow part, outside the lock
+        p = Params.from_dict({**g["params"], "strength": 0})
+        fitted[g["id"]] = (active_scans(g), im.fit_curves(im.tone_base(wf.fused_proxy(s, g), p), p.curves))
+    with lock:
+        s = _session(sid)
+        for fg in s.data["groups"]:
+            if fg["id"] in fitted and active_scans(fg) == fitted[fg["id"]][0]:
+                fg["params"] = Params.from_dict({**fg["params"], "strength": 0, "curves": fitted[fg["id"]][1]}).to_dict()
+                fg["params_source"] = "manual"
+                _learn(s, fg)
+        s.save()
+    return {**_session_payload(s), "fitted": len(fitted)}
+
+
+@app.get("/api/sessions/{sid}/groups/{gid}/histogram")
+def group_histogram(sid: str, gid: str, v: str = ""):
+    """Histograms of what the tone curve works on, per channel."""
+    s = _session(sid)
+    try:
+        g = s.group(gid)
+    except KeyError:
+        raise HTTPException(404)
+    h = im.histogram(im.tone_base(wf.fused_proxy(s, g), Params.from_dict(g["params"])))
+    fresh = v and v == tone_key(g)
+    return JSONResponse(h, headers={"Cache-Control": "max-age=31536000" if fresh else "no-store"})
+
+
 @app.get("/api/sessions/{sid}/groups/{gid}/preview.jpg")
 def group_preview(sid: str, gid: str, size: int = 1600, before: int = 0, v: str = ""):
     s = _session(sid)
@@ -267,7 +307,8 @@ def scan_thumb(sid: str, scan: str):
 
 
 @app.post("/api/sessions/{sid}/finish")
-def finish(sid: str):
+def finish(sid: str, body: dict = Body(default={})):
+    """Upload to Immich. `only_ready`: just the developed slides, the rest stay to work on."""
     s = _session(sid)
     cfg = load_config()
     if not cfg.get("immich_url") or not cfg.get("immich_key"):
@@ -275,7 +316,7 @@ def finish(sid: str):
     if not s.data["groups"]:
         return _err(RuntimeError("Nothing to upload yet."))
     try:
-        wf.start_job("upload", sid, wf.finish_session, sid)
+        wf.start_job("upload", sid, wf.finish_session, sid, bool(body.get("only_ready")))
     except RuntimeError as e:
         return _err(e, 409)
     return {"ok": True}

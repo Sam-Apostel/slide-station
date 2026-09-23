@@ -1,4 +1,5 @@
 // Typed client for the Python API (slidestation/server.py).
+import type { Curves } from "@/lib/curves";
 
 export type Params = {
   strength: number;
@@ -8,8 +9,9 @@ export type Params = {
   tint: number;
   saturation: number;
   trim: boolean;
+  curves: Curves;
 };
-export type ParamKey = Exclude<keyof Params, "trim">;
+export type ParamKey = Exclude<keyof Params, "trim" | "curves">;
 
 export type GroupStatus = "new" | "reviewed" | "uploaded" | "changed" | "skipped";
 
@@ -21,6 +23,8 @@ export type Group = {
   active: string[];
   /** Server's render key for the current scans/rotation/params — the preview cache key. */
   key: string;
+  /** Changes when the tone curve's input does (scans, auto restore, trim) — the histogram cache key. */
+  tone_key: string;
   rotation: number;
   rot_reason: string;
   params: Params;
@@ -42,6 +46,8 @@ export type Summary = {
   uploaded: number;
   skipped: number;
   pending_upload: number;
+  /** Developed and not in Immich yet. */
+  ready_upload: number;
   card_cleaned: boolean;
   sources: string[];
 };
@@ -108,6 +114,9 @@ export async function api<T = unknown>(method: string, url: string, body?: unkno
  */
 export const previewUrl = (sid: string, g: Group, size: number, before = false) =>
   `/api/sessions/${sid}/groups/${g.id}/preview.jpg?size=${size}&v=${g.key}${before ? "&before=1" : ""}`;
+
+export const histogramUrl = (sid: string, g: Group) =>
+  `/api/sessions/${sid}/groups/${g.id}/histogram?v=${g.tone_key}`;
 
 export const scanThumbUrl = (sid: string, scan: string) => `/api/sessions/${sid}/scans/${scan}/thumb.jpg`;
 

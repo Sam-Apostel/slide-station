@@ -192,7 +192,16 @@ def active_scans(g: dict) -> list[str]:
 
 def render_key(g: dict) -> str:
     """Identifies the exact output of a group; changes whenever the result would change."""
-    k = json.dumps([active_scans(g), g["rotation"], g["params"]], sort_keys=True)
+    # straight curves are left out, so slides uploaded before curves existed don't become "changed"
+    params = {k: v for k, v in g["params"].items() if not (k == "curves" and not v)}
+    k = json.dumps([active_scans(g), g["rotation"], params], sort_keys=True)
+    return hashlib.sha1(k.encode()).hexdigest()[:12]
+
+
+def tone_key(g: dict) -> str:
+    """Identifies the tone curve's input (what its histogram shows): scans, auto restore, trim."""
+    p = g["params"]
+    k = json.dumps([active_scans(g), p.get("strength"), p.get("trim")])
     return hashlib.sha1(k.encode()).hexdigest()[:12]
 
 
@@ -222,6 +231,8 @@ def summary(d: dict) -> dict:
         "uploaded": st.count("uploaded"),
         "skipped": st.count("skipped"),
         "pending_upload": sum(1 for s in st if s in ("new", "reviewed", "changed")),
+        # developed (marked ready) and not in Immich yet: what "upload the ready ones" sends
+        "ready_upload": sum(1 for g, s in zip(groups, st) if g.get("reviewed") and s in ("reviewed", "changed")),
         "card_cleaned": d.get("card_cleaned", False),
         "sources": sorted({s.get("source_root", "") for s in d["scans"].values()}),
     }

@@ -1,9 +1,9 @@
 import * as React from "react";
 import { toast } from "sonner";
 import { desktop } from "@/lib/desktop";
-import { api, needsReview, type AppState, type Group, type Params, type SessionPayload } from "@/lib/api";
+import { api, needsReview, plural, type AppState, type Group, type Params, type SessionPayload } from "@/lib/api";
 
-const NEUTRAL = { brightness: 0, contrast: 0, warmth: 0, tint: 0, saturation: 0 };
+const NEUTRAL = { brightness: 0, contrast: 0, warmth: 0, tint: 0, saturation: 0, curves: {} };
 const POLL_MS = 2000;
 const PARAM_DEBOUNCE_MS = 140;
 
@@ -290,6 +290,22 @@ export function useSlideStation() {
     }
   };
 
+  /** Pull the curves' channel ends in to the scan's data: this slide, or every one still to develop. */
+  const fitCurves = async (all = false) => {
+    const url = groupUrl();
+    const g = ref.current.session?.groups[ref.current.sel];
+    if (!url || !g) return;
+    // a pending slider save would land after the fit and undo it
+    if (unsaved.current.has(g.id)) await flushParams(g.id);
+    try {
+      const p = await api<SessionPayload & { fitted: number }>("POST", `${url}/fit_curves`, { all });
+      applyPayload(p);
+      if (all) toast(`Fitted the curves of ${plural(p.fitted, "slide")}`);
+    } catch (e) {
+      fail(e);
+    }
+  };
+
   // ---------------------------------------------------------------- tray
 
   const patchSession = async (body: Record<string, string>) => {
@@ -325,9 +341,9 @@ export function useSlideStation() {
     }
   };
 
-  const startUpload = async () => {
+  const startUpload = async (onlyReady = false) => {
     try {
-      await api("POST", `/api/sessions/${ref.current.sessionId}/finish`);
+      await api("POST", `/api/sessions/${ref.current.sessionId}/finish`, { only_ready: onlyReady });
       refreshState();
     } catch (e) {
       fail(e);
@@ -380,6 +396,7 @@ export function useSlideStation() {
     resetColour,
     applyRest,
     resuggest,
+    fitCurves,
     patchSession,
     startImport,
     createSession,

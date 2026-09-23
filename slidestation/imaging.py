@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import io
-from dataclasses import dataclass, asdict
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 import cv2
@@ -175,12 +175,16 @@ class Params:
     tint: float = 0.0  # -1..1 (+ = magenta)
     saturation: float = 0.0  # -1..1
     trim: bool = True  # crop dark slide-mount edges
+    # point curves per channel: {"rgb"|"r"|"g"|"b": [[x, y], ...]} in 0..1; a missing channel is straight
+    curves: dict = field(default_factory=dict)
 
     @classmethod
     def from_dict(cls, d: dict | None) -> "Params":
         p = cls()
         for k, v in (d or {}).items():
-            if hasattr(p, k):
+            if k == "curves":
+                p.curves = clean_curves(v)
+            elif hasattr(p, k):
                 setattr(p, k, type(getattr(p, k))(v))
         return p
 
@@ -236,10 +240,129 @@ def trim_borders(a: np.ndarray, max_frac: float = 0.05) -> np.ndarray:
     return a[t : h - b or None, l : w - r or None]
 
 
-def develop(a: np.ndarray, p: Params) -> np.ndarray:
+# --------------------------------------------------------------------------- tone curves
+
+CURVE_CHANNELS = ("rgb", "r", "g", "b")
+LUT_SIZE = 1024
+
+
+def clean_curves(d) -> dict:
+    """Validate curves from the UI: sorted points in 0..1, distinct x, straight lines dropped."""
+    out = {}
+    for ch in CURVE_CHANNELS:
+        pts = (d or {}).get(ch) if isinstance(d, dict) else None
+        if not isinstance(pts, (list, tuple)):
+            continue
+        clean: list[list[float]] = []
+        for pt in sorted((min(1.0, max(0.0, float(x))), min(1.0, max(0.0, float(y)))) for x, y in pts[:16]):
+            if clean and pt[0] - clean[-1][0] < 0.004:
+                continue  # two points on one input value: keep the first
+            clean.append([round(pt[0], 4), round(pt[1], 4)])
+        if len(clean) >= 2 and clean != [[0.0, 0.0], [1.0, 1.0]]:
+            out[ch] = clean
+    return out
+
+
+def curve_lut(pts: list[list[float]], n: int = LUT_SIZE) -> np.ndarray:
+    """Monotone cubic (Fritsch-Carlson) through the points, flat beyond the end points, as a LUT.
+
+    Monotone so dragging a point never makes the curve overshoot and invert tones. The UI draws
+    the same spline (frontend/src/lib/curves.ts)."""
+    xs = np.array([p[0] for p in pts], np.float64)
+    ys = np.array([p[1] for p in pts], np.float64)
+    t = np.linspace(0, 1, n)
+    if len(xs) == 2:
+        return np.clip(np.interp(t, xs, ys), 0, 1).astype(np.float32)
+    h = np.diff(xs)
+    d = np.diff(ys) / h
+    m = np.empty_like(xs)
+    m[0], m[-1] = d[0], d[-1]
+    for i in range(1, len(xs) - 1):
+        m[i] = 0.0 if d[i - 1] * d[i] <= 0 else (d[i - 1] + d[i]) / 2
+    for i in range(len(d)):
+        if d[i] == 0:
+            m[i] = m[i + 1] = 0.0
+            continue
+        a, b = m[i] / d[i], m[i + 1] / d[i]
+        r = a * a + b * b
+        if r > 9:
+            k = 3 / np.sqrt(r)
+            m[i], m[i + 1] = k * a * d[i], k * b * d[i]
+    i = np.clip(np.searchsorted(xs, t, side="right") - 1, 0, len(xs) - 2)
+    u = np.clip((t - xs[i]) / h[i], 0, 1)
+    h00, h10, h01, h11 = 2 * u**3 - 3 * u**2 + 1, u**3 - 2 * u**2 + u, -2 * u**3 + 3 * u**2, u**3 - u**2
+    y = h00 * ys[i] + h10 * h[i] * m[i] + h01 * ys[i + 1] + h11 * h[i] * m[i + 1]
+    y = np.where(t <= xs[0], ys[0], np.where(t >= xs[-1], ys[-1], y))
+    return np.clip(y, 0, 1).astype(np.float32)
+
+
+def apply_curves(a: np.ndarray, curves: dict) -> np.ndarray:
+    """Per-channel curves first (they fix the cast), then the RGB curve on all three."""
+    if not curves:
+        return a
+    out = a
+    idx = lambda x: np.clip(x * (LUT_SIZE - 1) + 0.5, 0, LUT_SIZE - 1).astype(np.int32)
+    chans = [c for c in ("r", "g", "b") if c in curves]
+    if chans:
+        out = out.copy()
+        for c in chans:
+            k = "rgb".index(c)
+            out[..., k] = curve_lut(curves[c])[idx(out[..., k])]
+    if "rgb" in curves:
+        out = curve_lut(curves["rgb"])[idx(out)]
+    return out
+
+
+def tone_base(a: np.ndarray, p: Params) -> np.ndarray:
+    """The image the tone curve works on: auto-restored and trimmed, nothing else yet."""
     out = auto_restore(a, p.strength)
-    if p.trim:
-        out = trim_borders(out)
+    return trim_borders(out) if p.trim else out
+
+
+def _inner(a: np.ndarray, frac: float = 0.03) -> np.ndarray:
+    h, w = a.shape[:2]
+    m = int(min(h, w) * frac)
+    return a[m : h - m or None, m : w - m or None]
+
+
+HIST_BINS = 128
+
+
+def histogram(a: np.ndarray) -> dict:
+    """Per-channel histograms of the curve's input (away from the edges), for drawing behind it."""
+    s = cv2.resize(_inner(a), (360, int(360 * a.shape[0] / a.shape[1])), interpolation=cv2.INTER_AREA)
+    flat = s.reshape(-1, 3)
+    out = {}
+    for k, c in enumerate("rgb"):
+        out[c] = np.histogram(flat[:, k], HIST_BINS, (0, 1))[0].tolist()
+    out["lum"] = np.histogram(flat @ np.array([0.299, 0.587, 0.114], np.float32), HIST_BINS, (0, 1))[0].tolist()
+    return out
+
+
+def fit_curves(a: np.ndarray, curves: dict, clip: float = 0.1) -> dict:
+    """Pull each colour channel's end points in to where its data actually starts and ends.
+
+    Faded film leaves every channel squeezed into its own narrow band, each at a different place:
+    stretching them separately brings back blacks, whites and neutral colour. `clip` is the
+    percentage of pixels allowed to clip at each end. Points already inside the new range stay."""
+    s = _inner(a)
+    step = max(1, int(np.sqrt(s.shape[0] * s.shape[1] / 250_000)))
+    flat = s[::step, ::step].reshape(-1, 3)
+    lo = np.percentile(flat, clip, 0)
+    hi = np.percentile(flat, 100 - clip, 0)
+    out = dict(curves)
+    for k, c in enumerate("rgb"):
+        l, h = float(lo[k]), float(hi[k])
+        if h - l < 0.05:  # a nearly flat channel: stretching would only amplify noise
+            continue
+        old = curves.get(c) or [[0.0, 0.0], [1.0, 1.0]]
+        mid = [pt for pt in old[1:-1] if l < pt[0] < h]
+        out[c] = [[l, old[0][1]], *mid, [h, old[-1][1]]]  # output levels (a lifted black) stay
+    return clean_curves(out)
+
+
+def develop(a: np.ndarray, p: Params) -> np.ndarray:
+    out = apply_curves(tone_base(a, p), p.curves)
     eps = 1e-5
     if p.warmth or p.tint:
         gam = np.array([1 - 0.25 * p.warmth, 1 + 0.25 * p.tint, 1 + 0.25 * p.warmth], np.float32)

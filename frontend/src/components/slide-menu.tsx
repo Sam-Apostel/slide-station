@@ -1,5 +1,5 @@
 import type * as React from "react";
-import { ArrowRight, Copy, Merge, RotateCcw, RotateCw, SkipForward, Sparkles, Undo2 } from "lucide-react";
+import { Aperture, ArrowRight, Copy, Merge, RotateCcw, RotateCw, SkipForward, Sparkles, Undo2, Wand2 } from "lucide-react";
 import {
   ContextMenu,
   ContextMenuContent,
@@ -31,7 +31,7 @@ export function SlideMenu({
       {g && (
         <ContextMenuContent className="min-w-[210px]">
           <ContextMenuItem onSelect={app.review}>
-            <ArrowRight /> {g.reviewed ? "Next to review" : "Looks good"}
+            {g.reviewed ? <ArrowRight /> : <Aperture />} {g.reviewed ? "Next to develop" : "Develop"}
             <ContextMenuShortcut>Space</ContextMenuShortcut>
           </ContextMenuItem>
           <ContextMenuSeparator />
@@ -54,6 +54,10 @@ export function SlideMenu({
           <ContextMenuItem onSelect={app.resetColour}>
             <Undo2 /> Reset colour
             <ContextMenuShortcut>0</ContextMenuShortcut>
+          </ContextMenuItem>
+          <ContextMenuItem onSelect={() => app.fitCurves()}>
+            <Wand2 /> Fit curves to data
+            <ContextMenuShortcut>F</ContextMenuShortcut>
           </ContextMenuItem>
           {!g.reviewed && (
             <ContextMenuItem onSelect={app.resuggest}>

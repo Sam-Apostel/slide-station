@@ -8,7 +8,9 @@ export type DesktopHandlers = {
   newTray: () => void;
   importFrom: (src: Source) => void;
   importFolder: (path?: string) => void;
+  /** The developed slides if there are any, else everything (asking first). */
   upload: () => void;
+  uploadAll: () => void;
   help: () => void;
   palette: () => void;
   toggleFilmstrip: () => void;

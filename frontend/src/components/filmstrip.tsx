@@ -8,13 +8,13 @@ export type Filter = "all" | "todo" | "multi";
 
 const FILTERS: [Filter, string][] = [
   ["all", "All"],
-  ["todo", "To review"],
+  ["todo", "To develop"],
   ["multi", "HDR"],
 ];
 
 export const STATUS_LABEL: Record<GroupStatus, string> = {
-  new: "to review",
-  reviewed: "reviewed",
+  new: "to develop",
+  reviewed: "developed",
   uploaded: "in Immich",
   changed: "edited since upload",
   skipped: "skipped",

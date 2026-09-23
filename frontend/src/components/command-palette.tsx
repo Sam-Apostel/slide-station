@@ -1,5 +1,7 @@
 import * as React from "react";
 import {
+  Aperture,
+  Wand2,
   ArrowLeft,
   ArrowRight,
   Copy,
@@ -83,7 +85,7 @@ export function CommandPalette({
       "Slide",
       g
         ? [
-            { id: "review", label: "Looks good, next", icon: <ArrowRight />, keys: "Space", run: app.review },
+            { id: "review", label: "Develop, next", icon: <Aperture />, keys: "Space", run: app.review },
             { id: "next", label: "Next slide", icon: <ArrowRight />, keys: "→", run: () => app.select(sel + 1) },
             { id: "prev", label: "Previous slide", icon: <ArrowLeft />, keys: "←", run: () => app.select(sel - 1) },
             { id: "rot-r", label: "Rotate right", icon: <RotateCw />, keys: "R", run: () => app.rotate(90) },
@@ -91,6 +93,14 @@ export function CommandPalette({
             { id: "rot-180", label: "Rotate upside down", icon: <RotateCw />, run: () => app.rotate(180) },
             { id: "copy", label: "Copy colour from previous", icon: <Copy />, keys: "C", hidden: sel === 0, run: app.copyPrev },
             { id: "reset", label: "Reset colour", icon: <Undo2 />, keys: "0", run: app.resetColour },
+            { id: "fit", label: "Fit curves to data", icon: <Wand2 />, keys: "F", run: () => app.fitCurves() },
+            {
+              id: "fit-all",
+              label: "Fit curves of every slide to develop",
+              icon: <Wand2 />,
+              keys: "⇧F",
+              run: () => app.fitCurves(true),
+            },
             { id: "learned", label: "Use learned colour", icon: <Sparkles />, hidden: g.reviewed, run: app.resuggest },
             { id: "rest", label: "Apply colour to the rest", icon: <Layers />, run: app.applyRest },
             {
@@ -119,11 +129,19 @@ export function CommandPalette({
         { id: "folder", label: "Import a folder…", icon: <FolderInput />, keys: `${mod}⇧O`, run: () => handlers.importFolder() },
         {
           id: "upload",
-          label: sm?.pending_upload ? `Upload ${plural(sm.pending_upload, "slide")} to Immich` : "Upload to Immich",
+          label: `Upload ${plural(sm?.ready_upload ?? 0, "developed slide")} to Immich`,
           icon: <Upload />,
           keys: `${mod}U`,
-          hidden: !sm?.pending_upload || busy,
+          hidden: !sm?.ready_upload || busy,
           run: handlers.upload,
+        },
+        {
+          id: "upload-all",
+          label: `Upload all ${plural(sm?.pending_upload ?? 0, "slide")} to Immich`,
+          icon: <Upload />,
+          keys: sm?.ready_upload ? undefined : `${mod}U`,
+          hidden: !sm?.pending_upload || sm.pending_upload === sm.ready_upload || busy,
+          run: handlers.uploadAll,
         },
         { id: "reveal", label: "Show files", icon: <FolderOpen />, hidden: !session, run: app.reveal },
         {

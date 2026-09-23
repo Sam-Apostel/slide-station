@@ -23,7 +23,7 @@ const path = require("node:path");
 const isMac = process.platform === "darwin";
 const DEV_URL = process.env.SLIDESTATION_DEV_URL; // e.g. http://localhost:5173 (Vite)
 const BG = "#0e0e10"; // --ss-bg, so the window never flashes white
-const TITLEBAR_HEIGHT = 34; // ProTitlebar compact
+const TITLEBAR_HEIGHT = 44; // WindowTitlebar (frontend/src/components/window-titlebar.tsx)
 
 nativeTheme.themeSource = "dark";
 if (!app.requestSingleInstanceLock()) app.quit();
@@ -338,7 +338,7 @@ function buildMenu() {
       submenu: [
         { label: "Next Slide", ...hint("Right"), enabled: s.hasSlides, click: cmd("next") },
         { label: "Previous Slide", ...hint("Left"), enabled: s.hasSlides, click: cmd("prev") },
-        { label: "Looks Good, Next", ...hint("Space"), enabled: s.hasSlides, click: cmd("review") },
+        { label: "Develop, Next", ...hint("Space"), enabled: s.hasSlides, click: cmd("review") },
         { type: "separator" },
         { label: "Rotate Right", ...hint("R"), enabled: s.hasSlides, click: cmd("rotate", 90) },
         { label: "Rotate Left", ...hint("Shift+R"), enabled: s.hasSlides, click: cmd("rotate", -90) },

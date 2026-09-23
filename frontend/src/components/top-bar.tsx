@@ -2,7 +2,7 @@ import type * as React from "react";
 import { CircleHelp, HardDriveDownload, Plus, Settings, Usb } from "lucide-react";
 import { ProButton } from "@/components/ui/pro-button";
 import { Tip } from "@/components/tip";
-import { isMac } from "@/lib/desktop";
+import { desktop, isMac } from "@/lib/desktop";
 import { ProSeparator, ProToolbar } from "@/components/ui/pro-toolbar";
 import { ProTitlebarWell } from "@/components/ui/pro-titlebar";
 import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select";
@@ -17,21 +17,7 @@ export function visibleJob(state: AppState | null) {
   return !j.finished || Date.now() / 1000 - j.started < 4 || j.error ? j : null;
 }
 
-export function TopBar({
-  compact,
-  panelToggles,
-  state,
-  sessionId,
-  onSelectSession,
-  onNewTray,
-  onImport,
-  onEject,
-  onHelp,
-  onSettings,
-}: {
-  /** In the desktop app the window titlebar carries the name, so the toolbar drops its brand. */
-  compact?: boolean;
-  panelToggles?: React.ReactNode;
+type TopBarProps = {
   state: AppState | null;
   sessionId: string;
   onSelectSession: (id: string) => void;
@@ -40,28 +26,22 @@ export function TopBar({
   onEject: (src: Source) => void;
   onHelp: () => void;
   onSettings: () => void;
-}) {
-  const sessions = state?.sessions ?? [];
-  const src = state?.sources.find((x) => x.new > 0) ?? state?.sources[0];
-  const job = visibleJob(state);
+};
 
+/** Which tray is open, and a new one. */
+export function TraySwitcher({
+  state,
+  sessionId,
+  onSelectSession,
+  onNewTray,
+}: Pick<TopBarProps, "state" | "sessionId" | "onSelectSession" | "onNewTray">) {
+  const sessions = state?.sessions ?? [];
   return (
-    <ProToolbar className="gap-2">
-      {!compact && (
-        <>
-          <div className="flex items-center gap-2 pr-2 text-[13px] font-semibold tracking-[0.01em] text-foreground/90">
-            <span aria-hidden className="relative size-[18px] rounded-[3px] bg-primary">
-              <span className="absolute inset-x-[4px] inset-y-[5px] rounded-[1px] bg-(--ss-ink)" />
-            </span>
-            Slide Station
-          </div>
-          <ProSeparator />
-        </>
-      )}
+    <>
       <NativeSelect
         size="sm"
         aria-label="Tray"
-        className="w-[260px]"
+        className="w-[240px] font-medium"
         value={sessions.some((s) => s.id === sessionId) ? sessionId : ""}
         onChange={(e) => onSelectSession(e.target.value)}
         disabled={!sessions.length}
@@ -79,77 +59,109 @@ export function TopBar({
           <Plus /> New tray
         </ProButton>
       </Tip>
+    </>
+  );
+}
 
-      <div className="flex min-w-0 flex-1 justify-center px-2">
-        <ProTitlebarWell
-          data-tone={job?.error ? "bad" : !job && src ? "ok" : undefined}
-          className="h-[31px] w-full max-w-[440px] flex-row gap-2.5 px-3 text-[11px]"
-        >
-          {job ? (
-            <div className="flex w-full min-w-0 flex-col gap-[3px]" role="status" aria-live="polite">
-              <span
-                className={cn(
-                  "truncate text-center font-medium",
-                  job.error ? "text-destructive" : "text-foreground/80",
-                )}
-              >
-                {job.error
-                  ? `Failed: ${job.error}`
-                  : job.finished
-                    ? job.message
-                    : `${job.message} (${job.done}/${job.total || "?"})`}
-              </span>
-              {!job.error && (
-                <Progress
-                  aria-label="Job progress"
-                  value={job.total ? (100 * job.done) / job.total : job.finished ? 100 : 5}
-                  className="h-[3px]"
-                />
-              )}
-            </div>
-          ) : src ? (
-            <>
-              <span
-                aria-hidden
-                className="size-2 shrink-0 rounded-full bg-[var(--pro-green)] shadow-[0_0_0_3px_color-mix(in_srgb,var(--pro-green)_20%,transparent)]"
-              />
-              <Usb className="size-3 shrink-0 text-muted-foreground" aria-hidden />
-              <span className="min-w-0 flex-1 truncate text-foreground/80">
-                {sourceLabel(src)} ·{" "}
-                {src.new ? (
-                  <b className="font-semibold text-foreground">{plural(src.new, "new scan")}</b>
-                ) : (
-                  "nothing new"
-                )}
-              </span>
-              {src.new ? (
-                <ProButton active onClick={() => onImport(src)}>
-                  <HardDriveDownload /> Import
-                </ProButton>
-              ) : (
-                <ProButton onClick={() => onEject(src)}>Eject</ProButton>
-              )}
-            </>
-          ) : (
-            <span className="text-muted-foreground">Waiting for the scanner…</span>
+/** The activity well: a running job's progress, or the scanner and its Import button. */
+export function ActivityWell({
+  state,
+  onImport,
+  onEject,
+  className,
+}: Pick<TopBarProps, "state" | "onImport" | "onEject"> & { className?: string }) {
+  const src = state?.sources.find((x) => x.new > 0) ?? state?.sources[0];
+  const job = visibleJob(state);
+  return (
+    <ProTitlebarWell
+      data-tone={job?.error ? "bad" : !job && src ? "ok" : undefined}
+      className={cn("h-[30px] w-full max-w-[440px] flex-row gap-2.5 px-3 text-[11px]", className)}
+    >
+      {job ? (
+        <div className="flex w-full min-w-0 flex-col gap-[3px]" role="status" aria-live="polite">
+          <span
+            className={cn("truncate text-center font-medium", job.error ? "text-destructive" : "text-foreground/80")}
+          >
+            {job.error
+              ? `Failed: ${job.error}`
+              : job.finished
+                ? job.message
+                : `${job.message} (${job.done}/${job.total || "?"})`}
+          </span>
+          {!job.error && (
+            <Progress
+              aria-label="Job progress"
+              value={job.total ? (100 * job.done) / job.total : job.finished ? 100 : 5}
+              className="h-[3px]"
+            />
           )}
-        </ProTitlebarWell>
-      </div>
+        </div>
+      ) : src ? (
+        <>
+          <span
+            aria-hidden
+            className="size-2 shrink-0 rounded-full bg-[var(--pro-green)] shadow-[0_0_0_3px_color-mix(in_srgb,var(--pro-green)_20%,transparent)]"
+          />
+          <Usb className="size-3 shrink-0 text-muted-foreground" aria-hidden />
+          <span className="min-w-0 flex-1 truncate text-foreground/80">
+            {sourceLabel(src)} ·{" "}
+            {src.new ? <b className="font-semibold text-foreground">{plural(src.new, "new scan")}</b> : "nothing new"}
+          </span>
+          {src.new ? (
+            <ProButton active onClick={() => onImport(src)}>
+              <HardDriveDownload /> Import
+            </ProButton>
+          ) : (
+            <ProButton onClick={() => onEject(src)}>Eject</ProButton>
+          )}
+        </>
+      ) : (
+        <span className="text-muted-foreground">Waiting for the scanner…</span>
+      )}
+    </ProTitlebarWell>
+  );
+}
 
+/** Shortcuts and settings, at the right end of whichever bar is on top. */
+export function AppActions({ onHelp, onSettings }: Pick<TopBarProps, "onHelp" | "onSettings">) {
+  return (
+    <>
+      <Tip label="Keyboard shortcuts" keys="?">
+        <ProButton onClick={onHelp} aria-label="Keyboard shortcuts">
+          <CircleHelp />
+        </ProButton>
+      </Tip>
+      <Tip label="Settings" keys={desktop ? (isMac ? "⌘," : "Ctrl+,") : undefined}>
+        <ProButton onClick={onSettings} aria-label="Settings">
+          <Settings />
+        </ProButton>
+      </Tip>
+    </>
+  );
+}
+
+/** The top bar in a browser tab. The desktop app puts the same pieces in its window titlebar. */
+export function TopBar({ panelToggles, ...props }: TopBarProps & { panelToggles?: React.ReactNode }) {
+  return (
+    <ProToolbar className="gap-2">
+      <div className="flex items-center gap-2 pr-2 text-[13px] font-semibold tracking-[0.01em] text-foreground/90">
+        <span aria-hidden className="relative size-[18px] rounded-[3px] bg-primary">
+          <span className="absolute inset-x-[4px] inset-y-[5px] rounded-[1px] bg-(--ss-ink)" />
+        </span>
+        Slide Station
+      </div>
+      <ProSeparator />
+      <TraySwitcher {...props} />
+      <div className="flex min-w-0 flex-1 justify-center px-2">
+        <ActivityWell {...props} />
+      </div>
       {panelToggles && (
         <>
           {panelToggles}
           <ProSeparator />
         </>
       )}
-      <Tip label="Keyboard shortcuts" keys="?">
-        <ProButton onClick={onHelp} aria-label="Keyboard shortcuts">
-          <CircleHelp />
-        </ProButton>
-      </Tip>
-      <ProButton onClick={onSettings}>
-        <Settings /> Settings
-      </ProButton>
+      <AppActions {...props} />
     </ProToolbar>
   );
 }
