@@ -253,6 +253,16 @@ Tested under Xvfb on Linux with Playwright's Electron driver (menus, commands, p
 import, packaged uv first start). Not yet tried on a real Mac: traffic-light position, dock badge
 and the Removable Volumes prompt for the .app are the things to look at first.
 
+## 4b. Native app (`apple/`)
+
+A universal iPad/iPhone SwiftUI app with the pipeline ported to Swift (`apple/SlideKit`); see
+`apple/README.md` for the mapping. Invariants carried over: trays use the same JSON field names;
+every change goes through `Library.update` (reload, apply, save); imports verify each copy by SHA-1
+and record the dedupe index straight after copying; the Immich v1/v2 vs v3 field rules. **Keep
+`imaging.py` and SlideKit in step:** change both, then regenerate the golden fixtures
+(`apple/SlideKit/Tests/make_golden.py`) and run `swift test`. The fusion fixture is Mertens without
+alignment, because AlignMTB shifts identical synthetic scans by a pixel.
+
 ## 5. Learning from past edits (new, working, untested in the wild)
 
 `learning.py`. Every approved slide is stored as one example: 14 image features from the *blended,

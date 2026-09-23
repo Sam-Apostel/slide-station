@@ -18,6 +18,14 @@ shadcn/ui equivalents (MIT).
 Many ProUI components are adapted from shadcn/ui (<https://github.com/shadcn-ui/ui>),
 MIT licence, Copyright (c) 2023 shadcn.
 
+## ProUI for SwiftUI — `apple/Vendor/ProUI/*`
+
+The same licence and the same agreement, for the native app. The SwiftUI kit ships as source; only
+the files the app uses are here (theme, button, slider, inspector with disclosure groups, toolbar and status
+bar, and their shared support), with unused parts of those files removed and the colours changed to
+the Slide Station skin. The rest of the kit, its icon sets and the six template apps are not
+included. Not licensed for reuse — get your own ProUI licence.
+
 ## YuNet face detector — `slidestation/models/face_detection_yunet_2023mar.onnx`
 
 From OpenCV Zoo (<https://github.com/opencv/opencv_zoo>), MIT licence. Used to work out which way

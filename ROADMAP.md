@@ -92,6 +92,13 @@ wants them.
 - Later: the same SwiftUI app on the Mac could replace Electron + Python, leaving one codebase.
   Keep the Python app as the reference until the Swift one matches it.
 
+**Status (2026-09-24):** `apple/` has SlideKit (the pipeline, parity-tested against Python on
+synthetic slides), Simple mode end to end (import → keep/skip/turn → Immich, checked in the
+simulator against `tests/fake_immich.py`) and a first Studio mode on the ProUI SwiftUI kit. See
+`apple/README.md`. What's open: the real scanner on a real iPad (phase 1), Metal/half-precision
+fusion for full-resolution memory, and in Studio: curves, crop, undo, learning. The ProUI template
+apps (image editor, video editor, DAW…) had nothing to port beyond the kit itself.
+
 **Phases**
 
 1. *Spike (days):* scanner on the iPad in Files; a tiny app that picks the card, bookmarks it,

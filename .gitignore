@@ -9,3 +9,8 @@ frontend/node_modules/
 *.tsbuildinfo
 desktop/node_modules/
 desktop/dist/
+apple/*.xcodeproj/
+apple/App/Info.plist
+apple/**/.build/
+apple/**/.swiftpm/
+apple/build/

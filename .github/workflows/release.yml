@@ -11,6 +11,7 @@ on:
     paths-ignore:
       - "**.md"
       - "tests/**"
+      - "apple/**" # the native app ships separately (TestFlight), not in the desktop release
       - ".github/ISSUE_TEMPLATE/**"
   workflow_dispatch:
 
