@@ -59,12 +59,33 @@ jobs:
         working-directory: desktop
         run: npm version --no-git-tag-version --allow-same-version "$VERSION"
 
-      - name: Build, sign, notarise, publish
+      # Create the release (as a draft, on a tag for this commit) before building: electron-builder
+      # uploads its files in parallel, and when it has to create the release itself the uploads
+      # race to do so and one fails. It publishes nothing half-uploaded this way either.
+      - name: Draft release v${{ env.VERSION }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git tag -f "v$VERSION"
+          git push -f origin "refs/tags/v$VERSION"
+          gh release view "v$VERSION" >/dev/null 2>&1 ||
+            gh release create "v$VERSION" --draft --verify-tag --title "$VERSION" \
+              --notes "$(git log -1 --format='%s%n%n%b')"
+
+      - name: Build, sign, notarise, upload
         working-directory: desktop
         env:
           PUBLISH: always
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: scripts/release-mac.sh
+
+      # Only now does the app's updater see it: latest-mac.yml and the zip are both in place.
+      - name: Publish v${{ env.VERSION }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release view "v$VERSION" --json assets --jq '.assets[].name' | grep -qx latest-mac.yml
+          gh release edit "v$VERSION" --draft=false --latest
 
       - name: Tidy up
         if: always()

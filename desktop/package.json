@@ -67,7 +67,7 @@
       "provider": "github",
       "owner": "Sam-Apostel",
       "repo": "slide-station",
-      "releaseType": "release"
+      "releaseType": "draft"
     }
   },
   "dependencies": {

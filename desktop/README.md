@@ -134,7 +134,18 @@ cd ~/actions-runner-slide-station && ./svc.sh status      # is it running?
 
 Re-register it (e.g. on a new Mac): download the runner from the repo's Settings → Actions →
 Runners → New self-hosted runner, `./config.sh --url https://github.com/Sam-Apostel/slide-station
---token <token> --labels slide-station`, then `./svc.sh install && ./svc.sh start`.
+--token <token> --labels slide-station`, then `./svc.sh install`, and **remove `SessionCreate`**
+from the LaunchAgent before starting it:
+
+```bash
+/usr/libexec/PlistBuddy -c "Delete :SessionCreate" \
+  ~/Library/LaunchAgents/actions.runner.Sam-Apostel-slide-station.*.plist
+./svc.sh start
+```
+
+With `SessionCreate` the runner gets its own security session and can't see the keychain where
+`notarytool` keeps the `slide-station` profile ("notarytool can't use keychain profile"); without
+it, it runs in your normal login session like any app you start.
 
 **Safety (public repo + runner on a personal Mac).** The workflow only runs on pushes to `main`
 and by hand, never on pull requests. A pull request could still add its own workflow aimed at the
