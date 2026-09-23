@@ -7,7 +7,13 @@ public enum Develop {
 
     /// Per-channel levels + partial grey-world midtone balance, with a guard against yellow skies.
     public static func autoRestore(_ a: RGBImage, strength: Double) -> RGBImage {
-        guard strength > 0 else { return a }
+        var out = a
+        autoRestoreInPlace(&out, strength: strength)
+        return out
+    }
+
+    public static func autoRestoreInPlace(_ a: inout RGBImage, strength: Double) {
+        guard strength > 0 else { return }
         let h = a.height, w = a.width
         let m = Int(Double(min(h, w)) * 0.04)
         let step = max(1, Int((Double(h * w) / 250_000).squareRoot()))
@@ -39,51 +45,72 @@ public enum Develop {
             g[c] = lm == 0 ? 1 : Float(1 + (log(tgt) / lm - 1) * strength)
         }
         let hb = percentile(sorted: sorted[2], 99.6)
-        var out = a
+        // the sky guard's mask comes from the untouched blue channel, so build it first
         var mask = Plane(width: w, height: h)
-        a.data.withUnsafeBufferPointer { src in
-            out.data.withUnsafeMutableBufferPointer { dst in
-                mask.data.withUnsafeMutableBufferPointer { mk in
-                    for i in 0..<(w * h) {
+        a.data.withUnsafeMutableBufferPointer { px in
+            mask.data.withUnsafeMutableBufferPointer { mk in
+                let px = px, mk = mk
+                parallelFor(h) { rows in
+                    for i in (rows.lowerBound * w)..<(rows.upperBound * w) {
+                        mk[i] = min(1, max(0, (px[i * 3 + 2] - (hb - 0.10)) / 0.08))
                         for c in 0..<3 {
-                            let v = min(1, max(0, (src[i * 3 + c] - L[c]) / max(H[c] - L[c], 1e-3)))
-                            dst[i * 3 + c] = powf(v, g[c])
+                            let v = min(1, max(0, (px[i * 3 + c] - L[c]) / max(H[c] - L[c], 1e-3)))
+                            px[i * 3 + c] = g[c] == 1 ? v : powf(v, g[c])
                         }
-                        mk[i] = min(1, max(0, (src[i * 3 + 2] - (hb - 0.10)) / 0.08))
                     }
                 }
             }
         }
         mask = Filters.gaussianBlur(mask, sigma: 3)
         let s = Float(strength)
-        out.data.withUnsafeMutableBufferPointer { o in
-            for i in 0..<(w * h) {
-                let mv = mask.data[i] * s
-                let b = o[i * 3 + 2]
-                o[i * 3 + 2] = max(b, b * (1 - mv) + max(o[i * 3], o[i * 3 + 1]) * mv * 0.98)
+        a.data.withUnsafeMutableBufferPointer { o in
+            mask.data.withUnsafeBufferPointer { mk in
+                let o = o
+                parallelFor(h) { rows in
+                    for i in (rows.lowerBound * w)..<(rows.upperBound * w) {
+                        let mv = mk[i] * s
+                        let b = o[i * 3 + 2]
+                        o[i * 3 + 2] = max(b, b * (1 - mv) + max(o[i * 3], o[i * 3 + 1]) * mv * 0.98)
+                    }
+                }
             }
         }
-        return out
     }
 
     // MARK: trim
 
     /// (top, bottom, left, right) bounds that `trimBorders` keeps: dark mount edges cut away.
     public static func trimBounds(_ a: RGBImage, maxFrac: Double = 0.05) -> (Int, Int, Int, Int) {
-        let w = a.width, h = a.height
-        var lum = [Float](repeating: 0, count: w * h)
-        var rows = [Float](repeating: 0, count: h), cols = [Float](repeating: 0, count: w)
+        let w = a.width, h = a.height, bins = 65_536
+        var rows = [Float](repeating: 0, count: h)
+        // per-chunk column sums and luminance histograms, merged after (no full-size copy)
+        let lock = NSLock()
+        var cols = [Double](repeating: 0, count: w)
+        var hist = [Int](repeating: 0, count: bins)
         a.data.withUnsafeBufferPointer { p in
-            for y in 0..<h {
-                for x in 0..<w {
-                    let i = y * w + x
-                    let v = (p[i * 3] + p[i * 3 + 1] + p[i * 3 + 2]) / 3
-                    lum[i] = v; rows[y] += v; cols[x] += v
+            rows.withUnsafeMutableBufferPointer { rw in
+                let rw = rw
+                parallelFor(h) { range in
+                    var c = [Double](repeating: 0, count: w)
+                    var hs = [Int](repeating: 0, count: bins)
+                    for y in range {
+                        var rs: Float = 0
+                        for x in 0..<w {
+                            let i = (y * w + x) * 3
+                            let v = (p[i] + p[i + 1] + p[i + 2]) / 3
+                            rs += v; c[x] += Double(v)
+                            hs[max(0, min(bins - 1, Int(v * Float(bins - 1) + 0.5)))] += 1
+                        }
+                        rw[y] = rs / Float(w)
+                    }
+                    lock.lock(); for x in 0..<w { cols[x] += c[x] }; for i in 0..<bins where hs[i] != 0 { hist[i] += hs[i] }; lock.unlock()
                 }
             }
         }
-        rows = rows.map { $0 / Float(w) }; cols = cols.map { $0 / Float(h) }
-        let ref = median(lum)
+        let colMeans = cols.map { Float($0 / Double(h)) }
+        var ref: Float = 0.5, acc = 0
+        let half = (w * h + 1) / 2
+        for (i, n) in hist.enumerated() { acc += n; if acc >= half { ref = Float(i) / Float(bins - 1); break } }
         let thr = min(0.12, ref * 0.35)
         func cut(_ profile: [Float], _ limit: Int) -> Int {
             var n = 0
@@ -91,24 +118,13 @@ public enum Develop {
             return n + (n > 0 ? 2 : 0)
         }
         let t = cut(rows, Int(Double(h) * maxFrac)), b = cut(rows.reversed(), Int(Double(h) * maxFrac))
-        let l = cut(cols, Int(Double(w) * maxFrac)), r = cut(cols.reversed(), Int(Double(w) * maxFrac))
+        let l = cut(colMeans, Int(Double(w) * maxFrac)), r = cut(colMeans.reversed(), Int(Double(w) * maxFrac))
         return (t, h - b, l, w - r)
     }
 
     public static func trimBorders(_ a: RGBImage) -> RGBImage {
         let (t, b, l, r) = trimBounds(a)
         return a.cropped(top: t, bottom: b, left: l, right: r)
-    }
-
-    /// Median of values in 0...1 via a fine histogram: exact to 1/65536, linear time.
-    static func median(_ v: [Float]) -> Float {
-        let bins = 65_536
-        var hist = [Int](repeating: 0, count: bins)
-        for x in v { hist[max(0, min(bins - 1, Int(x * Float(bins - 1) + 0.5)))] += 1 }
-        let half = (v.count + 1) / 2
-        var acc = 0
-        for (i, n) in hist.enumerated() { acc += n; if acc >= half { return Float(i) / Float(bins - 1) } }
-        return 0.5
     }
 
     // MARK: geometry
@@ -153,29 +169,47 @@ public enum Develop {
     }
 
     public static func geometry(_ a: RGBImage, _ p: Params, crop: Bool = true) -> RGBImage {
-        var out = straighten(a, angle: p.angle)
-        if crop, let c = p.crop {
-            let h = Double(out.height), w = Double(out.width)
-            let t = Int(c[1] * h), l = Int(c[0] * w)
-            out = out.cropped(top: t, bottom: max(t + 1, Int(c[3] * h)), left: l, right: max(l + 1, Int(c[2] * w)))
-        }
+        var out = a
+        geometryInPlace(&out, p, crop: crop)
         return out
+    }
+
+    public static func geometryInPlace(_ a: inout RGBImage, _ p: Params, crop: Bool = true) {
+        if abs(p.angle) >= 0.01 { a = straighten(a, angle: p.angle) }
+        if crop, let c = p.crop {
+            let h = Double(a.height), w = Double(a.width)
+            let t = Int(c[1] * h), l = Int(c[0] * w)
+            a.cropInPlace(top: t, bottom: max(t + 1, Int(c[3] * h)), left: l, right: max(l + 1, Int(c[2] * w)))
+        }
     }
 
     /// The image the tone curve works on: auto-restored, trimmed, straightened and cropped.
     public static func toneBase(_ a: RGBImage, _ p: Params, crop: Bool = true) -> RGBImage {
-        var out = autoRestore(a, strength: p.strength)
-        if p.trim { out = trimBorders(out) }
-        return geometry(out, p, crop: crop)
+        var out = a
+        toneBaseInPlace(&out, p, crop: crop)
+        return out
+    }
+
+    public static func toneBaseInPlace(_ a: inout RGBImage, _ p: Params, crop: Bool = true) {
+        autoRestoreInPlace(&a, strength: p.strength)
+        if p.trim { let (t, b, l, r) = trimBounds(a); a.cropInPlace(top: t, bottom: b, left: l, right: r) }
+        geometryInPlace(&a, p, crop: crop)
     }
 
     // MARK: develop
 
     /// crop = false: everything but the crop, for the crop tool to draw its frame over.
     public static func develop(_ a: RGBImage, _ p: Params, crop: Bool = true) -> RGBImage {
-        var out = Curves.apply(toneBase(a, p, crop: crop), p.curves)
-        finish(&out, p)
+        var out = a
+        developInPlace(&out, p, crop: crop)
         return out
+    }
+
+    /// The whole develop without a second full-size buffer (except when straightening).
+    public static func developInPlace(_ a: inout RGBImage, _ p: Params, crop: Bool = true) {
+        toneBaseInPlace(&a, p, crop: crop)
+        Curves.applyInPlace(&a, p.curves)
+        finish(&a, p)
     }
 
     /// Everything after the tone curves: white balance, brightness, contrast, saturation.
@@ -185,8 +219,11 @@ public enum Develop {
         let wb = p.warmth != 0 || p.tint != 0
         let bright = Float(pow(2.0, -p.brightness))
         let con = Float(p.contrast), sat = Float(1.1 + p.saturation)
+        let n = out.data.count / 3
         out.data.withUnsafeMutableBufferPointer { o in
-            for i in 0..<(o.count / 3) {
+          let o = o
+          parallelFor(n, minChunk: 4096) { range in
+            for i in range {
                 var r = o[i * 3], g = o[i * 3 + 1], b = o[i * 3 + 2]
                 if wb {
                     r = powf(min(1, max(eps, r)), gam[0]); g = powf(min(1, max(eps, g)), gam[1]); b = powf(min(1, max(eps, b)), gam[2])
@@ -206,6 +243,7 @@ public enum Develop {
                 o[i * 3 + 1] = min(1, max(0, lum + (g - lum) * sat))
                 o[i * 3 + 2] = min(1, max(0, lum + (b - lum) * sat))
             }
+          }
         }
     }
 
@@ -348,22 +386,29 @@ public enum Curves {
 
     /// Per-colour curves first (they fix the cast), then the RGB curve on all three.
     public static func apply(_ a: RGBImage, _ curves: [String: [[Double]]]) -> RGBImage {
-        guard !curves.isEmpty else { return a }
         var out = a
+        applyInPlace(&out, curves)
+        return out
+    }
+
+    public static func applyInPlace(_ a: inout RGBImage, _ curves: [String: [[Double]]]) {
+        guard !curves.isEmpty else { return }
         let top = Float(lutSize - 1)
-        @inline(__always) func idx(_ v: Float) -> Int { Int(min(top, max(0, v * top + 0.5))) }
         let per = ["r", "g", "b"].map { curves[$0].map { lut($0) } }
         let all = curves["rgb"].map { lut($0) }
-        out.data.withUnsafeMutableBufferPointer { o in
-            for i in 0..<(o.count / 3) {
-                for c in 0..<3 {
-                    var v = o[i * 3 + c]
-                    if let l = per[c] { v = l[idx(v)] }
-                    if let l = all { v = l[idx(v)] }
-                    o[i * 3 + c] = v
+        let n = a.data.count / 3
+        a.data.withUnsafeMutableBufferPointer { o in
+            let o = o
+            parallelFor(n, minChunk: 4096) { range in
+                for i in range {
+                    for c in 0..<3 {
+                        var v = o[i * 3 + c]
+                        if let l = per[c] { v = l[Int(min(top, max(0, v * top + 0.5)))] }
+                        if let l = all { v = l[Int(min(top, max(0, v * top + 0.5)))] }
+                        o[i * 3 + c] = v
+                    }
                 }
             }
         }
-        return out
     }
 }

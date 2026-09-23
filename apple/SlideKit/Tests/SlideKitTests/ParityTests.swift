@@ -120,12 +120,12 @@ final class ParityTests: XCTestCase {
     func testAlignmentUndoesAShift() throws {
         let base = try image("scene.png")
         let moved = Fusion.shifted(try image("scene_bright.png"), dx: 3, dy: -2)
-        let aligned = Fusion.align([base, moved])[1]
+        let aligned = Fusion.align([base, moved])[1].rgbImage()
         let (mean, _) = diff(aligned.data, try image("scene_bright.png").data)
         let (before, _) = diff(moved.data, try image("scene_bright.png").data)
         XCTAssertLessThan(mean, before / 3)
         // identical scans stay where they are
-        XCTAssertEqual(Fusion.align([base, base])[1].data, base.data)
+        XCTAssertEqual(Fusion.align([base, base])[1].rgbImage().data, base.data)
     }
 
     func testStraighten() throws {

@@ -30,9 +30,6 @@ public struct Uploader: Sendable {
         guard urls.count == g.activeScans.count, urls.allSatisfy({ FileManager.default.fileExists(atPath: $0.path) }) else {
             throw SlideKitError.originalsMissing
         }
-        var a = Fusion.fuse(try urls.map { try ImageFile.load($0) })
-        a = Develop.develop(a.rotated(g.rotation), g.params)
-
         var props: [CFString: Any] = [:]
         if let src = CGImageSourceCreateWithURL(urls[0] as CFURL, nil),
            let p = CGImageSourceCopyPropertiesAtIndex(src, 0, nil) as? [CFString: Any] {
@@ -51,12 +48,10 @@ public struct Uploader: Sendable {
         var exif = props[kCGImagePropertyExifDictionary] as? [CFString: Any] ?? [:]
         exif[kCGImagePropertyExifDateTimeOriginal] = when   // what Immich puts on the timeline
         exif[kCGImagePropertyExifDateTimeDigitized] = when
-        exif[kCGImagePropertyExifPixelXDimension] = a.width
-        exif[kCGImagePropertyExifPixelYDimension] = a.height
         props[kCGImagePropertyTIFFDictionary] = tiff
         props[kCGImagePropertyExifDictionary] = exif
         props[kCGImagePropertyOrientation] = 1
-        return try ImageFile.jpeg(a, quality: jpegQuality, properties: props)
+        return try Export.fullResolution(scans: urls, rotation: g.rotation, params: g.params, quality: jpegQuality, properties: props)
     }
 
     public struct Result: Sendable, Equatable { public var uploaded = 0, lost = 0; public var album = "" }
@@ -125,6 +120,19 @@ public struct Uploader: Sendable {
         result.lost = lost.count
         progress(JobProgress("Done — \(result.uploaded) slides uploaded to '\(albumName)'", done: 1, total: 1))
         return result
+    }
+}
+
+/// The full-resolution photo of one slide: fuse the bracket, turn it upright, develop, encode.
+public enum Export {
+    public static func fullResolution(scans: [URL], rotation: Int, params: Params, quality: Double = 0.95,
+                                      properties: [CFString: Any] = [:]) throws -> Data {
+        // 8-bit scans, turned upright before fusing (rotating 80 MB of bytes, not 240 MB of Float)
+        var sources: [any RowSource] = try scans.map { try RGBA8Image.load($0).rotated(rotation) }
+        var a = sources.count == 1 ? sources[0].rgbImage() : Fusion.fuse(sources: sources)
+        sources = []
+        Develop.developInPlace(&a, params)
+        return try ImageFile.jpeg(consuming: &a, quality: quality, properties: properties)
     }
 }
 

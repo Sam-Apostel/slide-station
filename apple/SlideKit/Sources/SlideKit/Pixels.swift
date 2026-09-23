@@ -35,6 +35,21 @@ public struct RGBImage: Sendable {
         return out
     }
 
+    /// Crop without a second buffer: rows move towards the start, then the tail is dropped.
+    public mutating func cropInPlace(top: Int, bottom: Int, left: Int, right: Int) {
+        let t = max(0, min(height - 1, top)), b = max(t + 1, min(height, bottom))
+        let l = max(0, min(width - 1, left)), r = max(l + 1, min(width, right))
+        if t == 0 && l == 0 && b == height && r == width { return }
+        let ow = r - l, w = width
+        data.withUnsafeMutableBufferPointer { p in
+            for y in t..<b {   // destination never overtakes the source, so a forward move is safe
+                (p.baseAddress! + (y - t) * ow * 3).update(from: p.baseAddress! + (y * w + l) * 3, count: ow * 3)
+            }
+        }
+        data.removeLast(data.count - ow * (b - t) * 3)
+        width = ow; height = b - t
+    }
+
     /// Clockwise rotation by 0/90/180/270 degrees.
     public func rotated(_ degrees: Int) -> RGBImage {
         let rot = ((degrees % 360) + 360) % 360
@@ -188,16 +203,19 @@ enum Filters {
         var tmp = [Float](repeating: 0, count: w * h)
         p.data.withUnsafeBufferPointer { src in
             tmp.withUnsafeMutableBufferPointer { dst in
-                for y in 0..<h {
-                    let row = y * w
-                    for x in 0..<w {
-                        var acc: Float = 0
-                        if x >= half && x < w - half {
-                            for (j, kv) in k.enumerated() { acc += src[row + x + j - half] * kv }
-                        } else {
-                            for (j, kv) in k.enumerated() { acc += src[row + reflect101(x + j - half, w)] * kv }
+                let dst = dst
+                parallelFor(h) { rows in
+                    for y in rows {
+                        let row = y * w
+                        for x in 0..<w {
+                            var acc: Float = 0
+                            if x >= half && x < w - half {
+                                for (j, kv) in k.enumerated() { acc += src[row + x + j - half] * kv }
+                            } else {
+                                for (j, kv) in k.enumerated() { acc += src[row + reflect101(x + j - half, w)] * kv }
+                            }
+                            dst[row + x] = acc
                         }
-                        dst[row + x] = acc
                     }
                 }
             }
@@ -205,11 +223,15 @@ enum Filters {
         var out = Plane(width: w, height: h)
         tmp.withUnsafeBufferPointer { src in
             out.data.withUnsafeMutableBufferPointer { dst in
-                for y in 0..<h {
-                    for x in 0..<w {
-                        var acc: Float = 0
-                        for (j, kv) in k.enumerated() { acc += src[reflect101(y + j - half, h) * w + x] * kv }
-                        dst[y * w + x] = acc
+                let dst = dst
+                parallelFor(h) { rows in
+                    for y in rows {
+                        let taps = k.indices.map { reflect101(y + $0 - half, h) * w }
+                        for x in 0..<w {
+                            var acc: Float = 0
+                            for (j, kv) in k.enumerated() { acc += src[taps[j] + x] * kv }
+                            dst[y * w + x] = acc
+                        }
                     }
                 }
             }
@@ -225,11 +247,14 @@ enum Filters {
         var out = Plane(width: w, height: h)
         p.data.withUnsafeBufferPointer { s in
             out.data.withUnsafeMutableBufferPointer { d in
-                for y in 0..<h {
-                    let yu = reflect101(y - 1, h) * w, yd = reflect101(y + 1, h) * w, row = y * w
-                    for x in 0..<w {
-                        let xl = reflect101(x - 1, w), xr = reflect101(x + 1, w)
-                        d[row + x] = s[yu + x] + s[yd + x] + s[row + xl] + s[row + xr] - 4 * s[row + x]
+                let d = d
+                parallelFor(h) { rows in
+                    for y in rows {
+                        let yu = reflect101(y - 1, h) * w, yd = reflect101(y + 1, h) * w, row = y * w
+                        for x in 0..<w {
+                            let xl = reflect101(x - 1, w), xr = reflect101(x + 1, w)
+                            d[row + x] = s[yu + x] + s[yd + x] + s[row + xl] + s[row + xr] - 4 * s[row + x]
+                        }
                     }
                 }
             }
@@ -318,6 +343,33 @@ public enum ImageFile {
         return data as Data
     }
 
+    /// Like `jpeg(_:)` for full-resolution work: the Float pixels are released as soon as the
+    /// 8-bit copy exists, and that copy is handed to ImageIO without another duplicate.
+    public static func jpeg(consuming img: inout RGBImage, quality: Double = 0.95, properties: [CFString: Any] = [:]) throws -> Data {
+        let w = img.width, h = img.height
+        let bytes = UnsafeMutablePointer<UInt8>.allocate(capacity: w * h * 4)
+        img.data.withUnsafeBufferPointer { src in
+            parallelFor(h) { rows in
+                for i in (rows.lowerBound * w)..<(rows.upperBound * w) {
+                    for c in 0..<3 { bytes[i * 4 + c] = UInt8(max(0, min(255, src[i * 3 + c] * 255 + 0.5))) }
+                    bytes[i * 4 + 3] = 255
+                }
+            }
+        }
+        img = RGBImage(width: 0, height: 0)
+        guard let provider = CGDataProvider(dataInfo: nil, data: bytes, size: w * h * 4, releaseData: { _, p, _ in p.deallocate() }),
+              let cg = CGImage(width: w, height: h, bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: w * 4,
+                               space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.noneSkipLast.rawValue),
+                               provider: provider, decode: nil, shouldInterpolate: true, intent: .defaultIntent) else { throw SlideKitError.encode }
+        let data = NSMutableData()
+        guard let dest = CGImageDestinationCreateWithData(data, UTType.jpeg.identifier as CFString, 1, nil) else { throw SlideKitError.encode }
+        var props = properties
+        props[kCGImageDestinationLossyCompressionQuality] = quality
+        CGImageDestinationAddImage(dest, cg, props as CFDictionary)
+        guard CGImageDestinationFinalize(dest) else { throw SlideKitError.encode }
+        return data as Data
+    }
+
     public struct Info: Sendable { public var make = "", model = "", dateTime = "" }
 
     /// EXIF make/model/date without decoding pixels.
@@ -343,5 +395,179 @@ public enum SlideKitError: LocalizedError {
         case .immich(let s): return s
         case .originalsMissing: return "The original scans for this slide are gone."
         }
+    }
+}
+
+// MARK: - Parallel loops
+
+/// Run `body` for 0..<n spread over the CPU cores, in contiguous chunks (rows of an image).
+@inline(__always) func parallelFor(_ n: Int, minChunk: Int = 16, _ body: (Range<Int>) -> Void) {
+    let cores = ProcessInfo.processInfo.activeProcessorCount
+    let chunks = max(1, min(cores * 4, n / max(1, minChunk)))
+    if chunks == 1 { body(0..<n); return }
+    DispatchQueue.concurrentPerform(iterations: chunks) { k in
+        let lo = n * k / chunks, hi = n * (k + 1) / chunks
+        if lo < hi { body(lo..<hi) }
+    }
+}
+
+// MARK: - Row sources (for full resolution work without Float copies)
+
+/// Something that can hand out one row of float RGB at a time — a decoded 8-bit scan, a shifted
+/// view of one, or an `RGBImage`. Full-resolution fusion reads its inputs this way, so a 20 MP
+/// scan stays 80 MB of bytes instead of 240 MB of Float.
+public protocol RowSource: Sendable {
+    var width: Int { get }
+    var height: Int { get }
+    /// Writes `width * 3` floats (RGB 0...1) for row `y`.
+    func row(_ y: Int, into out: UnsafeMutablePointer<Float>)
+}
+
+extension RGBImage: RowSource {
+    public func row(_ y: Int, into out: UnsafeMutablePointer<Float>) {
+        data.withUnsafeBufferPointer { p in out.update(from: p.baseAddress! + y * width * 3, count: width * 3) }
+    }
+}
+
+/// A decoded scan as 8-bit RGBA (a quarter of the memory of Float RGB).
+public struct RGBA8Image: RowSource {
+    public var width: Int
+    public var height: Int
+    public var bytes: [UInt8]
+
+    public static func load(_ url: URL) throws -> RGBA8Image {
+        try autoreleasepool {
+            guard let src = CGImageSourceCreateWithURL(url as CFURL, nil),
+                  let cg = CGImageSourceCreateImageAtIndex(src, 0, nil) else { throw SlideKitError.unreadable(url.lastPathComponent) }
+            let w = cg.width, h = cg.height
+            var bytes = [UInt8](repeating: 0, count: w * h * 4)
+            bytes.withUnsafeMutableBytes { buf in
+                let ctx = CGContext(data: buf.baseAddress, width: w, height: h, bitsPerComponent: 8, bytesPerRow: w * 4,
+                                    space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue)!
+                ctx.draw(cg, in: CGRect(x: 0, y: 0, width: w, height: h))
+            }
+            return RGBA8Image(width: w, height: h, bytes: bytes)
+        }
+    }
+
+    public func row(_ y: Int, into out: UnsafeMutablePointer<Float>) {
+        bytes.withUnsafeBufferPointer { p in
+            let base = y * width * 4
+            for x in 0..<width {
+                out[x * 3] = Float(p[base + x * 4]) / 255
+                out[x * 3 + 1] = Float(p[base + x * 4 + 1]) / 255
+                out[x * 3 + 2] = Float(p[base + x * 4 + 2]) / 255
+            }
+        }
+    }
+
+    /// Clockwise by 0/90/180/270, like `RGBImage.rotated`.
+    public func rotated(_ degrees: Int) -> RGBA8Image {
+        let rot = ((degrees % 360) + 360) % 360
+        if rot == 0 { return self }
+        let (w, h) = (width, height)
+        let ow = rot == 180 ? w : h, oh = rot == 180 ? h : w
+        var out = [UInt32](repeating: 0, count: ow * oh)
+        bytes.withUnsafeBytes { raw in
+            let src = raw.bindMemory(to: UInt32.self)
+            out.withUnsafeMutableBufferPointer { dst in
+                let d = dst
+                parallelFor(oh) { rows in
+                    for y in rows {
+                        for x in 0..<ow {
+                            let (sx, sy): (Int, Int)
+                            switch rot {
+                            case 90: (sx, sy) = (y, h - 1 - x)
+                            case 180: (sx, sy) = (w - 1 - x, h - 1 - y)
+                            default: (sx, sy) = (w - 1 - y, x)
+                            }
+                            d[y * ow + x] = src[sy * w + sx]
+                        }
+                    }
+                }
+            }
+        }
+        return RGBA8Image(width: ow, height: oh, bytes: out.withUnsafeBytes { Array($0) })
+    }
+}
+
+/// A source moved by (dx, dy) pixels, edges repeated — alignment without a copy.
+struct ShiftedSource: RowSource {
+    let base: any RowSource
+    let dx: Int, dy: Int
+    var width: Int { base.width }
+    var height: Int { base.height }
+    func row(_ y: Int, into out: UnsafeMutablePointer<Float>) {
+        base.row(min(height - 1, max(0, y - dy)), into: out)
+        guard dx != 0 else { return }
+        let w = width
+        let tmp = UnsafeMutablePointer<Float>.allocate(capacity: w * 3)
+        defer { tmp.deallocate() }
+        tmp.update(from: out, count: w * 3)
+        for x in 0..<w {
+            let sx = min(w - 1, max(0, x - dx))
+            out[x * 3] = tmp[sx * 3]; out[x * 3 + 1] = tmp[sx * 3 + 1]; out[x * 3 + 2] = tmp[sx * 3 + 2]
+        }
+    }
+}
+
+/// The top-left `width × height` of a larger source (brackets whose scans differ by a pixel).
+struct CroppedSource: RowSource {
+    let base: any RowSource
+    let width: Int, height: Int
+    func row(_ y: Int, into out: UnsafeMutablePointer<Float>) {
+        if base.width == width { base.row(y, into: out); return }
+        let tmp = UnsafeMutablePointer<Float>.allocate(capacity: base.width * 3)
+        defer { tmp.deallocate() }
+        base.row(y, into: tmp)
+        out.update(from: tmp, count: width * 3)
+    }
+}
+
+extension RowSource {
+    /// Visit rows in parallel with a scratch row buffer per chunk.
+    func forEachRow(_ body: (Int, UnsafeMutablePointer<Float>) -> Void) {
+        let w = width
+        parallelFor(height) { rows in
+            let buf = UnsafeMutablePointer<Float>.allocate(capacity: w * 3)
+            defer { buf.deallocate() }
+            for y in rows { row(y, into: buf); body(y, buf) }
+        }
+    }
+
+    /// Box-averaged small copy for registration and quick looks.
+    func thumbnail(maxEdge: Int) -> RGBImage {
+        let f = max(1, Int(ceil(Double(max(width, height)) / Double(maxEdge))))
+        let ow = width / f, oh = height / f
+        var out = RGBImage(width: max(1, ow), height: max(1, oh))
+        let w = width
+        out.data.withUnsafeMutableBufferPointer { o in
+            let o = o
+            parallelFor(oh) { rows in
+                let buf = UnsafeMutablePointer<Float>.allocate(capacity: w * 3)
+                defer { buf.deallocate() }
+                for oy in rows {
+                    for sy in (oy * f)..<(oy * f + f) {
+                        row(sy, into: buf)
+                        for ox in 0..<ow { for sx in (ox * f)..<(ox * f + f) { for c in 0..<3 { o[(oy * ow + ox) * 3 + c] += buf[sx * 3 + c] } } }
+                    }
+                    let n = Float(f * f)
+                    for i in (oy * ow * 3)..<((oy + 1) * ow * 3) { o[i] /= n }
+                }
+            }
+        }
+        return out
+    }
+
+    /// Materialise as Float RGB.
+    func rgbImage() -> RGBImage {
+        if let s = self as? RGBImage { return s }
+        var out = RGBImage(width: width, height: height)
+        let w = width
+        out.data.withUnsafeMutableBufferPointer { o in
+            let o = o
+            forEachRow { y, buf in (o.baseAddress! + y * w * 3).update(from: buf, count: w * 3) }
+        }
+        return out
     }
 }
