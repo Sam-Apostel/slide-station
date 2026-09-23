@@ -70,7 +70,7 @@ jobs:
           git push -f origin "refs/tags/v$VERSION"
           gh release view "v$VERSION" >/dev/null 2>&1 ||
             gh release create "v$VERSION" --draft --verify-tag --title "$VERSION" \
-              --notes "$(git log -1 --format='%s%n%n%b')"
+              --notes "$(git log -1 --format='%s%n%n%b' | grep -viE '^(co-authored-by|signed-off-by):')"
 
       - name: Build, sign, notarise, upload
         working-directory: desktop
