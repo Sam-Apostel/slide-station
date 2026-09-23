@@ -61,7 +61,8 @@
       },
       "hardenedRuntime": true,
       "entitlements": "build/entitlements.mac.plist",
-      "entitlementsInherit": "build/entitlements.mac.plist"
+      "entitlementsInherit": "build/entitlements.mac.plist",
+      "artifactName": "Slide-Station-${version}-${arch}-mac.${ext}"
     },
     "publish": {
       "provider": "github",
