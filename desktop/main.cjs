@@ -19,11 +19,15 @@ const fs = require("node:fs");
 const net = require("node:net");
 const os = require("node:os");
 const path = require("node:path");
+const { setupAutoUpdate } = require("./updater.cjs");
 
 const isMac = process.platform === "darwin";
 const DEV_URL = process.env.SLIDESTATION_DEV_URL; // e.g. http://localhost:5173 (Vite)
 const BG = "#0e0e10"; // --ss-bg, so the window never flashes white
 const TITLEBAR_HEIGHT = 44; // WindowTitlebar (frontend/src/components/window-titlebar.tsx)
+
+/** Set up once the app is ready; a no-op until then (and in development). */
+let updates = { checkNow: () => {} };
 
 nativeTheme.themeSource = "dark";
 if (!app.requestSingleInstanceLock()) app.quit();
@@ -287,6 +291,7 @@ function buildMenu() {
             label: app.name,
             submenu: [
               { role: "about" },
+              { label: "Check for Updates…", click: () => updates.checkNow() },
               { type: "separator" },
               { label: "Settings…", accelerator: "Cmd+,", click: cmd("settings") },
               { type: "separator" },
@@ -395,6 +400,7 @@ function buildMenu() {
       role: "help",
       submenu: [
         { label: "Keyboard Shortcuts", ...hint("Shift+/"), click: cmd("help") },
+        ...(isMac ? [] : [{ label: "Check for Updates…", click: () => updates.checkNow() }]),
         { type: "separator" },
         {
           label: "Slide Station on GitHub",
@@ -491,6 +497,13 @@ app.whenReady().then(async () => {
   if (isMac && !app.isPackaged) app.dock?.setIcon(path.join(__dirname, "build", "icon.png"));
   buildMenu();
   registerIpc();
+  updates = setupAutoUpdate({
+    isBusy: () => blockerId >= 0,
+    beforeInstall: () => {
+      quitting = true; // no "still working" prompt: it only installs when nothing is running
+    },
+    getWindow: () => win,
+  });
   createWindow();
   splash("Starting Slide Station…");
   win.show();

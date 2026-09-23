@@ -244,6 +244,10 @@ feature is behind `if (desktop)`, and the browser build is the same bundle.
 - Packaged: the Python sources ship in `Resources/backend`; uv builds the venv under the app's
   userData (`UV_PROJECT_ENVIRONMENT`), never inside the signed bundle.
 - Quitting kills the server's whole process group (uv → python); verified nothing is left behind.
+- **Releases and updates:** every push to `main` is built, signed, notarised and published to
+  GitHub Releases by a self-hosted runner on Sam's Mac (`.github/workflows/release.yml`); the app
+  updates itself from there when idle (`updater.cjs`). Details, runner upkeep and the safety rule
+  for a public repo: `desktop/README.md` → "Automatic releases and updates".
 
 Tested under Xvfb on Linux with Playwright's Electron driver (menus, commands, panel toggles,
 import, packaged uv first start). Not yet tried on a real Mac: traffic-light position, dock badge

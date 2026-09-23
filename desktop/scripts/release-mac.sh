@@ -2,7 +2,8 @@
 # Build a signed + notarised Slide Station.dmg and check it the way Gatekeeper will.
 # One-time setup: desktop/README.md → "Signing and notarising".
 #
-#   cd desktop && npm run release:mac
+#   cd desktop && npm run release:mac                 # build + verify locally
+#   PUBLISH=always GH_TOKEN=… npm run release:mac     # …and publish to GitHub Releases (what CI does)
 #
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -26,8 +27,10 @@ if [ -n "${APPLE_API_KEY:-}" ]; then
   [ -n "${APPLE_API_KEY_ID:-}" ] && [ -n "${APPLE_API_ISSUER:-}" ] || fail "set APPLE_API_KEY_ID and APPLE_API_ISSUER too"
   ok "notary credentials: App Store Connect API key"
 elif [ -n "${APPLE_KEYCHAIN_PROFILE:-}" ]; then
-  export APPLE_KEYCHAIN="${APPLE_KEYCHAIN:-$HOME/Library/Keychains/login.keychain-db}"
-  xcrun notarytool history --keychain-profile "$APPLE_KEYCHAIN_PROFILE" >/dev/null 2>&1 ||
+  # APPLE_KEYCHAIN stays unset unless you chose a keychain: store-credentials saves profiles in the
+  # data-protection keychain, which notarytool only searches when no keychain path is given
+  xcrun notarytool history --keychain-profile "$APPLE_KEYCHAIN_PROFILE" ${APPLE_KEYCHAIN:+--keychain "$APPLE_KEYCHAIN"} \
+    >/dev/null 2>&1 ||
     fail "notarytool can't use keychain profile \"$APPLE_KEYCHAIN_PROFILE\" (README step 3)"
   ok "notary credentials: keychain profile $APPLE_KEYCHAIN_PROFILE"
 elif [ -n "${APPLE_ID:-}" ]; then
@@ -38,8 +41,14 @@ else
   fail "no notary credentials: set APPLE_KEYCHAIN_PROFILE (or an API key / Apple ID, README step 3)"
 fi
 
+if [ "${PUBLISH:-never}" != never ]; then
+  [ -n "${GH_TOKEN:-}" ] || fail "PUBLISH=${PUBLISH} needs GH_TOKEN (a token that can create releases)"
+  ok "publishing to GitHub Releases as $(node -p 'require("./package.json").version')"
+fi
+
 echo "Building…"
-npm run dist
+npm run build:ui
+npx electron-builder --mac --publish "${PUBLISH:-never}"
 
 app=$(ls -d dist/mac*/"Slide Station.app" | head -1)
 dmg=$(ls -t dist/*.dmg | head -1)

@@ -1,0 +1,72 @@
+name: Release
+
+# Every push to main becomes a signed, notarised release that the desktop app picks up by itself
+# (desktop/updater.cjs). Runs on Sam's Mac, like the Reizo CI: a self-hosted runner has the
+# Developer ID certificate and notarytool profile in its keychain, and costs no Actions minutes.
+# Setup and safety notes: desktop/README.md → "Automatic releases".
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - "**.md"
+      - "tests/**"
+      - ".github/ISSUE_TEMPLATE/**"
+  workflow_dispatch:
+
+# One release at a time, in order; a push while one runs waits instead of cancelling it.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+permissions:
+  contents: write # create the GitHub release and upload the build
+
+jobs:
+  mac:
+    # The slide-station label keeps this on the runner registered for this repo.
+    runs-on: [self-hosted, macOS, slide-station]
+    timeout-minutes: 60
+    env:
+      DEVELOPER_DIR: /Applications/Xcode.app/Contents/Developer
+      APPLE_KEYCHAIN_PROFILE: slide-station
+      # every run a new version: 1.0.<run number>, never written back to the repo
+      VERSION: 1.0.${{ github.run_number }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            frontend/package-lock.json
+            desktop/package-lock.json
+
+      - name: Install
+        run: |
+          npm ci --prefix frontend
+          npm ci --prefix desktop
+
+      # Checks first: a broken build shouldn't reach anyone's Mac.
+      - name: Typecheck the UI
+        working-directory: frontend
+        run: npx tsc -b
+      - name: Backend imports
+        run: uv run --python 3.12 python -c "import slidestation.server"
+
+      - name: Set version ${{ env.VERSION }}
+        working-directory: desktop
+        run: npm version --no-git-tag-version --allow-same-version "$VERSION"
+
+      - name: Build, sign, notarise, publish
+        working-directory: desktop
+        env:
+          PUBLISH: always
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: scripts/release-mac.sh
+
+      - name: Tidy up
+        if: always()
+        working-directory: desktop
+        run: rm -rf dist

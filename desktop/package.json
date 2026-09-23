@@ -11,8 +11,8 @@
     "start": "npm run build:ui && electron .",
     "dev": "SLIDESTATION_DEV_URL=http://localhost:5173 SLIDESTATION_PORT=8765 electron .",
     "build:ui": "npm --prefix ../frontend run build",
-    "dist": "npm run build:ui && electron-builder --mac",
-    "dist:dir": "npm run build:ui && electron-builder --dir",
+    "dist": "npm run build:ui && electron-builder --mac --publish never",
+    "dist:dir": "npm run build:ui && electron-builder --dir --publish never",
     "release:mac": "scripts/release-mac.sh"
   },
   "devDependencies": {
@@ -24,8 +24,9 @@
     "productName": "Slide Station",
     "files": [
       "main.cjs",
+      "package.json",
       "preload.cjs",
-      "package.json"
+      "updater.cjs"
     ],
     "extraResources": [
       {
@@ -50,7 +51,8 @@
     "mac": {
       "category": "public.app-category.photography",
       "target": [
-        "dmg"
+        "dmg",
+        "zip"
       ],
       "icon": "build/icon.png",
       "darkModeSupport": true,
@@ -61,6 +63,15 @@
       "entitlements": "build/entitlements.mac.plist",
       "entitlementsInherit": "build/entitlements.mac.plist"
     },
-    "publish": null
-  }
+    "publish": {
+      "provider": "github",
+      "owner": "Sam-Apostel",
+      "repo": "slide-station",
+      "releaseType": "release"
+    }
+  },
+  "dependencies": {
+    "electron-updater": "^6.8.9"
+  },
+  "author": "Sam Apostel"
 }

@@ -113,11 +113,41 @@ advises against it, and Gatekeeper checks the notarised app inside.
 - *Intel Macs* — builds are for the architecture you build on. For both:
   `npx electron-builder --mac --universal` (the Python side is per-machine anyway).
 
-### Not done yet
+## Automatic releases and updates
 
-Auto-update needs a place to publish releases (e.g. GitHub Releases: `"publish": {"provider":
-"github"}`, a `zip` target next to `dmg`, and `electron-updater` in `main.cjs`). That only works
-once builds are signed, so it's the natural next step after the first signed release.
+Every push to `main` (except docs-only changes) becomes a release: `.github/workflows/release.yml`
+type-checks the UI, checks the backend imports, sets the version to `1.0.<run number>`, and runs
+`scripts/release-mac.sh` with `PUBLISH=always` — build, sign, notarise, verify, and publish the
+`.dmg`, the `.zip` and `latest-mac.yml` to GitHub Releases. Nothing is committed back.
+
+**Where it runs.** On Sam's Mac, like the Reizo CI: a self-hosted GitHub Actions runner in
+`~/actions-runner-slide-station` (label `slide-station`, LaunchAgent
+`actions.runner.Sam-Apostel-slide-station.sams-mac-slide-station`), because that's where the
+Developer ID certificate and the `slide-station` notarytool profile live, and it costs no
+Actions minutes. The Mac has to be on and logged in for a release to go out; pushes made while
+it's asleep queue up and run when it wakes.
+
+```bash
+cd ~/actions-runner-slide-station && ./svc.sh status      # is it running?
+./svc.sh stop / ./svc.sh start                              # pause / resume releases
+```
+
+Re-register it (e.g. on a new Mac): download the runner from the repo's Settings → Actions →
+Runners → New self-hosted runner, `./config.sh --url https://github.com/Sam-Apostel/slide-station
+--token <token> --labels slide-station`, then `./svc.sh install && ./svc.sh start`.
+
+**Safety (public repo + runner on a personal Mac).** The workflow only runs on pushes to `main`
+and by hand, never on pull requests. A pull request could still add its own workflow aimed at the
+runner, so the repo requires approval before workflows from outside contributors run (Settings →
+Actions → General → "Require approval for all outside collaborators"). Don't relax that, and
+don't add a `pull_request` trigger that runs on this runner.
+
+**How the app updates itself** (`updater.cjs`, electron-updater): it checks GitHub Releases 30 s
+after launch, every hour, and after waking from sleep, and downloads a newer version in the
+background. It installs only when you're not working: no import, render or upload running and no
+keyboard or mouse input for 5 minutes. Then it restarts itself on the new version and says so in a
+notification. Quitting installs a downloaded update too. The app menu has **Check for Updates…**
+for doing it now. Updates only work in signed builds — development runs (`npm start`) never update.
 
 ## How it fits together
 

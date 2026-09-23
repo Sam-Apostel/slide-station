@@ -15,10 +15,6 @@ Small, known items (the old handoff's leftovers):
 - **Browser test script** — `tests/ui_flow.py` predates the Develop button, the Frame section and
   the panel cleanup; update its selectors, and add backend tests for curves, crop, undo, dates and
   locked slides.
-- **First signed release** — Apple account steps in `desktop/README.md` → "Signing and
-  notarising", then `npm run release:mac`.
-- **Auto-update** — once builds are signed: GitHub Releases as `publish` provider, a `zip` target
-  next to `dmg`, `electron-updater` in `main.cjs`.
 - **Crop tool polish** — with a locked aspect ratio an edge drag that hits the photo's border stops
   instead of sliding along it; keyboard nudging.
 - **Learning** — also learn curves (and maybe crop) from developed slides, not only the sliders.
