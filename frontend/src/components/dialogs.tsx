@@ -16,7 +16,7 @@ import { Input } from "@/components/ui/input";
 import { Kbd } from "@/components/ui/kbd";
 import { Label } from "@/components/ui/label";
 import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select";
-import { desktop } from "@/lib/desktop";
+import { desktop, isMac } from "@/lib/desktop";
 import { api, sourceLabel, type AppState, type Config, type Source } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
@@ -368,6 +368,8 @@ export const SHORTCUTS: [React.ReactNode, string][] = [
     </>,
     "Toggle scan in the stack",
   ],
+  [<Kbd>{isMac ? "⌘ K" : "Ctrl K"}</Kbd>, "Every action, searchable"],
+  ["Right-click", "Actions for a slide"],
   [<Kbd>?</Kbd>, "This list"],
 ];
 

@@ -91,6 +91,19 @@ frontend/src/
   1–9 toggles); `ProInspector` right rail with `ProSlider`s and a pinned upload/clean footer;
   `ProStatusbar`. Toasts are sonner; `window.confirm` became a promise-based `AlertDialog`
   (`components/confirm.tsx`).
+- Filmstrip | stage | inspector sit in a `resizable` panel group. The side panels keep their pixel
+  width when the window resizes; widths are saved per combination of visible panels
+  (`useDefaultLayout`, key `panel-widths`), and the group remounts when a panel is shown/hidden.
+- Inspector sections are `ProDisclosureGroup`s (collapsed state in localStorage,
+  `inspector-sections`), with a one-line summary when collapsed.
+- Right-click a filmstrip tile or the photo: `components/slide-menu.tsx` (`context-menu`). Opening
+  it selects that slide, then items call the same actions as the keys.
+- ⌘K / Ctrl+K: `components/command-palette.tsx` (`command`) lists every action plus the other
+  trays. In the desktop app it is also View → Command Palette.
+- Tooltips: `components/tip.tsx` wraps ProUI's `tooltip` and shows the shortcut as a `Kbd`. Use it
+  instead of `title=` on controls.
+- `useKeyboard` ignores keys while a dialog **or a menu** is open (`[role=menu]`), so arrow keys
+  and typeahead in the context menu don't move between slides.
 - **Keyboard shortcuts are identical to the original** — they are why the app is fast for 10k
   slides. A focused slider keeps its arrow keys; every other shortcut still works from it.
 - Slider edits are optimistic and debounced (140 ms). Pending edits are tied to the slide they

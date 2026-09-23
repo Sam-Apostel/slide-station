@@ -2,6 +2,7 @@ import * as React from "react";
 import { PanelLeft, PanelRight } from "lucide-react";
 import { ProTitlebar } from "@/components/ui/pro-titlebar";
 import { ProButton, ProButtonGroup } from "@/components/ui/pro-button";
+import { Tip } from "@/components/tip";
 import { desktop, isMac } from "@/lib/desktop";
 
 /** Shows / hides the filmstrip and the inspector, like the layout toggles in ProUI's app shells. */
@@ -19,26 +20,28 @@ export function PanelToggles({
   const mod = isMac ? "⌥⌘" : "Ctrl+Alt+";
   return (
     <ProButtonGroup>
-      <ProButton
-        plain
-        aria-label="Filmstrip"
-        aria-pressed={filmstrip}
-        data-on={filmstrip || undefined}
-        title={`${filmstrip ? "Hide" : "Show"} filmstrip (${mod}1)`}
-        onClick={onFilmstrip}
-      >
-        <PanelLeft />
-      </ProButton>
-      <ProButton
-        plain
-        aria-label="Inspector"
-        aria-pressed={inspector}
-        data-on={inspector || undefined}
-        title={`${inspector ? "Hide" : "Show"} inspector (${mod}2)`}
-        onClick={onInspector}
-      >
-        <PanelRight />
-      </ProButton>
+      <Tip label={`${filmstrip ? "Hide" : "Show"} filmstrip`} keys={`${mod}1`}>
+        <ProButton
+          plain
+          aria-label="Filmstrip"
+          aria-pressed={filmstrip}
+          data-on={filmstrip || undefined}
+          onClick={onFilmstrip}
+        >
+          <PanelLeft />
+        </ProButton>
+      </Tip>
+      <Tip label={`${inspector ? "Hide" : "Show"} inspector`} keys={`${mod}2`}>
+        <ProButton
+          plain
+          aria-label="Inspector"
+          aria-pressed={inspector}
+          data-on={inspector || undefined}
+          onClick={onInspector}
+        >
+          <PanelRight />
+        </ProButton>
+      </Tip>
     </ProButtonGroup>
   );
 }

@@ -10,6 +10,7 @@ export type DesktopHandlers = {
   importFolder: (path?: string) => void;
   upload: () => void;
   help: () => void;
+  palette: () => void;
   toggleFilmstrip: () => void;
   toggleInspector: () => void;
   focusMode: () => void;
@@ -56,6 +57,7 @@ export function useDesktop(
         case "reveal": return a.reveal();
         case "eject": return src && a.eject(src.path);
         case "help": return h.help();
+        case "palette": return h.palette();
         case "toggle-filmstrip": return h.toggleFilmstrip();
         case "toggle-inspector": return h.toggleInspector();
         case "focus-mode": return h.focusMode();

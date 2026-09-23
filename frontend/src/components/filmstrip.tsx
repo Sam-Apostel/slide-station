@@ -46,6 +46,7 @@ export function Filmstrip({
   filter,
   onFilter,
   onSelect,
+  slideMenu,
 }: {
   session: SessionPayload;
   sessionId: string;
@@ -53,6 +54,8 @@ export function Filmstrip({
   filter: Filter;
   onFilter: (f: Filter) => void;
   onSelect: (i: number) => void;
+  /** Wraps a tile in the slide's right-click menu. */
+  slideMenu: (index: number, el: React.ReactElement) => React.ReactElement;
 }) {
   const sm = session.summary;
   const groups = session.groups.filter((g) => matches(g, filter));
@@ -63,7 +66,7 @@ export function Filmstrip({
   }, [sel, filter]);
 
   return (
-    <aside className="flex min-h-0 w-[250px] shrink-0 flex-col border-r border-border bg-[var(--pro-canvas)]">
+    <aside className="flex size-full min-h-0 flex-col border-r border-border bg-[var(--pro-canvas)]">
       <div className="border-b border-border bg-(--ss-panel) px-3 pt-2.5 pb-2">
         <div className="truncate text-[13px] font-semibold text-foreground/90">{sm.name}</div>
         <div className="text-[11px] text-muted-foreground">
@@ -77,11 +80,12 @@ export function Filmstrip({
           </ProScope>
         ))}
       </ProScopebar>
-      <div className="grid min-h-0 flex-1 auto-rows-min grid-cols-2 gap-2 overflow-y-auto p-2 scrollbar-thin">
+      <div className="grid min-h-0 flex-1 auto-rows-min grid-cols-[repeat(auto-fill,minmax(104px,1fr))] gap-2 overflow-y-auto p-2 scrollbar-thin">
         {groups.map((g) => {
           const isSel = g.index === sel;
           const autoRot = g.rot_reason && g.rot_reason !== "manual" && g.rotation;
-          return (
+          return slideMenu(
+            g.index,
             <button
               key={g.id}
               ref={isSel ? selRef : undefined}
@@ -120,11 +124,11 @@ export function Filmstrip({
                   STATUS_DOT[g.status],
                 )}
               />
-            </button>
+            </button>,
           );
         })}
         {!groups.length && (
-          <p className="col-span-2 py-6 text-center text-[11px] text-(--ss-dim)">
+          <p className="col-span-full py-6 text-center text-[11px] text-(--ss-dim)">
             {session.groups.length ? "No slides match this filter" : "No slides yet"}
           </p>
         )}

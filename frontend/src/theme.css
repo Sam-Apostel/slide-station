@@ -137,6 +137,47 @@ body {
   font-weight: 600;
 }
 
+/* Collapsible inspector sections (ProDisclosureGroup): ProUI's greys set as variables on the
+   element, so they are overridden here in the same way. */
+.pro-disclosure {
+  --pro-disclosure-surface: var(--ss-rail);
+  --pro-disclosure-header-surface: var(--ss-rail);
+  --pro-disclosure-separator: var(--ss-line);
+}
+.pro-disclosure [data-slot="pro-disclosure-trigger"] {
+  color: var(--ss-muted);
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+.pro-disclosure [data-slot="pro-disclosure-trigger"]:hover,
+.pro-disclosure [data-slot="pro-disclosure-trigger"]:focus-visible {
+  color: var(--ss-text);
+}
+.pro-disclosure-summary {
+  color: var(--ss-dim);
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+/* ------------------------------------------------------------------ resizable panels */
+
+[data-slot="resizable-handle"] {
+  background: var(--ss-line);
+  box-shadow: none;
+}
+[data-slot="resizable-handle"]::after {
+  background: transparent;
+  width: 7px; /* easier to grab than the 1 px line */
+}
+[data-slot="resizable-handle"]:hover,
+[data-slot="resizable-handle"][data-separator="hover"],
+[data-slot="resizable-handle"][data-separator="active"],
+[data-slot="resizable-handle"]:focus-visible {
+  background: var(--ss-accent);
+  outline: none;
+}
+
 /* ------------------------------------------------------------------ buttons */
 
 .pro-btn {
@@ -325,4 +366,46 @@ body {
 .ss-drop {
   background: color-mix(in srgb, var(--ss-bg) 70%, transparent);
   box-shadow: inset 0 0 0 2px var(--ss-accent);
+}
+
+/* ------------------------------------------------------------------ popovers */
+
+[data-slot="tooltip-content"] {
+  background: var(--ss-panel-2);
+  border-color: var(--ss-line);
+  color: var(--ss-text);
+  box-shadow: 0 4px 14px #0009;
+}
+[data-slot="tooltip-content"] [data-slot="kbd"] {
+  background: var(--ss-field);
+  color: var(--ss-muted);
+}
+[data-slot="context-menu-content"],
+[data-slot="context-menu-sub-content"] {
+  background: var(--ss-panel);
+  border: 1px solid var(--ss-line);
+  color: var(--ss-text);
+  box-shadow: 0 12px 32px #000a;
+}
+[data-slot="context-menu-item"]:is(:hover, :focus, [data-highlighted]):not([data-disabled]),
+[data-slot="command-item"][data-selected="true"] {
+  background: var(--ss-accent);
+  color: var(--ss-ink);
+}
+[data-slot="context-menu-item"]:is(:hover, :focus, [data-highlighted]) svg,
+[data-slot="context-menu-item"]:is(:hover, :focus, [data-highlighted]) [data-slot="context-menu-shortcut"],
+[data-slot="command-item"][data-selected="true"] svg,
+[data-slot="command-item"][data-selected="true"] [data-slot="command-shortcut"] {
+  color: var(--ss-ink);
+}
+[data-slot="context-menu-separator"],
+[data-slot="command-separator"] {
+  background: var(--ss-line);
+}
+[data-slot="command"] {
+  background: var(--ss-panel);
+  color: var(--ss-text);
+}
+[data-slot="command-input-wrapper"] {
+  border-color: var(--ss-line);
 }

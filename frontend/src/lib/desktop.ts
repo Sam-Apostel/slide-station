@@ -10,6 +10,7 @@ export type DesktopCommand =
   | "reveal"
   | "eject"
   | "help"
+  | "palette"
   | "toggle-filmstrip"
   | "toggle-inspector"
   | "focus-mode"

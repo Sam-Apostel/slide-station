@@ -353,6 +353,8 @@ function buildMenu() {
     {
       label: "View",
       submenu: [
+        { label: "Command Palette…", accelerator: "CmdOrCtrl+K", click: cmd("palette") },
+        { type: "separator" },
         {
           label: "Filmstrip",
           type: "checkbox",

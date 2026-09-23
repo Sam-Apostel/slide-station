@@ -1,6 +1,8 @@
 import type * as React from "react";
 import { CircleHelp, HardDriveDownload, Plus, Settings, Usb } from "lucide-react";
 import { ProButton } from "@/components/ui/pro-button";
+import { Tip } from "@/components/tip";
+import { isMac } from "@/lib/desktop";
 import { ProSeparator, ProToolbar } from "@/components/ui/pro-toolbar";
 import { ProTitlebarWell } from "@/components/ui/pro-titlebar";
 import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select";
@@ -72,9 +74,11 @@ export function TopBar({
           </NativeSelectOption>
         ))}
       </NativeSelect>
-      <ProButton onClick={onNewTray} title="New tray">
-        <Plus /> New tray
-      </ProButton>
+      <Tip label="Start a new tray" keys={isMac ? "⌘N" : "Ctrl+N"}>
+        <ProButton onClick={onNewTray}>
+          <Plus /> New tray
+        </ProButton>
+      </Tip>
 
       <div className="flex min-w-0 flex-1 justify-center px-2">
         <ProTitlebarWell
@@ -138,9 +142,11 @@ export function TopBar({
           <ProSeparator />
         </>
       )}
-      <ProButton onClick={onHelp} title="Keyboard shortcuts (?)" aria-label="Keyboard shortcuts">
-        <CircleHelp />
-      </ProButton>
+      <Tip label="Keyboard shortcuts" keys="?">
+        <ProButton onClick={onHelp} aria-label="Keyboard shortcuts">
+          <CircleHelp />
+        </ProButton>
+      </Tip>
       <ProButton onClick={onSettings}>
         <Settings /> Settings
       </ProButton>
