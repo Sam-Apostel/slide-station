@@ -61,8 +61,32 @@ export function Filmstrip({
   const groups = session.groups.filter((g) => matches(g, filter));
   const selRef = React.useRef<HTMLButtonElement>(null);
 
+  // slides that were just developed get one sweep of light across their new gold mount
+  const seen = React.useRef(new Map<string, GroupStatus>());
+  const [gilding, setGilding] = React.useState<ReadonlySet<string>>(new Set());
   React.useEffect(() => {
-    selRef.current?.scrollIntoView({ block: "nearest" });
+    const fresh = session.groups.filter((g) => {
+      const was = seen.current.get(g.id);
+      return was !== undefined && was !== "reviewed" && g.status === "reviewed";
+    });
+    for (const g of session.groups) seen.current.set(g.id, g.status);
+    if (fresh.length) setGilding((s) => new Set([...s, ...fresh.map((g) => g.id)]));
+  }, [session.groups]);
+  const gilded = (id: string) =>
+    setGilding((s) => {
+      const next = new Set(s);
+      next.delete(id);
+      return next;
+    });
+
+  React.useEffect(() => {
+    const tile = selRef.current;
+    tile?.scrollIntoView({ block: "nearest" });
+    // Keys move the selection from anywhere, so a clicked tile keeping focus would stay ringed
+    // after ← → / Space moved on: focus follows the selection while it's in the strip.
+    if (tile && tile !== document.activeElement && document.activeElement?.closest(".ss-mount")) {
+      tile.focus({ preventScroll: true });
+    }
   }, [sel, filter]);
 
   return (
@@ -95,6 +119,8 @@ export function Filmstrip({
               aria-label={`Slide ${g.index + 1}, ${STATUS_LABEL[g.status]}`}
               aria-current={isSel || undefined}
               data-status={g.status}
+              data-gilding={gilding.has(g.id) || undefined}
+              onAnimationEnd={(e) => e.animationName === "ss-gild" && gilded(g.id)}
               className="ss-mount"
             >
               {/* the mount's window, with the photo sunk into it */}
@@ -106,18 +132,28 @@ export function Filmstrip({
                   draggable={false}
                   onLoad={(e) => {
                     const i = e.currentTarget;
-                    i.parentElement!.dataset.portrait = String(i.naturalHeight > i.naturalWidth);
+                    i.closest<HTMLElement>(".ss-mount")!.dataset.portrait = String(i.naturalHeight > i.naturalWidth);
                   }}
                   className={cn("size-full object-cover", g.skip && "opacity-25 grayscale")}
                 />
               </span>
-              <span className="ss-mount-number">{String(g.index + 1).padStart(2, "0")}</span>
-              {g.date_est?.value && (
-                // stamped on the mount like the lab did, dimmer when it's an estimate
-                <span className="ss-mount-year" data-estimated={g.date_est.source !== "own" || undefined}>
-                  ’{g.date_est.value.slice(2, 4)}
-                </span>
-              )}
+              {/* along the bottom edge, or down the side when the slide is turned; always upright */}
+              <span className="ss-mount-foot">
+                {g.status !== "reviewed" && (
+                  // developed slides are gilded instead
+                  <span
+                    title={STATUS_LABEL[g.status]}
+                    className={cn("ss-mount-dot border-[1.5px] border-black/50", STATUS_DOT[g.status])}
+                  />
+                )}
+                <span className="ss-mount-number">{String(g.index + 1).padStart(2, "0")}</span>
+                {g.date_est?.value && (
+                  // stamped on the mount like the lab did, dimmer when it's an estimate
+                  <span className="ss-mount-year" data-estimated={g.date_est.source !== "own" || undefined}>
+                    ’{g.date_est.value.slice(2, 4)}
+                  </span>
+                )}
+              </span>
               <span className="absolute top-[5px] right-[5px] flex gap-[3px]">
                 {g.locked && (
                   <TileBadge title="Locked: original scans deleted after upload">
@@ -131,10 +167,6 @@ export function Filmstrip({
                   </TileBadge>
                 ) : null}
               </span>
-              <span
-                title={STATUS_LABEL[g.status]}
-                className={cn("ss-mount-dot border-[1.5px] border-black/50", STATUS_DOT[g.status])}
-              />
             </button>,
           );
         })}
