@@ -1242,3 +1242,35 @@ body {
   font-size: 11px;
   white-space: nowrap;
 }
+
+/* ------------------------------------------------------------------ locked slide */
+
+.ss-locked {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 10px 12px 4px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--ss-warn) 9%, var(--ss-panel));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--ss-warn) 30%, transparent);
+  color: var(--ss-warn);
+  font-size: 11px;
+  line-height: 1.35;
+}
+.ss-locked b {
+  display: block;
+  color: var(--ss-text);
+  font-size: 12px;
+  font-weight: 600;
+}
+.ss-locked span {
+  color: var(--ss-muted);
+}
+/* sections stay readable (and collapsible) but every control inside is inert */
+.ss-readonly .pro-disclosure-body,
+.ss-readonly .pro-disclosure-actions {
+  opacity: 0.45;
+  pointer-events: none;
+  filter: saturate(0.4);
+}

@@ -147,6 +147,17 @@ export function useSlideStation() {
     return g ? `/api/sessions/${sid}/groups/${g.id}` : null;
   };
 
+  /** Locked slides (originals deleted after upload) can't change: say so instead of failing. */
+  const editable = () => {
+    const g = ref.current.session?.groups[ref.current.sel];
+    if (!g?.locked) return true;
+    toast("This slide is locked: its original scans were deleted after upload.", {
+      id: "locked",
+      description: "Re-import its scans into this tray to edit it again.",
+    });
+    return false;
+  };
+
   const patchGroup = React.useCallback(
     async (body: Record<string, unknown>) => {
       const url = groupUrl();
@@ -185,6 +196,7 @@ export function useSlideStation() {
   /** Optimistic: the slider moves now, the server hears about it shortly after. */
   const setParam = React.useCallback(
     <K extends keyof Params>(k: K, v: Params[K], immediate = false) => {
+      if (!editable()) return;
       const { session: s, sel: i } = ref.current;
       const g = s?.groups[i];
       const url = groupUrl();
@@ -205,6 +217,7 @@ export function useSlideStation() {
   );
 
   const rotate = (d: number) => {
+    if (!editable()) return;
     const g = ref.current.session?.groups[ref.current.sel];
     if (g) patchGroup({ rotation: (g.rotation + d + 360) % 360 });
   };
@@ -225,6 +238,7 @@ export function useSlideStation() {
   };
 
   const toggleScan = (scan: string) => {
+    if (!editable()) return;
     const g = ref.current.session?.groups[ref.current.sel];
     if (!g) return;
     const ex = g.excluded.includes(scan) ? g.excluded.filter((x) => x !== scan) : [...g.excluded, scan];
@@ -241,13 +255,15 @@ export function useSlideStation() {
       fail(e);
     }
   };
-  const splitAt = (scan: string) => groupAction("split", { scan });
+  const splitAt = (scan: string) => editable() && groupAction("split", { scan });
   const mergeNext = () => {
+    if (!editable()) return;
     const { session: s, sel: i } = ref.current;
     if (s && i < s.groups.length - 1) groupAction("merge_next");
   };
 
   const copyPrev = () => {
+    if (!editable()) return;
     const { session: s, sel: i } = ref.current;
     if (!s || i === 0) return;
     // colour only: crop and straighten belong to each slide
@@ -257,6 +273,7 @@ export function useSlideStation() {
   };
 
   const resetColour = () => {
+    if (!editable()) return;
     const d = ref.current.session?.defaults;
     if (d) patchGroup({ params: { ...NEUTRAL, strength: d.strength, trim: d.trim } });
   };
@@ -301,6 +318,7 @@ export function useSlideStation() {
 
   /** Pull the curves' channel ends in to the scan's data: this slide, or every one still to develop. */
   const fitCurves = async (all = false) => {
+    if (!all && !editable()) return;
     const url = groupUrl();
     const g = ref.current.session?.groups[ref.current.sel];
     if (!url || !g) return;
@@ -317,6 +335,7 @@ export function useSlideStation() {
 
   /** White balance from a spot on the photo that should be neutral (x, y: 0..1 of the preview). */
   const pickNeutral = async (x: number, y: number) => {
+    if (!editable()) return;
     const url = groupUrl();
     const g = ref.current.session?.groups[ref.current.sel];
     if (!url || !g) return;
@@ -337,6 +356,7 @@ export function useSlideStation() {
   };
   /** Step this slide's look back / forward (settings + rotation, drags count as one step). */
   const step = async (direction: "undo" | "redo") => {
+    if (!editable()) return;
     const url = groupUrl();
     const g = ref.current.session?.groups[ref.current.sel];
     if (!url || !g) return;

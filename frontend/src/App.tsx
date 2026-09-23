@@ -1,4 +1,5 @@
 import * as React from "react";
+import { toast } from "sonner";
 import { useDefaultLayout } from "react-resizable-panels";
 import { Toaster } from "@/components/ui/sonner";
 import { ProStatusbar } from "@/components/ui/pro-statusbar";
@@ -151,6 +152,15 @@ function SlideStationApp() {
     )
       return;
     app.startUpload();
+  };
+
+  /** Import this tray's scans again: from the connected card, else a folder you pick (desktop). */
+  const reimport = async () => {
+    const src = state?.sources.find((x) => x.count > 0);
+    if (src) return app.startImport(sessionId, src.path);
+    const path = await desktop?.pickFolder({ title: "Folder with this tray's scans", buttonLabel: "Import" });
+    if (path) return app.startImport(sessionId, path);
+    if (!desktop) toast("Connect the scanner (or use the desktop app to pick a folder) to re-import");
   };
 
   const clean = async () => {
@@ -316,7 +326,8 @@ function SlideStationApp() {
                     picking={picking}
                     onPick={() => setPicking((v) => !v)}
                     cropping={cropping}
-                    onCrop={() => setCropping((v) => !v)}
+                    onCrop={() => app.current?.locked || setCropping((v) => !v)}
+                    onReimport={reimport}
                   />
                 </ResizablePanel>
               </>
@@ -450,8 +461,12 @@ function useKeyboard(
       else if (k === "m" || k === "M") a.mergeNext();
       else if (k === "c" || k === "C") a.copyPrev();
       else if (k === "0") a.resetColour();
-      else if (k === "w" || k === "W") latest.current.setPicking((v) => !v);
-      else if (k === "k" || k === "K") latest.current.setCropping(true);
+      else if (k === "w" || k === "W") {
+        if (!a.current?.locked) latest.current.setPicking((v) => !v);
+      }
+      else if (k === "k" || k === "K") {
+        if (!a.current?.locked) latest.current.setCropping(true);
+      }
       else if (k === "y" || k === "Y") latest.current.setCompare((v) => !v);
       else if (k === "Escape") latest.current.setPicking(false);
       else if (k === "f") a.fitCurves();

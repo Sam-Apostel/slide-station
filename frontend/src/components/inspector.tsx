@@ -10,6 +10,8 @@ import {
   Layers,
   Sparkles,
   FolderOpen,
+  HardDriveDownload,
+  Lock,
   Merge,
   RotateCcw,
   RotateCw,
@@ -89,6 +91,7 @@ export function Inspector({
   onPick,
   cropping,
   onCrop,
+  onReimport,
 }: {
   app: SlideStation;
   session: SessionPayload;
@@ -101,6 +104,8 @@ export function Inspector({
   onPick: () => void;
   cropping: boolean;
   onCrop: () => void;
+  /** Import the tray's scans again (brings deleted originals back and unlocks their slides). */
+  onReimport?: () => void;
 }) {
   const { current: g, sel } = app;
   const sm = session.summary;
@@ -111,8 +116,25 @@ export function Inspector({
   return (
     <ProInspector className="size-full min-h-0 border-l border-border">
       <div className="min-h-0 flex-1 overflow-y-auto scrollbar-thin">
+        {g?.locked && (
+          <div className="ss-locked" role="status">
+            <Lock className="size-4 shrink-0" aria-hidden />
+            <div className="min-w-0 flex-1">
+              <b>Locked — Immich has the final version</b>
+              <span>The original scans were deleted after upload, so this slide can't be edited.</span>
+            </div>
+            {onReimport && (
+              <Tip label="Import the scans again into this tray (the card or a folder) to edit it">
+                <ProButton onClick={onReimport}>
+                  <HardDriveDownload /> Re-import
+                </ProButton>
+              </Tip>
+            )}
+          </div>
+        )}
         {g && (
-          <>
+          // a locked slide shows its settings but can't change them (the server refuses too)
+          <div aria-disabled={g.locked || undefined} className={g.locked ? "ss-readonly" : undefined}>
             <ProDisclosureGroup
               title="Frame"
               summary={frameNote(g)}
@@ -183,7 +205,7 @@ export function Inspector({
             <ProDisclosureGroup title="Details" summary={detailsNote(g)} {...section("details")}>
               <SlideDetails app={app} />
             </ProDisclosureGroup>
-          </>
+          </div>
         )}
 
         <ProDisclosureGroup
@@ -242,7 +264,7 @@ export function Inspector({
                 className="ss-square"
                 aria-label="Merge with next"
                 onClick={app.mergeNext}
-                disabled={sel >= session.groups.length - 1}
+                disabled={sel >= session.groups.length - 1 || g.locked}
               >
                 <Merge />
               </ProButton>

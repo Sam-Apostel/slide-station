@@ -1,5 +1,5 @@
 import * as React from "react";
-import { Columns2, Redo2, Scissors, Undo2 } from "lucide-react";
+import { Columns2, Lock, Redo2, Scissors, Undo2 } from "lucide-react";
 import { isMac } from "@/lib/desktop";
 import { Tip } from "@/components/tip";
 import { CropBar, CropOverlay, FULL, fitAspect, maxAspect, type Rect } from "@/components/crop";
@@ -165,19 +165,21 @@ export function Stage({
               <span className={cn("size-[7px] rounded-full border border-transparent", STATUS_DOT[g.status])} />
               {STATUS_LABEL[g.status]}
             </span>
-            {g.originals_missing && g.status === "changed" && (
-              <Tip label="The original scans were deleted after upload (Settings → keep originals), so this edit can't be sent to Immich. Undo it, or re-import the scans.">
-                <span className="ss-warn-chip">originals deleted</span>
+            {g.locked && (
+              <Tip label="Its original scans were deleted after upload, so it can't be edited. Immich has the final version.">
+                <span className="ss-warn-chip flex items-center gap-1">
+                  <Lock className="size-3" aria-hidden /> locked
+                </span>
               </Tip>
             )}
             <div className="flex">
               <Tip label="Undo this slide's last edit" keys={isMac ? "⌘Z" : "Ctrl+Z"}>
-                <ProButton plain aria-label="Undo" disabled={!g.can_undo} onClick={onUndo}>
+                <ProButton plain aria-label="Undo" disabled={!g.can_undo || g.locked} onClick={onUndo}>
                   <Undo2 />
                 </ProButton>
               </Tip>
               <Tip label="Redo" keys={isMac ? "⇧⌘Z" : "Ctrl+Shift+Z"}>
-                <ProButton plain aria-label="Redo" disabled={!g.can_redo} onClick={onRedo}>
+                <ProButton plain aria-label="Redo" disabled={!g.can_redo || g.locked} onClick={onRedo}>
                   <Redo2 />
                 </ProButton>
               </Tip>

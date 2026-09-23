@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+  <dict>
+    <!-- Hardened runtime exceptions Electron's V8 needs (arm64 crashes without allow-jit). -->
+    <key>com.apple.security.cs.allow-jit</key>
+    <true/>
+    <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+    <true/>
+    <!-- Nothing else: the Python backend runs as its own process (uv + a venv in Application
+         Support), so the app never loads unsigned code into itself and needs no library-validation
+         or sandbox exceptions. -->
+  </dict>
+</plist>

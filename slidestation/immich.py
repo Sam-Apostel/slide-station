@@ -82,3 +82,8 @@ class Immich:
     def trash(self, asset_ids: list[str]) -> None:
         if asset_ids:
             self._check(self.client.request("DELETE", self.base + "/assets", json={"ids": asset_ids, "force": False}))
+
+    def preview(self, asset_id: str) -> bytes:
+        """Immich's own preview JPEG of an asset (needs the asset.view permission)."""
+        r = self._check(self.client.get(f"{self.base}/assets/{asset_id}/thumbnail", params={"size": "preview"}))
+        return r.content

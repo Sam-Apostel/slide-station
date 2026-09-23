@@ -144,7 +144,7 @@ export function SettingsDialog({
               />
               <FieldDescription>
                 Create one in Immich → Account settings → API keys. It needs: asset.upload, asset.delete, album.read,
-                album.create, albumAsset.create.
+                album.create, albumAsset.create — and asset.view to show locked slides as they are in Immich.
               </FieldDescription>
             </Field>
             <div className="flex items-center gap-3">

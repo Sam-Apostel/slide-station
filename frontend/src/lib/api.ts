@@ -37,8 +37,9 @@ export type Group = {
   params_source: string;
   /** Scans the import left out of the blend, and why ("blurry" / "clipped"). */
   auto_excluded: Record<string, string>;
-  /** The original scans were deleted after upload ("keep originals" off): edits can't be exported. */
-  originals_missing: boolean;
+  /** The original scans were deleted after upload ("keep originals" off): read-only, Immich has the
+   *  final version. Re-importing the scans into the tray unlocks it. */
+  locked: boolean;
   reviewed: boolean;
   skip: boolean;
   status: GroupStatus;

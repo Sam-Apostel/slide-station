@@ -1,5 +1,5 @@
 import * as React from "react";
-import { RotateCw } from "lucide-react";
+import { Lock, RotateCw } from "lucide-react";
 import { ProScope, ProScopebar } from "@/components/ui/pro-toolbar";
 import { needsReview, plural, previewUrl, type Group, type GroupStatus, type SessionPayload } from "@/lib/api";
 import { cn } from "@/lib/utils";
@@ -119,6 +119,11 @@ export function Filmstrip({
                 </span>
               )}
               <span className="absolute top-[5px] right-[5px] flex gap-[3px]">
+                {g.locked && (
+                  <TileBadge title="Locked: original scans deleted after upload">
+                    <Lock className="size-2.5" aria-label="Locked" />
+                  </TileBadge>
+                )}
                 {g.active.length > 1 && <TileBadge>HDR ×{g.active.length}</TileBadge>}
                 {autoRot ? (
                   <TileBadge title={`Auto-rotated (${g.rot_reason})`} className="text-primary">

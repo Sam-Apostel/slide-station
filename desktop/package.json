@@ -12,7 +12,8 @@
     "dev": "SLIDESTATION_DEV_URL=http://localhost:5173 SLIDESTATION_PORT=8765 electron .",
     "build:ui": "npm --prefix ../frontend run build",
     "dist": "npm run build:ui && electron-builder --mac",
-    "dist:dir": "npm run build:ui && electron-builder --dir"
+    "dist:dir": "npm run build:ui && electron-builder --dir",
+    "release:mac": "scripts/release-mac.sh"
   },
   "devDependencies": {
     "electron": "^38.1.2",
@@ -55,7 +56,10 @@
       "darkModeSupport": true,
       "extendInfo": {
         "NSRemovableVolumesUsageDescription": "Slide Station reads new scans from the scanner's SD card and, when you ask it to, deletes the ones that are safely uploaded."
-      }
+      },
+      "hardenedRuntime": true,
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.plist"
     },
     "publish": null
   }

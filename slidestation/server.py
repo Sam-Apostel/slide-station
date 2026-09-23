@@ -102,7 +102,8 @@ def _session_payload(s: Session) -> dict:
             **{k: g[k] for k in ("id", "scans", "excluded", "rotation", "rot_reason", "params", "reviewed", "skip")},
             "params_source": g.get("params_source", ""),
             "auto_excluded": g.get("auto_excluded", {}),  # scan -> "blurry" / "clipped"
-            "originals_missing": wf.originals_missing(s, g),
+            # original scans deleted after upload: read-only, Immich has the final version
+            "locked": bool(g.get("locked")),
             "status": st[i],
             "date": g.get("date", ""),
             "caption": g.get("caption", ""),
@@ -133,6 +134,8 @@ def create_session(body: dict = Body(...)):
 def get_session(sid: str):
     s = _session(sid)
     wf.active_session = sid  # the background renderer works on the tray you're looking at
+    if wf.sync_locks(s):  # originals deleted (or restored) since we last looked
+        s = wf.update_session(sid, wf.sync_locks)
     return _session_payload(s)
 
 
@@ -200,6 +203,7 @@ def _step(sid: str, gid: str, direction: str):
     with lock:
         s = _session(sid)
         g = s.group(gid)
+        _editable(g)
         h = g.setdefault("history", {"undo": [], "redo": []})
         src, dst = (h["undo"], h["redo"]) if direction == "undo" else (h["redo"], h["undo"])
         if not src:
@@ -210,6 +214,15 @@ def _step(sid: str, gid: str, direction: str):
         _learn(s, g)
         s.save()
     return {**_session_payload(s), "stepped": snap.get("what")}
+
+
+LOCKED = ("This slide's original scans were deleted after it was uploaded, so it can't be edited "
+          "(Immich has the final version). Re-import its scans into this tray to edit it again.")
+
+
+def _editable(g: dict) -> None:
+    if g.get("locked"):
+        raise HTTPException(409, LOCKED)
 
 
 def _edit_label(body: dict) -> str | None:
@@ -225,6 +238,8 @@ def patch_group(sid: str, gid: str, body: dict = Body(...)):
     with lock:
         s = _session(sid)
         g = s.group(gid)
+        if set(body) - {"reviewed", "skip"}:  # developed / left out are fine; changing the photo is not
+            _editable(g)
         what = _edit_label(body)
         if what:
             _remember(g, what)
@@ -259,6 +274,7 @@ def split_group(sid: str, gid: str, body: dict = Body(...)):
     with lock:
         s = _session(sid)
         g = s.group(gid)
+        _editable(g)
         at = g["scans"].index(body["scan"])
         if at == 0:
             return _session_payload(s)
@@ -279,6 +295,8 @@ def merge_next(sid: str, gid: str):
         i = s.group_index(gid)
         if i + 1 >= len(s.data["groups"]):
             raise HTTPException(400, "No next slide to merge with")
+        _editable(s.data["groups"][i])
+        _editable(s.data["groups"][i + 1])
         nxt = s.data["groups"].pop(i + 1)
         g = s.data["groups"][i]
         g["scans"] += nxt["scans"]
@@ -297,6 +315,8 @@ def apply_params(sid: str, body: dict = Body(...)):
         p = Params.from_dict(body["params"]).to_dict()
         start = s.group_index(body["from"]) if body.get("from") else 0
         for i, g in enumerate(s.data["groups"]):
+            if g.get("locked"):
+                continue
             if body.get("scope") == "all" or (not g["reviewed"] and (body.get("scope") != "rest" or i > start)):
                 # colour carries over, framing (crop / straighten) is each slide's own
                 _remember(g, "apply")
@@ -326,7 +346,7 @@ def resuggest(sid: str, gid: str, body: dict = Body(default={})):
         targets = s.data["groups"] if body.get("all") else [s.group(gid)]
         n_applied = 0
         for g in targets:
-            if g.get("reviewed") or g.get("skip") or not g.get("feat"):
+            if g.get("reviewed") or g.get("skip") or g.get("locked") or not g.get("feat"):
                 continue
             sug, n = learning.model().suggest(g["feat"])
             if sug:
@@ -345,8 +365,10 @@ def fit_curves(sid: str, gid: str, body: dict = Body(default={})):
     The curves take over from auto restore (strength 0), so the histogram behind them is the
     scan itself. `all` fits every slide still to develop in the tray, each to its own data."""
     s = _session(sid)
-    targets = [g for g in s.data["groups"] if not g.get("reviewed") and not g.get("skip")] if body.get("all") \
-        else [s.group(gid)]
+    if not body.get("all"):
+        _editable(s.group(gid))
+    targets = [g for g in s.data["groups"] if not g.get("reviewed") and not g.get("skip") and not g.get("locked")] \
+        if body.get("all") else [s.group(gid)]
     fitted = {}
     for g in targets:  # the slow part, outside the lock
         p = Params.from_dict({**g["params"], "strength": 0})
@@ -368,6 +390,7 @@ def pick_neutral(sid: str, gid: str, body: dict = Body(...)):
     """White balance from a spot that should be neutral: body {x, y} in 0..1 of the shown photo."""
     s = _session(sid)
     g = s.group(gid)
+    _editable(g)
     p = Params.from_dict(g["params"])
     a = im.rotate_arr(wf.fused_proxy(s, g), g["rotation"])  # the preview's frame
     warmth, tint = im.neutral_balance(a, p, float(body["x"]), float(body["y"]))

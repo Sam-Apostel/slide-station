@@ -273,6 +273,8 @@ def group_status(g: dict, meta: str | None = None) -> str:
     if g.get("skip"):
         return "skipped"
     im = g.get("immich")
+    if im and g.get("locked"):
+        return "uploaded"  # originals gone: Immich's copy is the final one
     if im and im.get("key") == render_key(g) and (meta is None or im.get("meta", meta) == meta):
         return "uploaded"
     if im:

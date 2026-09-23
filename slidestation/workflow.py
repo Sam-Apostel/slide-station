@@ -147,6 +147,11 @@ def _taken(path: Path) -> str:
     return dt or datetime.fromtimestamp(path.stat().st_mtime).strftime("%Y:%m:%d %H:%M:%S")
 
 
+def _lost_here(s: Session, sha: str) -> bool:
+    """This tray has a scan with that content whose original was deleted."""
+    return any(r.get("sha1") == sha and not s.original_path(k).exists() for k, r in s.data["scans"].items())
+
+
 def import_scans(job: Job, sid: str, source: str) -> None:
     s = Session(sid)
     root = Path(source).expanduser()
@@ -160,14 +165,23 @@ def import_scans(job: Job, sid: str, source: str) -> None:
     idx = imported_index()
     job.total = len(files)
     job.message = f"Copying {len(files)} scans"
-    new_ids, skipped, fp_index, sha_index, records = [], 0, {}, {}, {}
+    new_ids, skipped, restored, fp_index, sha_index, records = [], 0, 0, {}, {}, {}
     for f in files:
         job.done += 1
-        if _quick_fp(f) in idx.get("_fp", {}):
+        if _quick_fp(f) in idx.get("_fp", {}) and not _lost_here(s, idx["_fp"][_quick_fp(f)]):
             skipped += 1
             continue
         sha = sha1_file(f)
         if sha in idx or sha in sha_index:
+            # already imported - but if this tray lost that original (deleted after upload), put
+            # it back: that unlocks the slide for editing again
+            for scan_id, rec in s.data["scans"].items():
+                if rec.get("sha1") == sha and not s.original_path(scan_id).exists():
+                    shutil.copy2(f, s.original_path(scan_id))
+                    if sha1_file(s.original_path(scan_id)) != sha:
+                        s.original_path(scan_id).unlink(missing_ok=True)
+                        raise RuntimeError(f"Copy of {f.name} did not verify - card or disk problem?")
+                    restored += 1
             skipped += 1
             fp_index[_quick_fp(f)] = sha
             continue
@@ -251,8 +265,11 @@ def import_scans(job: Job, sid: str, source: str) -> None:
         update_session(sid, commit)  # slides appear in the UI one by one
         job.done += 1
     update_session(sid, lambda fresh: fresh.log(f"Imported {len(new_ids)} scans from {root} ({skipped} already imported)"))
+    if restored:
+        update_session(sid, sync_locks)
     job.message = f"Imported {len(new_ids)} scans into {len(idx_groups)} slides" + (
-        f" ({skipped} were already imported)" if skipped else "")
+        f" ({skipped} were already imported)" if skipped else "") + (
+        f"; restored {restored} deleted originals, those slides can be edited again" if restored else "")
 
 
 def make_proxies(s: Session, scan_id: str) -> None:
@@ -297,6 +314,10 @@ def fused_proxy(s: Session, g: dict) -> np.ndarray:
 
 def preview(s: Session, gid: str, size: int, before: bool = False, uncropped: bool = False) -> bytes:
     g = s.group(gid)
+    if g.get("locked") and not before and g.get("immich") and g["immich"].get("key") != render_key(g):
+        shown = immich_preview(s, g)  # the local settings don't reproduce the upload: show Immich's
+        if shown is not None:
+            return im.to_jpeg_bytes(shown, 85, size)
     a = fused_proxy(s, g)
     if size <= 400:  # develop on a smaller image for thumbnails
         h, w = a.shape[:2]
@@ -518,6 +539,47 @@ def _drop_local_originals(s: Session) -> None:
         return
     for sc in s.data["scans"].values():
         (s.originals / sc["file"]).unlink(missing_ok=True)
+    update_session(s.id, sync_locks)
+
+
+def sync_locks(s: Session) -> bool:
+    """Lock slides whose original scans are gone (they can't be rendered again, so not edited), and
+    unlock them once the originals are back. Returns whether anything changed."""
+    changed = False
+    for g in s.data["groups"]:
+        missing = originals_missing(s, g)
+        if missing and not g.get("locked"):
+            g["locked"] = "originals"
+            changed = True
+        elif not missing and g.get("locked"):
+            g.pop("locked")
+            changed = True
+    return changed
+
+
+_immich_failed: dict[str, float] = {}
+
+
+def immich_preview(s: Session, g: dict) -> np.ndarray | None:
+    """What Immich actually has for a slide, cached; None if it can't be fetched (then the local
+    render stands in). Used for locked slides whose settings no longer reproduce the upload."""
+    asset = (g.get("immich") or {}).get("asset_id")
+    if not asset or time.time() - _immich_failed.get(asset, 0) < 300:
+        return None
+    f = s.cache / f"immich_{asset}.jpg"
+    if not f.exists():
+        cfg = load_config()
+        try:
+            client = Immich(cfg.get("immich_url", ""), cfg.get("immich_key", ""))
+            try:
+                f.write_bytes(client.preview(asset))
+            finally:
+                client.close()
+        except Exception as e:
+            print("immich preview:", e)
+            _immich_failed[asset] = time.time()
+            return None
+    return im.load_rgb(str(f))
 
 
 # --------------------------------------------------------------------------- card cleanup
