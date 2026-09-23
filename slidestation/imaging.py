@@ -361,6 +361,23 @@ def fit_curves(a: np.ndarray, curves: dict, clip: float = 0.1) -> dict:
     return clean_curves(out)
 
 
+def neutral_balance(a: np.ndarray, p: Params, x: float, y: float) -> tuple[float, float]:
+    """Warmth and tint that make the spot at (x, y) (0..1 of the developed frame) neutral grey.
+
+    Sampled after restore, trim and curves: exactly what the warmth/tint gammas in develop() act
+    on, so solving r^(1-w/4) = b^(1+w/4) = g^(1+t/4) for w and t neutralises it."""
+    base = apply_curves(tone_base(a, p), p.curves)
+    h, w = base.shape[:2]
+    r = max(2, int(min(h, w) * 0.006))
+    cx, cy = int(min(max(x, 0), 1) * (w - 1)), int(min(max(y, 0), 1) * (h - 1))
+    patch = base[max(0, cy - r) : cy + r + 1, max(0, cx - r) : cx + r + 1].reshape(-1, 3).mean(0)
+    lr, lg, lb = np.log(np.clip(patch, 0.02, 0.98))
+    warmth = float(np.clip(4 * (lr - lb) / (lr + lb), -1, 1))
+    level = lr * (1 - 0.25 * warmth)  # log of where red and blue meet
+    tint = float(np.clip(4 * (level / lg - 1), -1, 1))
+    return round(warmth, 3), round(tint, 3)
+
+
 def develop(a: np.ndarray, p: Params) -> np.ndarray:
     out = apply_curves(tone_base(a, p), p.curves)
     eps = 1e-5

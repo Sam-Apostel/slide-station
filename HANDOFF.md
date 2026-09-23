@@ -17,7 +17,7 @@ One window that takes a tray of slides from the scanner's SD card to an Immich a
 2. **Group** — consecutive scans of one slide at different brightness (the owner brackets by hand)
    are detected and exposure-fused (Mertens) into one image.
 3. **Orient** — rotation guessed from faces (OpenCV YuNet) and, failing that, from where the sky is.
-4. **Restore** — auto colour restoration for faded film + manual sliders.
+4. **Restore** — auto colour restoration for faded film + manual adjustments (Adjust panel).
 5. **Develop** — keyboard-first: →, Space (develop = mark ready), R, B, C, X, M, F, 1–9. Tone curves
    per channel, with "Fit to data" (F, ⇧F for the tray) pulling each channel's ends in to the scan.
 6. **Upload** — full-resolution JPEG with EXIF date into a per-tray Immich album; either only the
@@ -90,7 +90,7 @@ frontend/src/
 
 - Layout: `ProToolbar` top bar with an activity well (job progress, or scanner + Import);
   filmstrip with `ProScopebar` filters; stage (preview, hold-B before, scan stack with split and
-  1–9 toggles); `ProInspector` right rail with `ProSlider`s and a pinned upload/clean footer;
+  1–9 toggles); `ProInspector` right rail with the tone curve, the Adjust panel and a pinned upload/clean footer;
   `ProStatusbar`. Toasts are sonner; `window.confirm` became a promise-based `AlertDialog`
   (`components/confirm.tsx`).
 - Filmstrip | stage | inspector sit in a `resizable` panel group. The side panels keep their pixel
@@ -107,7 +107,8 @@ frontend/src/
 - `useKeyboard` ignores keys while a dialog **or a menu** is open (`[role=menu]`), so arrow keys
   and typeahead in the context menu don't move between slides.
 - **Keyboard shortcuts are identical to the original** — they are why the app is fast for 10k
-  slides. A focused slider keeps its arrow keys; every other shortcut still works from it.
+  slides. ← → always move between slides, even from a focused slider; ↑ ↓ nudge a focused
+  adjustment value field (Shift: by 10).
 - Slider edits are optimistic and debounced (140 ms). Pending edits are tied to the slide they
   were made on, so pressing → mid-debounce can't save them onto the next slide.
 - Learning is surfaced: the Colour section says where the settings came from (tray defaults /
@@ -153,6 +154,17 @@ don't turn `changed`.
   the scan itself.
 - Editor: `components/tone-curve.tsx`. Click adds, drag moves, double-click or dragging an inner
   point out of the box removes. Curves are not learned by `learning.py` (only the sliders are).
+
+### Adjust panel
+
+`components/adjust.tsx` replaced the six `ProSlider`s (ProSlider was then removed, per the
+licensing rule). Three groups — Restore (auto restore, trim), Light (brightness, contrast), Colour
+(white-balance pad + saturation) — each with its own reset. Sliders are a native range input over a
+painted rail (what the control does), with a centre notch, an amber bar from neutral to the value,
+a typable value (↑ ↓ nudge) and double-click reset. The white-balance pad is warmth × tint in 2D.
+The eyedropper (W, Esc cancels) sends the clicked point (0..1 of the preview) to
+`POST …/neutral`, which solves `imaging.neutral_balance`: warmth/tint that make that spot grey,
+sampled after restore + trim + curves (what the warmth/tint gammas act on), clamped to ±1.
 
 "Reviewed" is called **developed** in the UI (the Space button is "Develop"); the data field is
 still `reviewed`. `POST /finish {"only_ready": true}` uploads developed slides only;

@@ -9,33 +9,22 @@ import {
   RotateCcw,
   RotateCw,
   SkipForward,
-  Sparkles,
   Undo2,
   Upload,
 } from "lucide-react";
 import { ProInspector, ProInspectorRow } from "@/components/ui/pro-inspector";
 import { ProDisclosureGroup } from "@/components/ui/pro-disclosure";
-import { ProSlider } from "@/components/ui/pro-slider";
 import { ProButton, ProButtonGroup } from "@/components/ui/pro-button";
-import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Kbd } from "@/components/ui/kbd";
 import { Tip } from "@/components/tip";
 import { STATUS_LABEL } from "@/components/filmstrip";
 import { ToneCurve } from "@/components/tone-curve";
-import { needsReview, plural, type ParamKey, type SessionPayload } from "@/lib/api";
+import { AdjustPanel, adjustSummary } from "@/components/adjust";
+import { needsReview, plural, type SessionPayload } from "@/lib/api";
 import { CHANNELS, isStraight } from "@/lib/curves";
 import type { SlideStation } from "@/hooks/use-slide-station";
-
-const SLIDERS: [ParamKey, string, number, number][] = [
-  ["strength", "Auto restore", 0, 1],
-  ["brightness", "Brightness", -1, 1],
-  ["contrast", "Contrast", -1, 1],
-  ["warmth", "Warmth", -1, 1],
-  ["tint", "Tint", -1, 1],
-  ["saturation", "Saturation", -1, 1],
-];
 
 function rotationNote(rotation: number, reason: string) {
   if (!rotation) return "";
@@ -73,12 +62,6 @@ function useSections() {
   return props;
 }
 
-function paramsNote(source: string) {
-  if (source.startsWith("learned:")) return `Learned from ${source.split(":")[1]} similar slides`;
-  if (source === "manual") return "Adjusted by hand";
-  return "Tray defaults";
-}
-
 function curveNote(curves: Record<string, unknown> | undefined) {
   const edited = CHANNELS.filter((c) => !isStraight(curves?.[c] as never));
   if (!edited.length) return "straight";
@@ -92,6 +75,8 @@ export function Inspector({
   busy,
   onUpload,
   onClean,
+  picking,
+  onPick,
 }: {
   app: SlideStation;
   session: SessionPayload;
@@ -99,6 +84,9 @@ export function Inspector({
   busy: boolean;
   onUpload: (scope?: "ready" | "all") => void;
   onClean: () => void;
+  /** The neutral-point eyedropper is waiting for a click on the photo. */
+  picking: boolean;
+  onPick: () => void;
 }) {
   const { current: g, sel } = app;
   const sm = session.summary;
@@ -153,65 +141,18 @@ export function Inspector({
             </ProDisclosureGroup>
 
             <ProDisclosureGroup
-              title="Colour"
-              summary={paramsNote(g.params_source)}
+              title="Adjust"
+              summary={adjustSummary(g, session.defaults)}
               right={
-                <Tip label="Reset colour" keys="0">
-                  <button type="button" aria-label="Reset colour" onClick={app.resetColour}>
+                <Tip label="Reset all adjustments" keys="0">
+                  <button type="button" aria-label="Reset all adjustments" onClick={app.resetColour}>
                     <Undo2 />
                   </button>
                 </Tip>
               }
               {...section("colour")}
             >
-              <div className="flex flex-col gap-1 px-3 py-2.5">
-                <div className="mb-1 flex items-center gap-1.5 text-[11px] text-muted-foreground">
-                  {g.params_source.startsWith("learned:") && <Sparkles className="size-3 text-primary" aria-hidden />}
-                  <span className="min-w-0 flex-1 truncate">{paramsNote(g.params_source)}</span>
-                </div>
-                {SLIDERS.map(([k, label, min, max]) => (
-                  <div key={k} className="grid grid-cols-[76px_1fr] items-center gap-2">
-                    <span className="text-right text-[12px] text-muted-foreground">{label}</span>
-                    <ProSlider
-                      label={label}
-                      min={min}
-                      max={max}
-                      step={0.01}
-                      precision={2}
-                      value={g.params[k]}
-                      resetValue={k === "strength" ? session.defaults.strength : 0}
-                      onValueChange={(v) => app.setParam(k, v)}
-                    />
-                  </div>
-                ))}
-                <div className="mt-1.5 flex items-center gap-2 pl-[84px]">
-                  <Checkbox
-                    id="trim"
-                    checked={g.params.trim}
-                    onCheckedChange={(v) => app.setParam("trim", v === true, true)}
-                  />
-                  <Label htmlFor="trim" className="text-[12px] font-normal">
-                    Trim dark mount edges
-                  </Label>
-                </div>
-                <div className="mt-2 flex flex-wrap gap-1.5">
-                  <Tip label="Copy colour from the previous slide" keys="C">
-                    <ProButton onClick={app.copyPrev} disabled={sel === 0}>
-                      Copy previous
-                    </ProButton>
-                  </Tip>
-                  <Tip label="Apply to all following unreviewed slides">
-                    <ProButton onClick={app.applyRest}>Apply to rest</ProButton>
-                  </Tip>
-                  {!g.reviewed && (
-                    <Tip label="Use what your approved slides suggest for this one">
-                      <ProButton onClick={app.resuggest}>
-                        <Sparkles /> Use learned
-                      </ProButton>
-                    </Tip>
-                  )}
-                </div>
-              </div>
+              <AdjustPanel app={app} session={session} picking={picking} onPick={onPick} />
             </ProDisclosureGroup>
 
             <ProDisclosureGroup title="Slide" summary={STATUS_LABEL[g.status]} {...section("slide")}>

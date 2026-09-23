@@ -288,20 +288,6 @@ body {
   color: color-mix(in srgb, var(--ss-ink) 70%, transparent);
 }
 
-/* sliders: amber pointer on a dark rail, like the old accent-colour range inputs */
-.pro-pointer-rail {
-  background: #2a2a31;
-  box-shadow: none;
-}
-.pro-pointer {
-  fill: var(--ss-accent);
-  stroke: var(--ss-ink);
-}
-.group\/pro-slider:hover .pro-pointer,
-.group\/pro-slider:focus-within .pro-pointer {
-  fill: var(--ss-accent-hover);
-}
-
 [data-slot="progress"] {
   background: var(--ss-line);
   box-shadow: none;
@@ -555,4 +541,239 @@ body {
 }
 .ss-curve-tab:hover {
   color: var(--ss-text);
+}
+
+/* ------------------------------------------------------------------ adjust panel */
+
+.ss-adj-group {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 6px 12px 10px;
+  padding: 10px 10px 12px;
+  border-radius: 8px;
+  background: linear-gradient(180deg, #16161b, #131317);
+  box-shadow: inset 0 0 0 1px var(--ss-line-soft);
+}
+.ss-adj-group-head {
+  display: flex;
+  height: 16px;
+  align-items: center;
+  justify-content: space-between;
+  color: var(--ss-dim);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+.ss-adj-group-head button {
+  display: grid;
+  width: 18px;
+  height: 18px;
+  place-items: center;
+  border-radius: 4px;
+  color: var(--ss-muted);
+}
+.ss-adj-group-head button:hover {
+  background: var(--ss-panel-2);
+  color: var(--ss-text);
+}
+.ss-adj-group-head svg {
+  width: 11px;
+  height: 11px;
+}
+
+.ss-adj-label {
+  color: var(--ss-muted);
+  font-size: 12px;
+}
+.ss-adj[data-changed] .ss-adj-label,
+.ss-adj-group:has(.ss-balance-puck[data-changed]) .ss-adj-label:first-child {
+  color: var(--ss-text);
+}
+
+/* the number: reads as text, becomes a field on hover / focus */
+.ss-adj-value {
+  width: 44px;
+  height: 20px;
+  margin-left: auto;
+  padding: 0 6px;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--ss-muted);
+  font: 500 11px/20px ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  outline: none;
+  cursor: text;
+}
+.ss-adj-value:hover {
+  background: var(--ss-field);
+  box-shadow: inset 0 0 0 1px var(--ss-line);
+}
+.ss-adj-value:focus {
+  background: var(--ss-field);
+  color: var(--ss-text);
+  box-shadow: inset 0 0 0 1px var(--ss-accent);
+}
+
+.ss-adj-track {
+  position: relative;
+  height: 16px;
+  margin: 0 6px; /* the thumb's radius, so its centre reaches the rail's ends */
+}
+.ss-adj-rail {
+  position: absolute;
+  inset: 5px -6px;
+  border-radius: 3px;
+  box-shadow: inset 0 0 0 1px rgb(0 0 0 / 35%);
+  opacity: 0.85;
+}
+.ss-adj:hover .ss-adj-rail {
+  opacity: 1;
+}
+.ss-adj-notch {
+  position: absolute;
+  top: 2px;
+  bottom: 2px;
+  left: 50%;
+  width: 1px;
+  background: rgb(255 255 255 / 45%);
+  box-shadow: 0 0 0 1px rgb(0 0 0 / 40%);
+}
+/* how far from neutral: an amber bar just under the rail */
+.ss-adj-delta {
+  position: absolute;
+  bottom: -1px;
+  height: 2px;
+  border-radius: 1px;
+  background: var(--ss-accent);
+}
+.ss-adj-thumb {
+  position: absolute;
+  top: 50%;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: #d9d6cf;
+  box-shadow:
+    0 0 0 2px #0b0b0d,
+    0 1px 4px #000c;
+  transform: translate(-50%, -50%);
+  transition: transform 90ms ease;
+  pointer-events: none;
+}
+.ss-adj[data-changed] .ss-adj-thumb {
+  background: var(--ss-accent);
+}
+.ss-adj-track:hover .ss-adj-thumb,
+.ss-adj-track:has(input:active) .ss-adj-thumb {
+  transform: translate(-50%, -50%) scale(1.2);
+}
+.ss-adj-track:has(input:focus-visible) .ss-adj-thumb {
+  box-shadow:
+    0 0 0 2px #0b0b0d,
+    0 0 0 4px var(--ss-accent);
+}
+/* the real control: a native range input stretched over the painted rail */
+.ss-adj-track input[type="range"] {
+  position: absolute;
+  inset: 0 -6px;
+  width: calc(100% + 12px);
+  margin: 0;
+  opacity: 0;
+  cursor: ew-resize;
+}
+
+/* white balance pad */
+.ss-balance {
+  position: relative;
+  height: 92px;
+  border-radius: 6px;
+  background:
+    linear-gradient(0deg, rgb(77 187 114 / 55%), transparent 45%, transparent 55%, rgb(210 90 210 / 55%)),
+    linear-gradient(90deg, #3f7fd6, #4a5566 40%, #5f5a52 60%, #e39a36);
+  box-shadow: inset 0 0 0 1px rgb(0 0 0 / 45%);
+  cursor: crosshair;
+  touch-action: none;
+}
+.ss-balance-axis {
+  position: absolute;
+  background: rgb(255 255 255 / 22%);
+  pointer-events: none;
+}
+.ss-balance-axis-x {
+  top: 50%;
+  right: 0;
+  left: 0;
+  height: 1px;
+}
+.ss-balance-axis-y {
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  width: 1px;
+}
+.ss-balance-tag {
+  position: absolute;
+  bottom: 3px;
+  color: rgb(255 255 255 / 55%);
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  pointer-events: none;
+}
+.ss-balance-puck {
+  position: absolute;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: 2px solid #f4f1ea;
+  box-shadow:
+    0 0 0 1.5px #000a,
+    0 2px 6px #000c;
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+}
+.ss-balance-puck[data-changed] {
+  border-color: var(--ss-accent);
+}
+.ss-adj-pair {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--ss-muted);
+  font-size: 11px;
+}
+
+.ss-link {
+  color: var(--ss-accent);
+  font-size: 11px;
+}
+.ss-link:hover {
+  text-decoration: underline;
+}
+
+/* eyedropper armed */
+.ss-pick-hint {
+  position: absolute;
+  top: 14px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 5px 12px;
+  border-radius: 999px;
+  background: rgb(10 10 12 / 85%);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--ss-accent) 45%, transparent);
+  color: var(--ss-text);
+  font-size: 12px;
+  width: max-content;
+  max-width: calc(100% - 28px);
+  text-align: center;
+  pointer-events: none;
+}
+.ss-pick-hint kbd {
+  padding: 0 4px;
+  border-radius: 3px;
+  background: rgb(255 255 255 / 10%);
+  font: 10px ui-monospace, monospace;
 }

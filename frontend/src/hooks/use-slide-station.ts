@@ -306,6 +306,19 @@ export function useSlideStation() {
     }
   };
 
+  /** White balance from a spot on the photo that should be neutral (x, y: 0..1 of the preview). */
+  const pickNeutral = async (x: number, y: number) => {
+    const url = groupUrl();
+    const g = ref.current.session?.groups[ref.current.sel];
+    if (!url || !g) return;
+    if (unsaved.current.has(g.id)) await flushParams(g.id);
+    try {
+      applyPayload(await api<SessionPayload>("POST", `${url}/neutral`, { x, y }));
+    } catch (e) {
+      fail(e);
+    }
+  };
+
   // ---------------------------------------------------------------- tray
 
   const patchSession = async (body: Record<string, string>) => {
@@ -397,6 +410,7 @@ export function useSlideStation() {
     applyRest,
     resuggest,
     fitCurves,
+    pickNeutral,
     patchSession,
     startImport,
     createSession,

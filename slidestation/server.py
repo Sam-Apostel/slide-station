@@ -274,6 +274,24 @@ def fit_curves(sid: str, gid: str, body: dict = Body(default={})):
     return {**_session_payload(s), "fitted": len(fitted)}
 
 
+@app.post("/api/sessions/{sid}/groups/{gid}/neutral")
+def pick_neutral(sid: str, gid: str, body: dict = Body(...)):
+    """White balance from a spot that should be neutral: body {x, y} in 0..1 of the shown photo."""
+    s = _session(sid)
+    g = s.group(gid)
+    p = Params.from_dict(g["params"])
+    a = im.rotate_arr(wf.fused_proxy(s, g), g["rotation"])  # the preview's frame
+    warmth, tint = im.neutral_balance(a, p, float(body["x"]), float(body["y"]))
+    with lock:
+        s = _session(sid)
+        g = s.group(gid)
+        g["params"] = Params.from_dict({**g["params"], "warmth": warmth, "tint": tint}).to_dict()
+        g["params_source"] = "manual"
+        _learn(s, g)
+        s.save()
+    return _session_payload(s)
+
+
 @app.get("/api/sessions/{sid}/groups/{gid}/histogram")
 def group_histogram(sid: str, gid: str, v: str = ""):
     """Histograms of what the tone curve works on, per channel."""

@@ -36,6 +36,17 @@ function usePreloadedImage(url: string | null, warm: string | null) {
   return { shown, loading: loading && shown !== url };
 }
 
+/** Where a click lands on an object-fit: contain image, as 0..1 of the picture (null: on the letterbox). */
+function photoPoint(img: HTMLImageElement, clientX: number, clientY: number): [number, number] | null {
+  const r = img.getBoundingClientRect();
+  const scale = Math.min(r.width / img.naturalWidth, r.height / img.naturalHeight);
+  const w = img.naturalWidth * scale;
+  const h = img.naturalHeight * scale;
+  const x = (clientX - r.left - (r.width - w) / 2) / w;
+  const y = (clientY - r.top - (r.height - h) / 2) / h;
+  return x < 0 || x > 1 || y < 0 || y > 1 ? null : [x, y];
+}
+
 export function Stage({
   session,
   sessionId,
@@ -45,6 +56,8 @@ export function Stage({
   onToggleScan,
   onSplit,
   slideMenu,
+  picking,
+  onPicked,
 }: {
   session: SessionPayload;
   sessionId: string;
@@ -55,6 +68,9 @@ export function Stage({
   onSplit: (scan: string) => void;
   /** Wraps the photo in the slide's right-click menu. */
   slideMenu: (index: number, el: React.ReactElement) => React.ReactElement;
+  /** Eyedropper armed: a click on the photo reports where (0..1), anything else cancels. */
+  picking: boolean;
+  onPicked: (x: number | null, y: number | null) => void;
 }) {
   const g: Group | undefined = session.groups[sel];
   const next = session.groups[sel + 1];
@@ -104,9 +120,22 @@ export function Stage({
               src={shown}
               alt={`Slide ${sel + 1}`}
               draggable={false}
-              className="absolute inset-3.5 h-[calc(100%-28px)] w-[calc(100%-28px)] object-contain"
+              className={cn(
+                "absolute inset-3.5 h-[calc(100%-28px)] w-[calc(100%-28px)] object-contain",
+                picking && "cursor-crosshair",
+              )}
+              onClick={(e) => {
+                if (!picking) return;
+                const pt = photoPoint(e.currentTarget, e.clientX, e.clientY);
+                onPicked(pt?.[0] ?? null, pt?.[1] ?? null);
+              }}
             />,
           )}
+        {picking && (
+          <div className="ss-pick-hint" role="status">
+            Click a spot that should be neutral grey or white · <kbd>Esc</kbd>
+          </div>
+        )}
         {before && (
           <span className="absolute top-5 left-5 rounded bg-black/70 px-2 py-[3px] text-[11px] tracking-[0.08em]">
             BEFORE

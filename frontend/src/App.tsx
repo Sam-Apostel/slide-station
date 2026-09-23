@@ -67,6 +67,9 @@ function SlideStationApp() {
 
   const [filter, setFilter] = React.useState<Filter>("all");
   const [before, setBefore] = React.useState(false);
+  // the neutral-point eyedropper: the next click on the photo sets the white balance
+  const [picking, setPicking] = React.useState(false);
+  React.useEffect(() => setPicking(false), [app.sel, sessionId]);
   const [settingsOpen, setSettingsOpen] = React.useState(false);
   const [helpOpen, setHelpOpen] = React.useState(false);
   const [paletteOpen, setPaletteOpen] = React.useState(false);
@@ -168,7 +171,7 @@ function SlideStationApp() {
     toggleInspector,
     focusMode,
   };
-  useKeyboard(app, setBefore, () => setHelpOpen(true), () => setPaletteOpen(true));
+  useKeyboard(app, setBefore, () => setHelpOpen(true), () => setPaletteOpen(true), setPicking);
   useDesktop(app, panels, handlers);
   const dropping = useFolderDrop((path) => importFolder(path));
 
@@ -268,6 +271,11 @@ function SlideStationApp() {
                 onToggleScan={app.toggleScan}
                 onSplit={app.splitAt}
                 slideMenu={slideMenu}
+                picking={picking}
+                onPicked={(x, y) => {
+                  setPicking(false);
+                  if (x !== null && y !== null) app.pickNeutral(x, y);
+                }}
               />
             </ResizablePanel>
             {panels.inspector && (
@@ -287,6 +295,8 @@ function SlideStationApp() {
                     busy={busy}
                     onUpload={upload}
                     onClean={clean}
+                    picking={picking}
+                    onPick={() => setPicking((v) => !v)}
                   />
                 </ResizablePanel>
               </>
@@ -367,9 +377,10 @@ function useKeyboard(
   setBefore: (on: boolean) => void,
   openHelp: () => void,
   openPalette: () => void,
+  setPicking: React.Dispatch<React.SetStateAction<boolean>>,
 ) {
-  const latest = React.useRef({ app, setBefore, openHelp, openPalette });
-  latest.current = { app, setBefore, openHelp, openPalette };
+  const latest = React.useRef({ app, setBefore, openHelp, openPalette, setPicking });
+  latest.current = { app, setBefore, openHelp, openPalette, setPicking };
 
   React.useEffect(() => {
     const isTextEntry = (t: EventTarget | null) =>
@@ -406,6 +417,8 @@ function useKeyboard(
       else if (k === "m" || k === "M") a.mergeNext();
       else if (k === "c" || k === "C") a.copyPrev();
       else if (k === "0") a.resetColour();
+      else if (k === "w" || k === "W") latest.current.setPicking((v) => !v);
+      else if (k === "Escape") latest.current.setPicking(false);
       else if (k === "f") a.fitCurves();
       else if (k === "F") a.fitCurves(true);
       else if (k === "b" || k === "B") {
