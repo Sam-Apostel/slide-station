@@ -1,5 +1,5 @@
 import type * as React from "react";
-import { CircleHelp, HardDriveDownload, Plus, Settings, Usb } from "lucide-react";
+import { CircleHelp, HardDriveDownload, Plus, Settings } from "lucide-react";
 import { ProButton } from "@/components/ui/pro-button";
 import { Tip } from "@/components/tip";
 import { desktop, isMac } from "@/lib/desktop";
@@ -75,7 +75,12 @@ export function ActivityWell({
   return (
     <ProTitlebarWell
       data-tone={job?.error ? "bad" : !job && src ? "ok" : undefined}
-      className={cn("h-[30px] w-full max-w-[440px] flex-row gap-2.5 px-3 text-[11px]", className)}
+      // sized to what it says, like the first version's scanner chip; a job gets room for its bar
+      className={cn(
+        "ss-well h-[28px] max-w-full flex-row gap-2 text-[12px]",
+        job ? "w-[300px] px-3" : "w-auto py-0 pr-[3px] pl-3",
+        className,
+      )}
     >
       {job ? (
         <div className="flex w-full min-w-0 flex-col gap-[3px]" role="status" aria-live="polite">
@@ -102,8 +107,7 @@ export function ActivityWell({
             aria-hidden
             className="size-2 shrink-0 rounded-full bg-[var(--pro-green)] shadow-[0_0_0_3px_color-mix(in_srgb,var(--pro-green)_20%,transparent)]"
           />
-          <Usb className="size-3 shrink-0 text-muted-foreground" aria-hidden />
-          <span className="min-w-0 flex-1 truncate text-foreground/80">
+          <span className="min-w-0 truncate">
             {sourceLabel(src)} ·{" "}
             {src.new ? <b className="font-semibold text-foreground">{plural(src.new, "new scan")}</b> : "nothing new"}
           </span>
@@ -116,7 +120,7 @@ export function ActivityWell({
           )}
         </>
       ) : (
-        <span className="text-muted-foreground">Waiting for the scanner…</span>
+        <span className="px-1 text-muted-foreground">Waiting for the scanner…</span>
       )}
     </ProTitlebarWell>
   );

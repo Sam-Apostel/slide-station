@@ -83,7 +83,7 @@ export function WindowTitlebar({
           {isMac && !fullscreen ? <span className="block w-[64px] shrink-0" /> : <AppMark />}
           {left}
           <div className="pro-drag flex h-full min-w-0 flex-1 items-center justify-center px-2">
-            <div className="pro-no-drag flex w-full max-w-[440px] justify-center">{center}</div>
+            <div className="pro-no-drag flex max-w-[440px] min-w-0 justify-center">{center}</div>
           </div>
         </>
       }
