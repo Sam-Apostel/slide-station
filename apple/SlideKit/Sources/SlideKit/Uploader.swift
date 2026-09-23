@@ -57,7 +57,7 @@ public struct Uploader: Sendable {
     public struct Result: Sendable, Equatable { public var uploaded = 0, lost = 0; public var album = "" }
 
     /// Upload every slide that isn't skipped or already up to date (`onlyReady`: just the developed ones).
-    public func finish(trayID: String, settings: ImmichSettings, onlyReady: Bool,
+    public func finish(trayID: String, settings: ImmichSettings, onlyReady: Bool, keepOriginals: Bool = true,
                        progress: @Sendable (JobProgress) -> Void = { _ in }) async throws -> Result {
         let client = try ImmichClient(url: settings.url, key: settings.key)
         var tray = try await library.load(trayID)
@@ -117,6 +117,7 @@ public struct Uploader: Sendable {
             fresh.appendLog("Uploaded \(result.uploaded) slides to album '\(fresh.album)'")
         }
         try await client.trash(toTrash)
+        if !keepOriginals { _ = try await Originals.dropLocalOriginals(trayID: trayID, library: library) }
         result.lost = lost.count
         progress(JobProgress("Done — \(result.uploaded) slides uploaded to '\(albumName)'", done: 1, total: 1))
         return result

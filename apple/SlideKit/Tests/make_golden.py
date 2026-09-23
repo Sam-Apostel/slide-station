@@ -69,6 +69,12 @@ neg = im.Params(strength=0.3, contrast=-0.4, saturation=-0.5, trim=False)
 save_f32(im.develop(base, neg), "developed_neg.f32")
 meta["params_neg"] = neg.to_dict()
 
+cropped = im.Params(strength=0.6, angle=3.0, crop=[0.1, 0.12, 0.9, 0.85])
+dc = im.develop(base, cropped)
+save_f32(dc, "developed_crop.f32")
+meta["developed_crop_shape"] = list(dc.shape[:2])
+meta["params_crop"] = cropped.to_dict()
+
 # curves
 pts = [[0.0, 0.0], [0.25, 0.35], [0.6, 0.55], [1.0, 1.0]]
 meta["curve_points"] = pts
@@ -95,6 +101,23 @@ save_f32(fused, "fused.f32")
 
 # straighten
 save_f32(im.straighten(base, 4.0), "straight4.f32")
+
+# learning: features, and a k-NN suggestion from a small synthetic set of examples
+from slidestation import learning  # noqa: E402
+meta["features"] = learning.features(base, 2)
+rng = np.random.default_rng(5)
+model = learning.Model(path=OUT / "_learning_unused.json")
+model.examples = []
+for i in range(12):
+    f = (np.array(meta["features"]) + rng.normal(0, 0.05, 14)).round(5).tolist()
+    p = {k: round(float(rng.uniform(-0.5, 0.8)), 3) for k in learning.LEARNED_KEYS}
+    model.examples.append({"key": f"t:{i}", "f": f, "p": p, "trim": bool(i % 3), "t": 0})
+model._fit()
+meta["learning_examples"] = model.examples
+meta["learning_query"] = (np.array(meta["features"]) + 0.01).tolist()
+sugg, n = model.suggest(meta["learning_query"])
+meta["learning_suggestion"] = sugg
+meta["learning_neighbours"] = n
 
 (OUT / "golden.json").write_text(json.dumps(meta, indent=1))
 print("wrote", OUT)

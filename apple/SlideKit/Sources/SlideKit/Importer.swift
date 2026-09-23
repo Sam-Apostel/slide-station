@@ -23,8 +23,12 @@ public struct ImportResult: Sendable, Equatable {
 public struct Importer: Sendable {
     public let library: Library
     public let renderer: Renderer
+    /// Suggests settings for new slides from developed ones (nil: learning off).
+    public var learning: Learning.Model?
 
-    public init(library: Library, renderer: Renderer) { self.library = library; self.renderer = renderer }
+    public init(library: Library, renderer: Renderer, learning: Learning.Model? = nil) {
+        self.library = library; self.renderer = renderer; self.learning = learning
+    }
 
     /// `source` must already be accessible (security scope started by the caller).
     public func importScans(into trayID: String, from source: URL, progress: @Sendable (JobProgress) -> Void = { _ in }) async throws -> ImportResult {
@@ -73,7 +77,10 @@ public struct Importer: Sendable {
             try fm.copyItem(at: f, to: dest)
             guard try sha1(of: dest) == sha else { try? fm.removeItem(at: dest); throw SlideKitError.verifyFailed(f.lastPathComponent) }
             let size = (try? fm.attributesOfItem(atPath: f.path)[.size] as? Int) ?? 0
-            records[scanID] = ScanRecord(file: dest.lastPathComponent, source: f.path, sourceRoot: source.path, removable: removable,
+            // resolved paths on both sides (/var vs /private/var), so the scan's place below the
+            // card's root can be found again when cleaning the card
+            records[scanID] = ScanRecord(file: dest.lastPathComponent, source: f.resolvingSymlinksInPath().path,
+                                         sourceRoot: source.resolvingSymlinksInPath().path, removable: removable,
                                          size: size, sha1: sha, taken: taken[f]!)
             newIDs.append(scanID)
             if let fp { fpIndex[fp] = sha }
@@ -118,7 +125,9 @@ public struct Importer: Sendable {
             if !g.reviewed && g.rotReason != "manual" {
                 rot = Brackets.suggestRotation(try g.activeScans.map { try renderer.proxy(tray, scan: $0) })
             }
-            _ = try renderer.fusedProxy(tray, g)   // pre-blend the bracket so browsing is instant
+            let fused = try renderer.fusedProxy(tray, g)   // pre-blend the bracket so browsing is instant
+            let feats = Learning.features(fused, scans: g.activeScans.count)
+            let suggestion = learning?.suggest(feats)
             let slide = g
             tray = try await library.update(trayID) { fresh in
                 var target: Slide
@@ -131,9 +140,15 @@ public struct Importer: Sendable {
                     target.params = fresh.defaults
                 }
                 if let rot, rot.1 != "", target.rotReason != "manual" { target.rotation = rot.0; target.rotReason = rot.1 }
+                target.feat = feats
+                if let suggestion, !target.reviewed, target.paramsSource != "manual" {
+                    target.params = suggestion.apply(to: target.params)
+                    target.paramsSource = "learned:\(suggestion.neighbours)"
+                }
                 if let i = fresh.index(of: target.id) { fresh.groups[i] = target } else { fresh.groups.append(target) }
             }
         }
+        if result.restored > 0 { try await Originals.syncLocks(trayID: trayID, library: library) }
         let summary = result
         try await library.update(trayID) { $0.appendLog("\(summary.summary) from \(source.lastPathComponent)") }
         progress(JobProgress(result.summary, done: 1, total: 1))

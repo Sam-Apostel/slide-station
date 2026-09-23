@@ -43,9 +43,13 @@ public struct Slide: Codable, Identifiable, Equatable, Sendable {
     public var date: String?
     public var caption: String?
     public var locked: String?
+    /// Features of the blended, undeveloped slide, for learning (Python: `g["feat"]`).
+    public var feat: [Double]?
+    /// Undo / redo of the slide's look (Python: `g["history"]`).
+    public var history: History?
 
     enum CodingKeys: String, CodingKey {
-        case id, scans, excluded, rotation, params, reviewed, skip, immich, date, caption, locked
+        case id, scans, excluded, rotation, params, reviewed, skip, immich, date, caption, locked, feat, history
         case autoExcluded = "auto_excluded", rotReason = "rot_reason", paramsSource = "params_source"
     }
 
@@ -69,6 +73,8 @@ public struct Slide: Codable, Identifiable, Equatable, Sendable {
         date = try? c.decode(String.self, forKey: .date)
         caption = try? c.decode(String.self, forKey: .caption)
         locked = try? c.decode(String.self, forKey: .locked)
+        feat = try? c.decode([Double].self, forKey: .feat)
+        history = try? c.decode(History.self, forKey: .history)
     }
 
     /// Every key, nulls included, like the Python app writes a group (it reads some with `g["immich"]`).
@@ -81,7 +87,77 @@ public struct Slide: Codable, Identifiable, Equatable, Sendable {
         try c.encode(reviewed, forKey: .reviewed); try c.encode(skip, forKey: .skip)
         try c.encode(immich, forKey: .immich)
         try c.encodeIfPresent(date, forKey: .date); try c.encodeIfPresent(caption, forKey: .caption); try c.encodeIfPresent(locked, forKey: .locked)
+        try c.encodeIfPresent(feat, forKey: .feat); try c.encodeIfPresent(history, forKey: .history)
     }
+
+    // MARK: undo
+
+    public static let historyMax = 60
+    public static let coalesce: TimeInterval = 1.5   // edits to the same setting closer than this are one step
+
+    public var canUndo: Bool { !(history?.undo.isEmpty ?? true) }
+    public var canRedo: Bool { !(history?.redo.isEmpty ?? true) }
+
+    var snapshot: History.Snapshot {
+        History.Snapshot(params: params, rotation: rotation, rotReason: rotReason, paramsSource: paramsSource ?? "", what: nil, t: 0)
+    }
+
+    /// Push the look before an edit onto the undo stack (a slider drag is one step). Python: `_remember`.
+    public mutating func remember(_ what: String, now: Date = Date()) {
+        var h = history ?? History()
+        let t = now.timeIntervalSince1970
+        if let last = h.undo.last, last.what == what, t - last.t < Slide.coalesce {
+            h.undo[h.undo.count - 1].t = t   // same drag: keep the state from before it started
+        } else {
+            var s = snapshot; s.what = what; s.t = t
+            h.undo = Array((h.undo + [s]).suffix(Slide.historyMax))
+        }
+        h.redo = []
+        history = h
+    }
+
+    /// Step back (`undo: true`) or forward; returns what was undone or redone.
+    @discardableResult
+    public mutating func step(undo: Bool) -> String? {
+        var h = history ?? History()
+        guard let snap = undo ? h.undo.popLast() : h.redo.popLast() else { return nil }
+        var mine = snapshot; mine.what = snap.what
+        if undo { h.redo.append(mine) } else { h.undo.append(mine) }
+        params = snap.params; rotation = snap.rotation; rotReason = snap.rotReason
+        paramsSource = snap.paramsSource.isEmpty ? nil : snap.paramsSource
+        history = h
+        return snap.what
+    }
+}
+
+public struct History: Codable, Equatable, Sendable {
+    public var undo: [Snapshot] = []
+    public var redo: [Snapshot] = []
+    public struct Snapshot: Codable, Equatable, Sendable {
+        public var params: Params
+        public var rotation: Int
+        public var rotReason: String
+        public var paramsSource: String
+        public var what: String?
+        public var t: Double
+        enum CodingKeys: String, CodingKey { case params, rotation, what, t, rotReason = "rot_reason", paramsSource = "params_source" }
+        public init(params: Params, rotation: Int, rotReason: String, paramsSource: String, what: String?, t: Double) {
+            self.params = params; self.rotation = rotation; self.rotReason = rotReason; self.paramsSource = paramsSource; self.what = what; self.t = t
+        }
+        public init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            params = (try? c.decode(Params.self, forKey: .params)) ?? Params()
+            rotation = (try? c.decode(Int.self, forKey: .rotation)) ?? 0
+            rotReason = (try? c.decode(String.self, forKey: .rotReason)) ?? ""
+            paramsSource = (try? c.decode(String.self, forKey: .paramsSource)) ?? ""
+            what = try? c.decode(String.self, forKey: .what)
+            t = (try? c.decode(Double.self, forKey: .t)) ?? 0
+        }
+    }
+    public init() {}
+}
+
+extension Slide {
 
     public static func newID() -> String { String(UUID().uuidString.replacingOccurrences(of: "-", with: "").prefix(8)).lowercased() }
 
@@ -122,10 +198,11 @@ public struct Tray: Codable, Identifiable, Equatable, Sendable {
     public var immichAlbumId: String?
     /// Immich assets of slides that were merged away or skipped after upload, to trash next upload.
     public var orphanAssets: [String]?
+    public var cardCleaned: Bool?
 
     enum CodingKeys: String, CodingKey {
         case id, name, album, date, created, defaults, scans, groups, log
-        case dateKey = "date_key", immichAlbumId = "immich_album_id", orphanAssets = "orphan_assets"
+        case dateKey = "date_key", immichAlbumId = "immich_album_id", orphanAssets = "orphan_assets", cardCleaned = "card_cleaned"
     }
 
     public init(id: String, name: String, album: String? = nil, date: String = "") {
