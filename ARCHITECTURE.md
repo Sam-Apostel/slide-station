@@ -1,7 +1,8 @@
-# Handoff — Slide Station
+# Architecture — Slide Station
 
-Written for whoever picks this up next (human or coding agent). It covers what exists, why it is
-built this way, what is unfinished, and the traps that already cost time.
+For whoever works on this next (human or coding agent): what exists, why it is built this way,
+the invariants worth keeping, and the traps that already cost time. What's still to do lives in
+`ROADMAP.md`.
 
 Repo: <https://github.com/Sam-Apostel/slide-station> · owner drives a Kodak Slide N Scan (RODFS50)
 and has ~10,000 35mm slides to digitise into a self-hosted Immich.
@@ -322,19 +323,3 @@ and the library folder are outside the repo by design — keep it that way. `.gi
 
 Licences: project code MIT (`LICENSE`); third-party components recorded in `NOTICE.md` (ProUI —
 proprietary, see §4; YuNet — MIT).
-
-## 10. Immediate next steps
-
-1. ~~Report the `/r/r/` registry bug to ProUI~~ — reported, and fixed upstream per ProUI's
-   owner. Plain `npx shadcn add @proui/<name>` should work again; `scripts/proui-add.sh` still
-   works if it doesn't.
-2. ~~Learning in the UI~~ — done: Settings has the on/off switch, example count and Forget;
-   "Use learned … whole tray" in the Adjust panel and ⌘K.
-3. Desktop app (§4a): signing and notarising is set up in the repo; the Apple-account steps are
-   in `desktop/README.md` → "Signing and notarising" (`npm run release:mac`). Auto-update after that.
-   With a ProUI licence key, worth adding: `context-menu` (right-click a filmstrip slide: skip,
-   merge, rotate), `command` (⌘K palette over every action), `tooltip` (replace `title=`),
-   `pro-disclosure` (collapsible inspector sections) and `resizable` (draggable panel widths).
-4. See `ROADMAP.md` for the bigger picture (local AI insights, Immich round-trip, iPad, hosted).
-5. Optional, previously discussed: an ESP32 button macro for the scanner to automate bracketing; a camera-based scanning rig, which
-   would make most of the HDR work unnecessary.

@@ -8,6 +8,22 @@ plenty.
 
 ---
 
+## 0. Open now
+
+Small, known items (the old handoff's leftovers):
+
+- **Browser test script** — `tests/ui_flow.py` predates the Develop button, the Frame section and
+  the panel cleanup; update its selectors, and add backend tests for curves, crop, undo, dates and
+  locked slides.
+- **First signed release** — Apple account steps in `desktop/README.md` → "Signing and
+  notarising", then `npm run release:mac`.
+- **Auto-update** — once builds are signed: GitHub Releases as `publish` provider, a `zip` target
+  next to `dmg`, `electron-updater` in `main.cjs`.
+- **Crop tool polish** — with a locked aspect ratio an edge drag that hits the photo's border stops
+  instead of sliding along it; keyboard nudging.
+- **Learning** — also learn curves (and maybe crop) from developed slides, not only the sliders.
+- **Dates** — date a range of slides at once ("12–31: Aug 1978").
+
 ## 1. Understand the tray (local models, no cloud)
 
 The laptop does the work while you develop; results are *suggestions* shown in the inspector,
@@ -16,13 +32,13 @@ never silently applied, and every one is learned from like the colour settings a
 | Idea | How | Why it matters |
 | --- | --- | --- |
 | **Smart grouping 2.0** | CLIP / SigLIP image embeddings next to today's structural signature. Detects brackets *and* near-duplicates (the same scene shot twice), and splits "scenes" inside a tray. | Fewer wrong merges; "keep the best of these 3" becomes one click. |
-| **Best-of-bracket / best-of-burst** | Sharpness (Laplacian variance), exposure clipping, face-eyes-open score per scan. | Picks the default active scan in a stack instead of fusing a blurred one in. |
+| **Best-of-burst** | Sharpness and clipping per scan already leave weak bracket scans out; next: near-duplicate shots of one scene, eyes-open score. | "Keep the best of these 3" without looking. |
 | **Scene tags** | Zero-shot CLIP labels (beach, snow, wedding, birthday, church, car, dog…), plus OCR of signs. | Searchable in Immich as tags; lets you filter the filmstrip. |
 | **Descriptions** | Small local VLM (e.g. Qwen2-VL / Moondream / LLaVA via llama.cpp or MLX on Apple silicon). One-sentence caption per slide, editable. | Immich's description field; makes 10 000 slides findable by words. |
 | **Faces → people** | Already have YuNet; add an embedding model (ArcFace / SFace) and cluster across trays. Name a cluster once. | Immich people are the #1 way families browse. Push names as Immich faces/people when the API allows, otherwise as tags. |
 | **Mount OCR** | Scan / photograph the mount (or read the scanner's frame edge). Handwritten dates, places, lab stamps ("KODAK · JUN 74"). | The single best dating signal there is. |
 | **Location recognition** | Landmark retrieval (e.g. CLIP + a GeoNames / Wikimedia landmark index), OCR'd place names, and propagation inside a tray. Confidence shown; accept with one click. | Immich map view for decades-old photos. |
-| **Date estimation** | Combine: mount stamps, film stock (Kodachrome vs Ektachrome fade signature — the learned colour features already separate them), fashion/car/era cues from the VLM, and *tray order*: dated slides anchor the undated ones between them. | Slides land in the right year in Immich instead of the scan date. |
+| **Date estimation** | Tray order already works (dated slides anchor the ones between them). Add: mount stamps, film stock (Kodachrome vs Ektachrome fade signature — the learned colour features already separate them), era cues from the VLM. | Slides land in the right year in Immich instead of the scan date. |
 | **Tray-level propagation** | Anything confirmed on one slide (place, date, people, event name) is offered to its neighbours: "Apply 'Lake Garda, Aug 1978' to slides 12–31?" | This is what makes 10k slides tractable. |
 | **Damage repair** | Dust & scratch detection from the scanner's IR-less scans (morphological + learned mask), inpaint; mould spot removal; Newton-ring reduction. | The biggest remaining quality gap after colour. |
 | **Film-stock profiles** | Learn per-stock restore curves (Kodachrome holds up, Ektachrome goes magenta, Agfachrome goes cyan). Auto-detect the stock from colour features + mount type. | Better first guess → fewer edits per slide. |
@@ -45,17 +61,53 @@ view per tray. Models downloaded on first use into the library folder, never bun
 - **Stacks.** Upload the untouched scan as a hidden stack member under the developed version, so
   nothing is ever lost.
 
-## 3. Edit anywhere: phone and iPad
+## 3. iPad (and later: one native app for iPad and Mac)
 
-The UI is already a web app served by the local server, so the cheapest version is almost free:
+Goal: plug the Slide N Scan into an iPad and let someone who isn't technical do a tray on their
+own — import, look through, keep or skip, upload — with the detailed tools there for whoever
+wants them.
 
-1. **LAN / Tailscale mode** — bind to the network with a pairing code, responsive layout (inspector
-   as a bottom sheet, filmstrip as a horizontal strip, swipe = next, tap-and-hold = before). Develop
-   slides on the iPad on the couch while the laptop does the heavy lifting.
-2. **PWA** — installable, offline queue of edits.
-3. **Pencil on iPad** — the crop tool and a retouch brush are natural with a pencil.
+**Feasibility, piece by piece**
 
-The server already renders every preview, so the tablet never needs the full-resolution files.
+| Piece | On iPad | Notes |
+| --- | --- | --- |
+| Reading the scanner | Yes, iPadOS mounts USB mass storage (FAT32/exFAT) in Files | The app gets the card through a folder picker once, keeps a security-scoped bookmark and notices when it's reachable again. There is no "drive mounted" event, so the app checks when it becomes active. **Verify first:** plug the scanner in, open Files. USB-C iPad strongly preferred; the scanner may need its own power. |
+| Deleting from the card after upload | Yes | The same security scope grants write access. Keep today's re-hash-before-delete safety. |
+| Bracket alignment + fusion | Port | Vision `VNTranslationalImageRegistrationRequest` aligns; Mertens fusion is ~300 lines of Metal / vImage (Laplacian pyramids). |
+| Rotation, straighten | Better than today | Vision face detection replaces YuNet; `VNDetectHorizonRequest` gives a straighten suggestion for free. |
+| Restore, curves, adjustments, crop | Port | Core Image filter chain + a small Metal kernel for per-channel curves; histograms via vImage. |
+| Learning (k-NN) | Trivial | A few hundred numbers. |
+| AI roadmap (§1) | Largely built in | Vision classification (tags), Live Text / `VNRecognizeTextRequest` (handwriting on mounts), on-device Foundation Models (captions) on Apple-Intelligence iPads, Core ML for faces. |
+| Immich | Trivial | URLSession; the API facts in ARCHITECTURE.md §6 carry over. |
+| Memory | Care needed | A 5-scan 22 MP stack peaks around 3 GB on the Mac today. On iPad: fuse on the GPU in half precision, in tiles; test on the actual iPad model. |
+
+**Shape**
+
+- `SlideKit` — a Swift package with the whole pipeline (import, grouping, fusion, restore,
+  render, sessions, Immich), no UI. Parity-tested against the Python implementation with golden
+  images, so both give the same result for the same slide.
+- A SwiftUI app on the ProUI Swift components, with two faces:
+  - **Simple mode** (default on iPad): one big "Import from scanner", then full-screen slides —
+    swipe to keep, "Skip" and "Turn" buttons, a finish line with "Send to Immich". Auto-restore,
+    auto-rotate and best-of-bracket do the rest. Immich settings arrive by scanning a QR code
+    generated on the Mac, so nobody types an API key on the iPad.
+  - **Studio mode**: today's tools (curves, adjust, crop, dates), for pencil and trackpad.
+- Distribution: TestFlight (the same Apple Developer account as Mac signing), later the App Store.
+- Later: the same SwiftUI app on the Mac could replace Electron + Python, leaving one codebase.
+  Keep the Python app as the reference until the Swift one matches it.
+
+**Phases**
+
+1. *Spike (days):* scanner on the iPad in Files; a tiny app that picks the card, bookmarks it,
+   notices reconnection, lists and copies scans.
+2. *SlideKit:* port the pipeline with parity tests; run it in the simulator and on the device.
+3. *Simple mode* end to end (import → keep/skip → Immich) — the version to hand over.
+4. *Studio mode* with the ProUI Swift components.
+5. Optional: the Mac on the same code; sync trays between devices (iCloud), so a tray started on
+   the iPad can be finished on the Mac.
+
+(The lighter alternative — the iPad as a browser client of the Mac server over the LAN — is still
+cheap, but needs the Mac on, which defeats the "on her own" goal.)
 
 ## 4. Hosted Slide Station (for other people's Immich)
 
@@ -72,7 +124,7 @@ The server already renders every preview, so the tablet never needs the full-res
 
 ## 5. Capture
 
-- **Scanner automation.** The ESP32 button macro from the handoff: press the scanner's buttons at
+- **Scanner automation.** An ESP32 button macro: press the scanner's buttons at
   three exposures per slide automatically, so bracketing costs nothing.
 - **Camera rig mode.** A DSLR/mirrorless + macro lens + light panel beats the Slide N Scan by a mile
   (real RAW, 24 MP+). Tethered capture (gphoto2), auto-advance with a carousel projector mechanism,
@@ -85,9 +137,7 @@ The server already renders every preview, so the tablet never needs the full-res
 
 - Local adjustments (brush / radial / graduated) for dodging a dark foreground or a blown sky.
 - Presets and "develop like slide 12" across trays.
-- Split before/after (aligned: render "before" through the same geometry).
 - Loupe and 1:1 zoom on the full-resolution render.
-- Undo history per slide (params are tiny: keep every version).
 - Batch review grid: 4×4 slides at once for the quick "all good" pass.
 - Stats: slides per hour, trays remaining, projected finish date for the 10 000.
 
@@ -95,11 +145,14 @@ The server already renders every preview, so the tablet never needs the full-res
 
 ### Suggested order
 
-1. Undo history + aligned split compare (small, makes everything else safer)
-2. Insights plumbing + CLIP tags + best-of-bracket (one model, big wins)
-3. Date estimation with tray propagation, mount OCR
-4. Faces → people, location
-5. LAN/iPad mode
+Done so far: undo, aligned split compare, best-of-bracket, tray-order date estimation.
+
+1. §0 "Open now" — tests first, since a lot changed quickly
+2. iPad spike (§3 phase 1) — cheap, and it decides a lot
+3. Insights plumbing + tags (on the Mac with CLIP, or straight into SlideKit with Vision if the
+   iPad goes ahead)
+4. SlideKit + Simple mode on the iPad
+5. Faces → people, location, mount OCR
 6. Immich round-trip (pull back, metadata sync, stacks)
 7. VLM captions, damage repair, film-stock profiles
 8. Hosted container

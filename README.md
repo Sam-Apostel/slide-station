@@ -94,8 +94,8 @@ npm run build   # writes slidestation/web - commit it, the launcher runs without
 ProUI components are added with the shadcn CLI and a licence key in `frontend/.env.local`
 (`PROUI_LICENSE_KEY=...`, gitignored): `scripts/proui-add.sh <name>...` from `frontend/`.
 
-Tests and a mock Immich live in `tests/`. `HANDOFF.md` documents the architecture, the invariants
-worth keeping, and what is unfinished.
+Tests and a mock Immich live in `tests/`. `ARCHITECTURE.md` documents how it works and the
+invariants worth keeping; `ROADMAP.md` what's next.
 
 ## Licence
 
