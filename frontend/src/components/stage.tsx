@@ -1,5 +1,6 @@
 import * as React from "react";
 import { Scissors } from "lucide-react";
+import { Tip } from "@/components/tip";
 import { ProButton } from "@/components/ui/pro-button";
 import { Spinner } from "@/components/ui/spinner";
 import { previewUrl, scanThumbUrl, type Group, type SessionPayload } from "@/lib/api";
@@ -43,6 +44,7 @@ export function Stage({
   onBefore,
   onToggleScan,
   onSplit,
+  slideMenu,
 }: {
   session: SessionPayload;
   sessionId: string;
@@ -51,6 +53,8 @@ export function Stage({
   onBefore: (on: boolean) => void;
   onToggleScan: (scan: string) => void;
   onSplit: (scan: string) => void;
+  /** Wraps the photo in the slide's right-click menu. */
+  slideMenu: (index: number, el: React.ReactElement) => React.ReactElement;
 }) {
   const g: Group | undefined = session.groups[sel];
   const next = session.groups[sel + 1];
@@ -60,7 +64,7 @@ export function Stage({
   );
 
   return (
-    <section className="flex min-h-0 min-w-0 flex-1 flex-col bg-[var(--pro-well)]">
+    <section className="flex size-full min-h-0 min-w-0 flex-col bg-[var(--pro-well)]">
       <div className="flex h-9 shrink-0 items-center justify-between border-b border-border bg-(--ss-bar) px-3.5">
         <div className="text-[12px] font-semibold text-foreground/90" aria-live="polite">
           {g ? `Slide ${sel + 1} of ${session.groups.length}` : "No slides yet — import some scans"}
@@ -77,28 +81,32 @@ export function Stage({
               <span className={cn("size-[7px] rounded-full border border-transparent", STATUS_DOT[g.status])} />
               {STATUS_LABEL[g.status]}
             </span>
-            <ProButton
-              active={before}
-              title="Hold B to compare"
-              onPointerDown={() => onBefore(true)}
-              onPointerUp={() => onBefore(false)}
-              onPointerLeave={() => onBefore(false)}
-            >
-              Before
-            </ProButton>
+            <Tip label="Hold to compare with the untouched scan" keys="B">
+              <ProButton
+                active={before}
+                onPointerDown={() => onBefore(true)}
+                onPointerUp={() => onBefore(false)}
+                onPointerLeave={() => onBefore(false)}
+              >
+                Before
+              </ProButton>
+            </Tip>
           </div>
         )}
       </div>
 
       <div className="relative min-h-0 flex-1 overflow-hidden">
-        {g && shown && (
-          <img
-            src={shown}
-            alt={`Slide ${sel + 1}`}
-            draggable={false}
-            className="absolute inset-3.5 h-[calc(100%-28px)] w-[calc(100%-28px)] object-contain"
-          />
-        )}
+        {g &&
+          shown &&
+          slideMenu(
+            sel,
+            <img
+              src={shown}
+              alt={`Slide ${sel + 1}`}
+              draggable={false}
+              className="absolute inset-3.5 h-[calc(100%-28px)] w-[calc(100%-28px)] object-contain"
+            />,
+          )}
         {before && (
           <span className="absolute top-5 left-5 rounded bg-black/70 px-2 py-[3px] text-[11px] tracking-[0.08em]">
             BEFORE
@@ -120,15 +128,16 @@ export function Stage({
             return (
               <React.Fragment key={sc}>
                 {k > 0 && (
-                  <button
-                    type="button"
-                    onClick={() => onSplit(sc)}
-                    title="Split: this scan and the ones after it are a different slide"
-                    aria-label={`Split before scan ${k + 1}`}
-                    className="group grid h-[52px] w-4 shrink-0 cursor-default place-items-center rounded border border-dashed border-transparent text-transparent hover:border-(--ss-line) hover:text-muted-foreground focus-visible:border-(--ss-line) focus-visible:text-muted-foreground"
-                  >
-                    <Scissors className="size-3" />
-                  </button>
+                  <Tip label="Split: this scan and the ones after it are a different slide" side="top">
+                    <button
+                      type="button"
+                      onClick={() => onSplit(sc)}
+                      aria-label={`Split before scan ${k + 1}`}
+                      className="group grid h-[52px] w-4 shrink-0 cursor-default place-items-center rounded border border-dashed border-transparent text-transparent hover:border-(--ss-line) hover:text-muted-foreground focus-visible:border-(--ss-line) focus-visible:text-muted-foreground"
+                    >
+                      <Scissors className="size-3" />
+                    </button>
+                  </Tip>
                 )}
                 <button
                   type="button"

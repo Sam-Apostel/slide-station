@@ -1,21 +1,60 @@
 import * as React from "react";
+import { useDefaultLayout } from "react-resizable-panels";
 import { Toaster } from "@/components/ui/sonner";
 import { ProStatusbar } from "@/components/ui/pro-statusbar";
 import { Kbd } from "@/components/ui/kbd";
+import { TooltipProvider } from "@/components/ui/tooltip";
+import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/components/ui/resizable";
 import { ConfirmProvider, useConfirm } from "@/components/confirm";
 import { TopBar } from "@/components/top-bar";
 import { Filmstrip, type Filter } from "@/components/filmstrip";
 import { Stage } from "@/components/stage";
 import { Inspector } from "@/components/inspector";
 import { EmptyState } from "@/components/empty-state";
+import { SlideMenu } from "@/components/slide-menu";
+import { CommandPalette } from "@/components/command-palette";
 import { HelpDialog, NewTrayDialog, SettingsDialog } from "@/components/dialogs";
+import { PanelToggles, WindowTitlebar } from "@/components/window-titlebar";
 import { useSlideStation, type SlideStation } from "@/hooks/use-slide-station";
+import { useDesktop, useFolderDrop, type DesktopHandlers } from "@/hooks/use-desktop";
 import { needsReview, plural, type Source } from "@/lib/api";
+import { desktop } from "@/lib/desktop";
+
+type Panels = { filmstrip: boolean; inspector: boolean };
+const ALL_PANELS: Panels = { filmstrip: true, inspector: true };
+
+/** localStorage for the panel widths, tolerating private mode. */
+const layoutStorage = {
+  getItem: (k: string) => {
+    try {
+      return localStorage.getItem(k);
+    } catch {
+      return null;
+    }
+  },
+  setItem: (k: string, v: string) => {
+    try {
+      localStorage.setItem(k, v);
+    } catch {
+      /* private mode */
+    }
+  },
+};
+
+function storedPanels(): Panels {
+  try {
+    return { ...ALL_PANELS, ...JSON.parse(localStorage.getItem("panels") || "{}") };
+  } catch {
+    return ALL_PANELS;
+  }
+}
 
 export default function App() {
   return (
     <ConfirmProvider>
-      <SlideStationApp />
+      <TooltipProvider delayDuration={500} skipDelayDuration={200}>
+        <SlideStationApp />
+      </TooltipProvider>
       <Toaster theme="dark" position="bottom-center" />
     </ConfirmProvider>
   );
@@ -30,13 +69,41 @@ function SlideStationApp() {
   const [before, setBefore] = React.useState(false);
   const [settingsOpen, setSettingsOpen] = React.useState(false);
   const [helpOpen, setHelpOpen] = React.useState(false);
-  const [newTray, setNewTray] = React.useState<{ open: boolean; source?: Source }>({ open: false });
+  const [paletteOpen, setPaletteOpen] = React.useState(false);
+  const [newTray, setNewTray] = React.useState<{ open: boolean; source?: Source; folder?: string }>({ open: false });
+  const [panels, setPanels] = React.useState(storedPanels);
+  // What focus mode hid, so the same shortcut brings exactly that back.
+  const beforeFocus = React.useRef<Panels | null>(null);
+
+  const changePanels = (fn: (p: Panels) => Panels) =>
+    setPanels((p) => {
+      const next = fn(p);
+      try {
+        localStorage.setItem("panels", JSON.stringify(next));
+      } catch {
+        /* private mode */
+      }
+      return next;
+    });
+  const toggleFilmstrip = () => changePanels((p) => ({ ...p, filmstrip: !p.filmstrip }));
+  const toggleInspector = () => changePanels((p) => ({ ...p, inspector: !p.inspector }));
+  const focusMode = () =>
+    changePanels((p) => {
+      if (!p.filmstrip && !p.inspector) return beforeFocus.current ?? ALL_PANELS;
+      beforeFocus.current = p;
+      return { filmstrip: false, inspector: false };
+    });
 
   const busy = !!state?.job && !state.job.finished;
   const hasTrays = !!state?.sessions.length;
   const source = state?.sources.find((x) => x.new > 0) ?? state?.sources[0];
 
-  const openNew = (src?: Source) => setNewTray({ open: true, source: src });
+  const openNew = (src?: Source, folder?: string) => setNewTray({ open: true, source: src, folder });
+  const importFolder = async (folder?: string) => {
+    const path = folder ?? (await desktop?.pickFolder({ title: "Import scans from a folder", buttonLabel: "Import" }));
+    if (desktop && !path) return; // cancelled the picker
+    openNew(undefined, path ?? "");
+  };
 
   /** Import into the open tray while it is unfinished (asking first if it has progress), else start a new one. */
   const openImport = async (src: Source) => {
@@ -81,11 +148,64 @@ function SlideStationApp() {
     if (ok) app.startCleanup();
   };
 
-  useKeyboard(app, setBefore, () => setHelpOpen(true));
+  const handlers: DesktopHandlers = {
+    settings: () => setSettingsOpen(true),
+    newTray: () => openNew(),
+    importFrom: openImport,
+    importFolder,
+    upload,
+    help: () => setHelpOpen(true),
+    palette: () => setPaletteOpen(true),
+    toggleFilmstrip,
+    toggleInspector,
+    focusMode,
+  };
+  useKeyboard(app, setBefore, () => setHelpOpen(true), () => setPaletteOpen(true));
+  useDesktop(app, panels, handlers);
+  const dropping = useFolderDrop((path) => importFolder(path));
+
+  const toggles = session ? (
+    <PanelToggles
+      filmstrip={panels.filmstrip}
+      inspector={panels.inspector}
+      onFilmstrip={toggleFilmstrip}
+      onInspector={toggleInspector}
+    />
+  ) : null;
+  const todo = session ? session.groups.filter(needsReview).length : 0;
+
+  // Panel widths are remembered per combination of visible panels; the key remounts the group
+  // so showing or hiding a panel restores the widths saved for that combination.
+  const panelIds = ["filmstrip", "stage", "inspector"].filter((id) => id === "stage" || panels[id as keyof Panels]);
+  const layout = useDefaultLayout({ id: "panel-widths", panelIds, storage: layoutStorage });
+  const slideMenu = (index: number, el: React.ReactElement) => (
+    <SlideMenu key={el.key ?? index} app={app} index={index}>
+      {el}
+    </SlideMenu>
+  );
 
   return (
     <div className="flex h-dvh flex-col overflow-hidden bg-background text-foreground">
+      {desktop && (
+        <WindowTitlebar
+          title={session?.summary.name ?? "Slide Station"}
+          detail={
+            session
+              ? todo
+                ? `${plural(todo, "slide")} to review`
+                : session.summary.pending_upload
+                  ? `${session.summary.pending_upload} to upload`
+                  : session.summary.slides
+                    ? "all in Immich"
+                    : undefined
+              : undefined
+          }
+          right={toggles}
+        />
+      )}
       <TopBar
+        compact={!!desktop}
+        panelToggles={desktop ? null : toggles}
         state={state}
         sessionId={sessionId}
         onSelectSession={(id) => app.loadSession(id)}
@@ -98,28 +218,63 @@ function SlideStationApp() {
 
       <main className="flex min-h-0 flex-1">
         {!state ? null : !hasTrays ? (
-          <EmptyState source={source} onImport={openImport} onImportFolder={() => openNew()} />
+          <EmptyState source={source} onImport={openImport} onImportFolder={() => importFolder()} />
         ) : session ? (
-          <>
-            <Filmstrip
-              session={session}
-              sessionId={sessionId}
-              sel={app.sel}
-              filter={filter}
-              onFilter={setFilter}
-              onSelect={app.select}
-            />
-            <Stage
-              session={session}
-              sessionId={sessionId}
-              sel={app.sel}
-              before={before}
-              onBefore={setBefore}
-              onToggleScan={app.toggleScan}
-              onSplit={app.splitAt}
-            />
-            <Inspector app={app} session={session} busy={busy} onUpload={upload} onClean={clean} />
-          </>
+          <ResizablePanelGroup
+            key={panelIds.join()}
+            id="panel-widths"
+            defaultLayout={layout.defaultLayout}
+            onLayoutChanged={layout.onLayoutChanged}
+          >
+            {panels.filmstrip && (
+              <>
+                <ResizablePanel
+                  id="filmstrip"
+                  defaultSize={250}
+                  minSize={180}
+                  maxSize={560}
+                  groupResizeBehavior="preserve-pixel-size"
+                >
+                  <Filmstrip
+                    session={session}
+                    sessionId={sessionId}
+                    sel={app.sel}
+                    filter={filter}
+                    onFilter={setFilter}
+                    onSelect={app.select}
+                    slideMenu={slideMenu}
+                  />
+                </ResizablePanel>
+                <ResizableHandle aria-label="Resize filmstrip" />
+              </>
+            )}
+            <ResizablePanel id="stage" minSize={320}>
+              <Stage
+                session={session}
+                sessionId={sessionId}
+                sel={app.sel}
+                before={before}
+                onBefore={setBefore}
+                onToggleScan={app.toggleScan}
+                onSplit={app.splitAt}
+                slideMenu={slideMenu}
+              />
+            </ResizablePanel>
+            {panels.inspector && (
+              <>
+                <ResizableHandle aria-label="Resize inspector" />
+                <ResizablePanel
+                  id="inspector"
+                  defaultSize={300}
+                  minSize={272}
+                  maxSize={480}
+                  groupResizeBehavior="preserve-pixel-size"
+                >
+                  <Inspector app={app} session={session} busy={busy} onUpload={upload} onClean={clean} />
+                </ResizablePanel>
+              </>
+            )}
+          </ResizablePanelGroup>
         ) : null}
       </main>
 
@@ -158,9 +313,26 @@ function SlideStationApp() {
         onOpenChange={(open) => setNewTray((s) => ({ ...s, open }))}
         state={state}
         preferSource={newTray.source}
+        preferFolder={newTray.folder}
         onCreate={app.createSession}
       />
       <HelpDialog open={helpOpen} onOpenChange={setHelpOpen} />
+      <CommandPalette
+        open={paletteOpen}
+        onOpenChange={setPaletteOpen}
+        app={app}
+        handlers={handlers}
+        onClean={clean}
+        busy={busy}
+      />
+      {dropping && (
+        <div className="ss-drop pointer-events-none fixed inset-0 z-50 flex items-center justify-center">
+          <div className="rounded-lg border border-primary/60 bg-(--ss-panel) px-6 py-4 text-center shadow-2xl">
+            <div className="text-[14px] font-semibold">Drop a folder of scans</div>
+            <div className="mt-1 text-[12px] text-muted-foreground">It becomes a new tray</div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -169,18 +341,31 @@ function SlideStationApp() {
  * The keyboard map is the reason the app is fast for 10,000 slides — keep it identical to the
  * original. Shortcuts win over whatever has focus, except text entry (and open dialogs).
  */
-function useKeyboard(app: SlideStation, setBefore: (on: boolean) => void, openHelp: () => void) {
-  const latest = React.useRef({ app, setBefore, openHelp });
-  latest.current = { app, setBefore, openHelp };
+function useKeyboard(
+  app: SlideStation,
+  setBefore: (on: boolean) => void,
+  openHelp: () => void,
+  openPalette: () => void,
+) {
+  const latest = React.useRef({ app, setBefore, openHelp, openPalette });
+  latest.current = { app, setBefore, openHelp, openPalette };
 
   React.useEffect(() => {
     const isTextEntry = (t: EventTarget | null) =>
       t instanceof HTMLElement &&
       (t.isContentEditable ||
         t.matches("textarea, select, input:not([type=range]):not([type=checkbox]), [role=spinbutton]"));
-    const modalOpen = () => !!document.querySelector("[role=dialog], [role=alertdialog]");
+    // Open menus count too: their arrow keys and typeahead must not move between slides.
+    const modalOpen = () => !!document.querySelector("[role=dialog], [role=alertdialog], [role=menu]");
 
     const down = (e: KeyboardEvent) => {
+      // ⌘K / Ctrl+K opens the command palette, from anywhere (in the desktop app the View menu
+      // usually catches it first; opening twice is harmless).
+      if ((e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === "k") {
+        e.preventDefault();
+        latest.current.openPalette();
+        return;
+      }
       if (e.metaKey || e.ctrlKey || e.altKey) return;
       if (isTextEntry(e.target) || modalOpen()) return;
       const { app: a, setBefore: sb, openHelp: help } = latest.current;

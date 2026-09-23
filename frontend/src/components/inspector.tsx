@@ -1,13 +1,16 @@
 import * as React from "react";
 import { toast } from "sonner";
-import { ArrowRight, FolderOpen, Merge, RotateCcw, RotateCw, SkipForward, Sparkles, Upload } from "lucide-react";
-import { ProInspector, ProInspectorRow, ProInspectorSection } from "@/components/ui/pro-inspector";
+import { ArrowRight, FolderOpen, Merge, RotateCcw, RotateCw, SkipForward, Sparkles, Undo2, Upload } from "lucide-react";
+import { ProInspector, ProInspectorRow } from "@/components/ui/pro-inspector";
+import { ProDisclosureGroup } from "@/components/ui/pro-disclosure";
 import { ProSlider } from "@/components/ui/pro-slider";
 import { ProButton, ProButtonGroup } from "@/components/ui/pro-button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Kbd } from "@/components/ui/kbd";
+import { Tip } from "@/components/tip";
+import { STATUS_LABEL } from "@/components/filmstrip";
 import type { ParamKey, SessionPayload } from "@/lib/api";
 import type { SlideStation } from "@/hooks/use-slide-station";
 
@@ -25,6 +28,35 @@ function rotationNote(rotation: number, reason: string) {
   if (reason === "faces") return "auto · faces";
   if (reason === "sky") return "auto · sky";
   return `${rotation}°`;
+}
+
+type SectionId = "rotation" | "colour" | "slide" | "tray";
+
+function storedSections(): Record<string, boolean> {
+  try {
+    return JSON.parse(localStorage.getItem("inspector-sections") || "{}");
+  } catch {
+    return {};
+  }
+}
+
+/** Which inspector sections are open, remembered like the panel layout. */
+function useSections() {
+  const [open, setOpen] = React.useState(storedSections);
+  const props = (id: SectionId) => ({
+    expanded: open[id] ?? true,
+    onExpandedChange: (v: boolean) =>
+      setOpen((o) => {
+        const next = { ...o, [id]: v };
+        try {
+          localStorage.setItem("inspector-sections", JSON.stringify(next));
+        } catch {
+          /* private mode */
+        }
+        return next;
+      }),
+  });
+  return props;
 }
 
 function paramsNote(source: string) {
@@ -49,39 +81,58 @@ export function Inspector({
   const { current: g, sel } = app;
   const sm = session.summary;
   const blockers = session.cleanup_blockers;
+  const section = useSections();
 
   return (
-    <ProInspector className="min-h-0 w-[300px] border-l border-border">
+    <ProInspector className="size-full min-h-0 border-l border-border">
       <div className="min-h-0 flex-1 overflow-y-auto scrollbar-thin">
         {g && (
           <>
-            <ProInspectorSection title="Rotation">
+            <ProDisclosureGroup
+              title="Rotation"
+              summary={rotationNote(g.rotation, g.rot_reason) || "upright"}
+              {...section("rotation")}
+            >
               <div className="flex items-center gap-2 px-3 py-2.5">
                 <ProButtonGroup>
-                  <ProButton plain onClick={() => app.rotate(-90)} title="Rotate left (Shift+R)">
-                    <RotateCcw /> Left
-                  </ProButton>
-                  <ProButton plain onClick={() => app.rotate(90)} title="Rotate right (R)">
-                    <RotateCw /> Right
-                  </ProButton>
-                  <ProButton plain onClick={() => app.rotate(180)} title="Upside down">
-                    180°
-                  </ProButton>
+                  <Tip label="Rotate left" keys="⇧R">
+                    <ProButton plain onClick={() => app.rotate(-90)}>
+                      <RotateCcw /> Left
+                    </ProButton>
+                  </Tip>
+                  <Tip label="Rotate right" keys="R">
+                    <ProButton plain onClick={() => app.rotate(90)}>
+                      <RotateCw /> Right
+                    </ProButton>
+                  </Tip>
+                  <Tip label="Upside down">
+                    <ProButton plain onClick={() => app.rotate(180)}>
+                      180°
+                    </ProButton>
+                  </Tip>
                 </ProButtonGroup>
                 <span className="ml-auto text-[11px] text-muted-foreground">
                   {rotationNote(g.rotation, g.rot_reason)}
                 </span>
               </div>
-            </ProInspectorSection>
+            </ProDisclosureGroup>
 
-            <ProInspectorSection title="Colour">
+            <ProDisclosureGroup
+              title="Colour"
+              summary={paramsNote(g.params_source)}
+              right={
+                <Tip label="Reset colour" keys="0">
+                  <button type="button" aria-label="Reset colour" onClick={app.resetColour}>
+                    <Undo2 />
+                  </button>
+                </Tip>
+              }
+              {...section("colour")}
+            >
               <div className="flex flex-col gap-1 px-3 py-2.5">
                 <div className="mb-1 flex items-center gap-1.5 text-[11px] text-muted-foreground">
                   {g.params_source.startsWith("learned:") && <Sparkles className="size-3 text-primary" aria-hidden />}
                   <span className="min-w-0 flex-1 truncate">{paramsNote(g.params_source)}</span>
-                  <ProButton onClick={app.resetColour} title="Reset (0)">
-                    Reset
-                  </ProButton>
                 </div>
                 {SLIDERS.map(([k, label, min, max]) => (
                   <div key={k} className="grid grid-cols-[76px_1fr] items-center gap-2">
@@ -109,46 +160,54 @@ export function Inspector({
                   </Label>
                 </div>
                 <div className="mt-2 flex flex-wrap gap-1.5">
-                  <ProButton onClick={app.copyPrev} disabled={sel === 0} title="Copy from previous slide (C)">
-                    Copy previous
-                  </ProButton>
-                  <ProButton onClick={app.applyRest} title="Apply to all following unreviewed slides">
-                    Apply to rest
-                  </ProButton>
-                  {!g.reviewed && (
-                    <ProButton onClick={app.resuggest} title="Use what your approved slides suggest for this one">
-                      <Sparkles /> Use learned
+                  <Tip label="Copy colour from the previous slide" keys="C">
+                    <ProButton onClick={app.copyPrev} disabled={sel === 0}>
+                      Copy previous
                     </ProButton>
+                  </Tip>
+                  <Tip label="Apply to all following unreviewed slides">
+                    <ProButton onClick={app.applyRest}>Apply to rest</ProButton>
+                  </Tip>
+                  {!g.reviewed && (
+                    <Tip label="Use what your approved slides suggest for this one">
+                      <ProButton onClick={app.resuggest}>
+                        <Sparkles /> Use learned
+                      </ProButton>
+                    </Tip>
                   )}
                 </div>
               </div>
-            </ProInspectorSection>
+            </ProDisclosureGroup>
 
-            <ProInspectorSection title="Slide">
+            <ProDisclosureGroup title="Slide" summary={STATUS_LABEL[g.status]} {...section("slide")}>
               <div className="flex flex-col gap-1.5 px-3 py-2.5">
-                <ProButton active size="md" fullWidth onClick={app.review} title="Space">
+                <ProButton active size="md" fullWidth onClick={app.review}>
                   Looks good <ArrowRight /> next
                   <Kbd className="ml-1 opacity-70">Space</Kbd>
                 </ProButton>
                 <div className="flex gap-1.5">
-                  <ProButton className="flex-1" onClick={app.toggleSkip} title="X">
-                    <SkipForward /> {g.skip ? "Unskip slide" : "Skip slide"}
-                  </ProButton>
-                  <ProButton
-                    className="flex-1"
-                    onClick={app.mergeNext}
-                    disabled={sel >= session.groups.length - 1}
-                    title="Merge with next slide (M)"
-                  >
-                    <Merge /> Merge with next
-                  </ProButton>
+                  <Tip label={g.skip ? "Unskip slide" : "Leave this slide out of the upload"} keys="X">
+                    <ProButton className="flex-1" onClick={app.toggleSkip}>
+                      <SkipForward /> {g.skip ? "Unskip slide" : "Skip slide"}
+                    </ProButton>
+                  </Tip>
+                  <Tip label="Merge with the next slide" keys="M">
+                    <ProButton className="flex-1" onClick={app.mergeNext} disabled={sel >= session.groups.length - 1}>
+                      <Merge /> Merge with next
+                    </ProButton>
+                  </Tip>
                 </div>
               </div>
-            </ProInspectorSection>
+            </ProDisclosureGroup>
           </>
         )}
 
-        <ProInspectorSection title="Tray">
+        <ProDisclosureGroup
+          title="Tray"
+          summary={`${sm.reviewed} / ${sm.slides} reviewed`}
+          showsBottomSeparator={false}
+          {...section("tray")}
+        >
           <div className="flex flex-col gap-2 px-3 pt-2.5 pb-1">
             <TrayField label="Name" value={sm.name} onCommit={(v) => app.patchSession({ name: v })} />
             <TrayField label="Immich album" value={sm.album} onCommit={(v) => app.patchSession({ album: v })} />
@@ -168,7 +227,7 @@ export function Inspector({
             <ProInspectorRow label="Skipped" value={sm.skipped} />
             <ProInspectorRow label="To upload" value={sm.pending_upload} />
           </div>
-        </ProInspectorSection>
+        </ProDisclosureGroup>
       </div>
 
       {/* Pinned so the way out of a tray is always one click away. */}

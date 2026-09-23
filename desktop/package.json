@@ -1,0 +1,62 @@
+{
+  "name": "slide-station-desktop",
+  "productName": "Slide Station",
+  "version": "1.0.0",
+  "description": "Import, restore and upload Kodak Slide N Scan scans to Immich",
+  "repository": "github:Sam-Apostel/slide-station",
+  "private": true,
+  "license": "MIT",
+  "main": "main.cjs",
+  "scripts": {
+    "start": "npm run build:ui && electron .",
+    "dev": "SLIDESTATION_DEV_URL=http://localhost:5173 SLIDESTATION_PORT=8765 electron .",
+    "build:ui": "npm --prefix ../frontend run build",
+    "dist": "npm run build:ui && electron-builder --mac",
+    "dist:dir": "npm run build:ui && electron-builder --dir"
+  },
+  "devDependencies": {
+    "electron": "^38.1.2",
+    "electron-builder": "^26.0.12"
+  },
+  "build": {
+    "appId": "dev.slidestation.app",
+    "productName": "Slide Station",
+    "files": [
+      "main.cjs",
+      "preload.cjs",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "../slidestation",
+        "to": "backend/slidestation",
+        "filter": [
+          "**/*",
+          "!**/__pycache__/**",
+          "!**/*.pyc",
+          "!web/.vite/**"
+        ]
+      },
+      {
+        "from": "../pyproject.toml",
+        "to": "backend/pyproject.toml"
+      }
+    ],
+    "directories": {
+      "buildResources": "build",
+      "output": "dist"
+    },
+    "mac": {
+      "category": "public.app-category.photography",
+      "target": [
+        "dmg"
+      ],
+      "icon": "build/icon.png",
+      "darkModeSupport": true,
+      "extendInfo": {
+        "NSRemovableVolumesUsageDescription": "Slide Station reads new scans from the scanner's SD card and, when you ask it to, deletes the ones that are safely uploaded."
+      }
+    },
+    "publish": null
+  }
+}

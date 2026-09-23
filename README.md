@@ -22,6 +22,11 @@ http://localhost:8765 in your browser. Keep the Terminal window open while you w
 
 Terminal equivalent: `uv run --python 3.12 python -m slidestation`
 
+**Or as a desktop app:** `cd desktop && npm install && npm start` (or `npm run dist` for a .dmg).
+Same app in its own window, with native menus, folder pickers, drag-and-drop import, dock
+progress, notifications when uploads finish or the scanner is plugged in, and no Terminal window.
+See `desktop/README.md`.
+
 The first time the scanner is plugged in, macOS asks whether Terminal may access removable
 volumes - allow it, otherwise the scanner is not detected.
 

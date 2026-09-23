@@ -7,3 +7,5 @@ slidestation/web/.vite/
 .env*.local
 frontend/node_modules/
 *.tsbuildinfo
+desktop/node_modules/
+desktop/dist/

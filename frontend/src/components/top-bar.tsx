@@ -1,5 +1,8 @@
+import type * as React from "react";
 import { CircleHelp, HardDriveDownload, Plus, Settings, Usb } from "lucide-react";
 import { ProButton } from "@/components/ui/pro-button";
+import { Tip } from "@/components/tip";
+import { isMac } from "@/lib/desktop";
 import { ProSeparator, ProToolbar } from "@/components/ui/pro-toolbar";
 import { ProTitlebarWell } from "@/components/ui/pro-titlebar";
 import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select";
@@ -15,6 +18,8 @@ export function visibleJob(state: AppState | null) {
 }
 
 export function TopBar({
+  compact,
+  panelToggles,
   state,
   sessionId,
   onSelectSession,
@@ -24,6 +29,9 @@ export function TopBar({
   onHelp,
   onSettings,
 }: {
+  /** In the desktop app the window titlebar carries the name, so the toolbar drops its brand. */
+  compact?: boolean;
+  panelToggles?: React.ReactNode;
   state: AppState | null;
   sessionId: string;
   onSelectSession: (id: string) => void;
@@ -39,13 +47,17 @@ export function TopBar({
 
   return (
     <ProToolbar className="gap-2">
-      <div className="flex items-center gap-2 pr-2 text-[13px] font-semibold tracking-[0.01em] text-foreground/90">
-        <span aria-hidden className="relative size-[18px] rounded-[3px] bg-primary">
-          <span className="absolute inset-x-[4px] inset-y-[5px] rounded-[1px] bg-(--ss-ink)" />
-        </span>
-        Slide Station
-      </div>
-      <ProSeparator />
+      {!compact && (
+        <>
+          <div className="flex items-center gap-2 pr-2 text-[13px] font-semibold tracking-[0.01em] text-foreground/90">
+            <span aria-hidden className="relative size-[18px] rounded-[3px] bg-primary">
+              <span className="absolute inset-x-[4px] inset-y-[5px] rounded-[1px] bg-(--ss-ink)" />
+            </span>
+            Slide Station
+          </div>
+          <ProSeparator />
+        </>
+      )}
       <NativeSelect
         size="sm"
         aria-label="Tray"
@@ -62,9 +74,11 @@ export function TopBar({
           </NativeSelectOption>
         ))}
       </NativeSelect>
-      <ProButton onClick={onNewTray} title="New tray">
-        <Plus /> New tray
-      </ProButton>
+      <Tip label="Start a new tray" keys={isMac ? "⌘N" : "Ctrl+N"}>
+        <ProButton onClick={onNewTray}>
+          <Plus /> New tray
+        </ProButton>
+      </Tip>
 
       <div className="flex min-w-0 flex-1 justify-center px-2">
         <ProTitlebarWell
@@ -122,9 +136,17 @@ export function TopBar({
         </ProTitlebarWell>
       </div>
 
-      <ProButton onClick={onHelp} title="Keyboard shortcuts (?)" aria-label="Keyboard shortcuts">
-        <CircleHelp />
-      </ProButton>
+      {panelToggles && (
+        <>
+          {panelToggles}
+          <ProSeparator />
+        </>
+      )}
+      <Tip label="Keyboard shortcuts" keys="?">
+        <ProButton onClick={onHelp} aria-label="Keyboard shortcuts">
+          <CircleHelp />
+        </ProButton>
+      </Tip>
       <ProButton onClick={onSettings}>
         <Settings /> Settings
       </ProButton>
