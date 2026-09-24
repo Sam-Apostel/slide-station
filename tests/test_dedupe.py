@@ -53,7 +53,7 @@ def test_scans_stranded_by_a_crash_are_grouped_on_the_next_import(api, tmp_path,
 
     folder = tmp_path / "card"
     make_scans(folder, 3, salt=9191, first=9000)
-    sid = api.post("/api/sessions", json={"name": "Crash"}).json()["id"]
+    sid = api.post("/api/sessions", json={"name": "Stranded by a crash"}).json()["id"]
 
     def boom(*a, **k):
         raise RuntimeError("the power went out")
