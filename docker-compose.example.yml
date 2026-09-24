@@ -1,0 +1,35 @@
+# Slide Station next to Immich: add this service (and the volume) to Immich's docker-compose.yml,
+# then `docker compose up -d`. Open http://<server>:8765 and sign in with an Immich API key: each
+# Immich user gets their own library, in the slide-station-data volume under users/<their id>/.
+#
+# Behind the reverse proxy that serves Immich, give it its own hostname (slides.example.com) or
+# proxy / to it; it needs no other route. Uploads of big folders go through the proxy: allow large
+# request bodies there (e.g. nginx `client_max_body_size 100m;` — the browser sends 8 MB chunks).
+services:
+  slide-station:
+    container_name: slide_station
+    build: https://github.com/Sam-Apostel/slide-station.git#main  # or: image: <your registry>/slide-station
+    environment:
+      # accounts: sign in with an API key of this Immich (reached over the compose network)
+      SLIDESTATION_AUTH: immich
+      SLIDESTATION_IMMICH_URL: http://immich-server:2283
+      # models (tag suggestions, people) downloaded once for everyone instead of per user
+      SLIDESTATION_MODELS: /data/models
+      # SLIDESTATION_MAX_UPLOAD_MB: 300   # largest single file accepted from the browser
+      # watched folders (Settings): only under this root; {user} = each person's Immich user id
+      # SLIDESTATION_WATCH_ROOT: /share/{user}
+    volumes:
+      - slide-station-data:/data
+      # a share whose sub-folders become trays (read-only: Slide Station never writes there)
+      # - /mnt/scans:/share:ro
+      # Single user without accounts (leave SLIDESTATION_AUTH out): a folder or card reader under
+      # /import/<name>/DCIM shows up like the scanner does on a Mac.
+      # - /mnt/card:/import/card:ro
+    ports:
+      - 8765:8765
+    depends_on:
+      - immich-server
+    restart: always
+
+volumes:
+  slide-station-data:

@@ -10,7 +10,21 @@ dependencies = [
   "numpy>=1.26",
   "opencv-python-headless>=4.9",
   "pillow>=10.0",
+  "onnxruntime>=1.17",
 ]
+
+[project.optional-dependencies]
+# camera RAW files as scans (DNG, CR2, CR3, NEF, ARW, ORF, RAF): uv run --extra raw python -m slidestation
+raw = ["rawpy>=0.19"]
 
 [tool.uv]
 package = false
+
+[dependency-groups]
+# tests: uv run --python 3.12 pytest tests  (python-multipart: the mock Immich reads uploads)
+# rawpy + tifffile: the RAW tests write a synthetic DNG and decode it (skipped without them)
+dev = ["pytest>=8", "python-multipart>=0.0.9", "rawpy>=0.19", "tifffile>=2024.1"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]

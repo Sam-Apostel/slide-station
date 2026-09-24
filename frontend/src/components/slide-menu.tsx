@@ -1,5 +1,5 @@
 import type * as React from "react";
-import { Aperture, ArrowRight, Copy, Merge, RotateCcw, RotateCw, SkipForward, Sparkles, Undo2, Wand2 } from "lucide-react";
+import { Aperture, ArrowRight, Copy, FlipHorizontal2, Merge, RotateCcw, RotateCw, SkipForward, Sparkles, Undo2, Wand2 } from "lucide-react";
 import {
   ContextMenu,
   ContextMenuContent,
@@ -45,6 +45,10 @@ export function SlideMenu({
           </ContextMenuItem>
           <ContextMenuItem onSelect={() => app.rotate(180)}>
             <RotateCw /> Upside down
+          </ContextMenuItem>
+          <ContextMenuItem onSelect={app.mirror}>
+            <FlipHorizontal2 /> Mirror
+            <ContextMenuShortcut>H</ContextMenuShortcut>
           </ContextMenuItem>
           <ContextMenuSeparator />
           <ContextMenuItem onSelect={app.copyPrev} disabled={index === 0}>

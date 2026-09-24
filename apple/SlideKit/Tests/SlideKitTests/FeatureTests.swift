@@ -1,7 +1,7 @@
 import XCTest
 @testable import SlideKit
 
-/// Learning, undo, card cleanup and locked slides.
+/// Learning, undo, card cleanup, locked slides, mount and dust settings.
 final class FeatureTests: XCTestCase {
     struct Golden: Decodable {
         var features: [Double]
@@ -9,8 +9,16 @@ final class FeatureTests: XCTestCase {
         var learning_query: [Double]
         var learning_suggestion: [String: AnyNumberOrBool]
         var learning_neighbours: Int
+        var learning_curve_examples: [Learning.Example]
+        var learning_curve_suggestion: [String: [[Double]]]
+        var learning_stock: StockFixture
         var developed_crop_shape: [Int]
         var params_crop: Params
+    }
+    struct StockFixture: Decodable {
+        struct Case: Decodable { var suggestion: [String: AnyNumberOrBool]; var neighbours: Int }
+        var examples: [Learning.Example]
+        var cases: [String: Case]
     }
     enum AnyNumberOrBool: Decodable {
         case n(Double), b(Bool)
@@ -58,6 +66,62 @@ final class FeatureTests: XCTestCase {
         XCTAssertNotNil(small.suggest(golden.features))
         small.forget(key: "k4")
         XCTAssertEqual(Learning.Model(url: small.url).examples.count, 4)
+    }
+
+    /// A slide of a known film stock learns from its own stock (restricted with enough examples,
+    /// weighted without); no stock matches the old behaviour.
+    func testLearningPerStockMatchesPython() throws {
+        struct File: Encodable { var version = 1; var examples: [Learning.Example] }
+        let url = try tmp().appendingPathComponent("learning.json")
+        try JSONEncoder().encode(File(examples: golden.learning_stock.examples)).write(to: url)
+        let model = Learning.Model(url: url)
+        XCTAssertEqual(model.examples.filter { $0.s == "kodachrome" }.count, 6)
+        for (stock, want) in golden.learning_stock.cases {
+            let s = try XCTUnwrap(model.suggest(golden.learning_query, stock: stock == "none" ? nil : stock), stock)
+            XCTAssertEqual(s.neighbours, want.neighbours, stock)
+            for (k, v) in want.suggestion {
+                switch v {
+                case .n(let n): XCTAssertEqual(s.values[k]!, n, accuracy: 0.002, "\(stock) \(k)")
+                case .b(let b): XCTAssertEqual(s.trim, b, stock)
+                }
+            }
+        }
+        // remember keeps a known stock, drops anything else
+        let m = Learning.Model(url: try tmp().appendingPathComponent("s.json"))
+        m.remember(key: "a", features: golden.features, params: Params(), stock: "agfachrome")
+        m.remember(key: "b", features: golden.features, params: Params(), stock: "unknown")
+        XCTAssertEqual(m.examples.map(\.s), ["agfachrome", nil])
+    }
+
+    func testLearnedCurvesMatchPython() throws {
+        struct File: Encodable { var version = 1; var examples: [Learning.Example] }
+        // examples from before curves were learned (no "c") leave the slide's curves alone
+        let oldURL = try tmp().appendingPathComponent("old.json")
+        try JSONEncoder().encode(File(examples: golden.learning_examples)).write(to: oldURL)
+        let old = try XCTUnwrap(Learning.Model(url: oldURL).suggest(golden.learning_query))
+        XCTAssertNil(old.curves)
+        var p = Params(); p.curves = ["rgb": [[0, 0.1], [1, 0.9]]]
+        XCTAssertEqual(old.apply(to: p).curves, p.curves)
+        // with curves: red (most of the weight) is averaged, blue (a minority) dropped
+        let url = try tmp().appendingPathComponent("learning.json")
+        try JSONEncoder().encode(File(examples: golden.learning_curve_examples)).write(to: url)
+        let s = try XCTUnwrap(Learning.Model(url: url).suggest(golden.learning_query))
+        let curves = try XCTUnwrap(s.curves)
+        XCTAssertEqual(Set(curves.keys), Set(golden.learning_curve_suggestion.keys))
+        for (ch, pts) in golden.learning_curve_suggestion {
+            let mine = try XCTUnwrap(curves[ch])
+            XCTAssertEqual(mine.count, pts.count, ch)
+            for (a, b) in zip(mine, pts) {
+                XCTAssertEqual(a[0], b[0], accuracy: 1e-4, ch)
+                XCTAssertEqual(a[1], b[1], accuracy: 0.002, ch)
+            }
+        }
+        XCTAssertEqual(s.apply(to: Params()).curves, curves)
+        // remember stores the curves, never the framing
+        var dev = Params(); dev.curves = ["g": [[0.1, 0], [0.8, 1]]]; dev.crop = [0.1, 0.1, 0.9, 0.9]
+        let m = Learning.Model(url: try tmp().appendingPathComponent("r.json"))
+        m.remember(key: "k", features: golden.features, params: dev)
+        XCTAssertEqual(m.examples.first?.c, ["g": [[0.1, 0], [0.8, 1]]])
     }
 
     // MARK: undo
@@ -157,5 +221,50 @@ final class FeatureTests: XCTestCase {
         try await library.update(tray.id) { t in t.groups[0].immich = UploadRecord(assetId: "a", key: t.groups[0].renderKey) }
         let t = try await library.load(tray.id)
         XCTAssertEqual(Originals.cleanupBlockers(t), ["these scans were imported from a folder, not from the scanner's card"])
+    }
+
+    func testDustCountsInTheRenderKeyOnlyWhenOn() throws {
+        var g = Slide(scans: ["a"], params: Params())
+        let key = g.renderKey
+        g.params.dust = 0.4
+        XCTAssertNotEqual(g.renderKey, key)
+        g.params.dust = 0
+        XCTAssertEqual(g.renderKey, key)
+        // trays from before dust repair decode with it off
+        let old = try JSONDecoder().decode(Params.self, from: Data(#"{"strength": 0.5, "trim": true}"#.utf8))
+        XCTAssertEqual(old.dust, 0)
+    }
+
+    func testMouldAndNewtonCountInTheRenderKeyOnlyWhenOn() throws {
+        var g = Slide(scans: ["a"], params: Params())
+        let key = g.renderKey
+        g.params.mould = 0.4
+        let mould = g.renderKey
+        g.params.mould = 0; g.params.newton = 0.4
+        XCTAssertNotEqual(g.renderKey, key)
+        XCTAssertNotEqual(g.renderKey, mould)
+        XCTAssertNotEqual(mould, key)
+        g.params.newton = 0
+        XCTAssertEqual(g.renderKey, key)
+        // trays from before mould and Newton ring repair decode with both off; out of range is clamped
+        let old = try JSONDecoder().decode(Params.self, from: Data(#"{"strength": 0.5, "dust": 0.2}"#.utf8))
+        XCTAssertEqual(old.mould, 0)
+        XCTAssertEqual(old.newton, 0)
+        let wild = try JSONDecoder().decode(Params.self, from: Data(#"{"mould": 3, "newton": -1}"#.utf8))
+        XCTAssertEqual(wild.mould, 1)
+        XCTAssertEqual(wild.newton, 0)
+    }
+
+    func testMountRoundTripsAndGoesStaleWithTheScans() throws {
+        var g = Slide(scans: ["a", "b"], params: Params())
+        g.mount = MountEdge(angle: 1.5, confidence: 0.9, box: [0.1, nil, 0.9, 0.92], scans: g.activeScans)
+        let back = try JSONDecoder().decode(Slide.self, from: JSONEncoder().encode(g))
+        XCTAssertEqual(back.mount, g.mount)
+        XCTAssertEqual(back.currentMount, g.mount)
+        XCTAssertTrue(back.straightensToMount)
+        var framed = back; framed.params.angle = 0.5
+        XCTAssertFalse(framed.straightensToMount)
+        var fewer = back; fewer.excluded = ["b"]
+        XCTAssertNil(fewer.currentMount)
     }
 }

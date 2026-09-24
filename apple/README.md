@@ -40,6 +40,8 @@ The golden fixtures in `SlideKit/Tests/SlideKitTests/Golden` are synthetic slide
 | `workflow.import_scans` | `Importer` — SHA-1 verified copies, `imported.json` dedupe, grouping, best of bracket, rotation |
 | `imaging.fuse` (AlignMTB + MergeMertens) | `Fusion` — Vision translational registration + Mertens with OpenCV's exact pyramids |
 | `imaging.develop` and friends | `Develop`, `Curves` — function by function, same maths |
+| `imaging.detect_mount`, `mount_crop`, `repair_dust` | `MountAndDust.swift` (`Develop.detectMount`, `mountCrop`, `repairDust`), `MountEdge` — written without a Swift toolchain at hand: run `swift test` |
+| `imaging.repair_mould`, `repair_newton` | `MouldAndRings.swift` (`Develop.repairMould`, `mouldMask`, `repairNewton`, `newtonWeight`) — likewise uncompiled: run `swift test` |
 | YuNet faces | Vision face rectangles (roll-filtered per rotation); the sky heuristic is unchanged |
 | `render_export`, `finish_session`, `immich.py` | `Uploader`, `Export`, `ImmichClient` (v1/v2 vs v3 field rules kept) |
 | `learning.py` | `Learning` — same features, k-NN and `learning.json` (parity-tested) |

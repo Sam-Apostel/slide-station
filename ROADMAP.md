@@ -10,52 +10,54 @@ plenty.
 
 ## 0. Open now
 
-Small, known items (the old handoff's leftovers):
+Built but never run where it matters — the first things to check:
 
-- **Browser test script** — `tests/ui_flow.py` predates the Develop button, the Frame section and
-  the panel cleanup; update its selectors, and add backend tests for curves, crop, undo, dates and
-  locked slides.
-- **Crop tool polish** — with a locked aspect ratio an edge drag that hits the photo's border stops
-  instead of sliding along it; keyboard nudging.
-- **Learning** — also learn curves (and maybe crop) from developed slides, not only the sliders.
-- **Dates** — date a range of slides at once ("12–31: Aug 1978").
+- **Swift parity.** Everything since learned tone curves was ported to SlideKit without a Swift
+  toolchain: learned curves and per-stock learning, "Date a range…", mount detection, dust, mould
+  and Newton-ring repair, local adjustments, the blown-out restore fix, the dedupe fix. Run `swift test` on a Mac (golden fixtures are in place) and
+  try the new pieces in the simulator.
+- **Against a real Immich** (only the mock so far): stacks, `PUT /assets/{id}` for dates, captions
+  and places (does a naive `dateTimeOriginal` land on the right day?), v3.2 search paging, tags,
+  smart search for look-alikes, and the "no embedding yet" error text.
+- **On real slides** (only synthetic so far): tag and caption quality, the duplicate threshold
+  (0.93), the film-stock heuristic's confidences, sign OCR, face clustering, mount detection, the
+  eyes-open thresholds (set on photos, not faded slides).
+- **Hardware:** the camera rig's tethered capture (a stand-in script only) and RAW files from a
+  real camera; the container on a real server next to Immich; watched folders on a real SMB / NFS
+  share.
+- **Browsers:** Firefox and Safari themselves (their code path was only simulated in Chromium);
+  Safari on iPad / iPhone for the large-scan fallback.
 
-## 1. Understand the tray (local models, no cloud)
+Small known items:
 
-The laptop does the work while you develop; results are *suggestions* shown in the inspector,
-never silently applied, and every one is learned from like the colour settings are.
+- Publish the browser version: confirm the ProUI licence terms for a hosted copy, then run the
+  "Web version" workflow (GitHub Pages).
+
+## 1. Understand the tray
+
+Done: insights plumbing (suggestions with source and confidence, accept / dismiss, review a tray,
+propagate to neighbours), scene tags (CLIP), captions (Florence-2), faces → people (SFace), places
+(GeoNames, sign OCR, neighbours), film stock (fade signature / k-NN) with era hints for dating,
+near-duplicates / split / merge hints / scenes (CLIP embeddings) with "keep the best" preferring
+open eyes (MediaPipe face mesh), dust & scratch, mould and
+Newton-ring repair. All of it but captions also runs in the browser version (onnxruntime-web).
+ARCHITECTURE §4c, §5a–5f.
+
+Left:
 
 | Idea | How | Why it matters |
 | --- | --- | --- |
-| **Smart grouping 2.0** | CLIP / SigLIP image embeddings next to today's structural signature. Detects brackets *and* near-duplicates (the same scene shot twice), and splits "scenes" inside a tray. | Fewer wrong merges; "keep the best of these 3" becomes one click. |
-| **Best-of-burst** | Sharpness and clipping per scan already leave weak bracket scans out; next: near-duplicate shots of one scene, eyes-open score. | "Keep the best of these 3" without looking. |
-| **Scene tags** | Zero-shot CLIP labels (beach, snow, wedding, birthday, church, car, dog…), plus OCR of signs. | Searchable in Immich as tags; lets you filter the filmstrip. |
-| **Descriptions** | Small local VLM (e.g. Qwen2-VL / Moondream / LLaVA via llama.cpp or MLX on Apple silicon). One-sentence caption per slide, editable. | Immich's description field; makes 10 000 slides findable by words. |
-| **Faces → people** | Already have YuNet; add an embedding model (ArcFace / SFace) and cluster across trays. Name a cluster once. | Immich people are the #1 way families browse. Push names as Immich faces/people when the API allows, otherwise as tags. |
-| **Mount OCR** | Scan / photograph the mount (or read the scanner's frame edge). Handwritten dates, places, lab stamps ("KODAK · JUN 74"). | The single best dating signal there is. |
-| **Location recognition** | Landmark retrieval (e.g. CLIP + a GeoNames / Wikimedia landmark index), OCR'd place names, and propagation inside a tray. Confidence shown; accept with one click. | Immich map view for decades-old photos. |
-| **Date estimation** | Tray order already works (dated slides anchor the ones between them). Add: mount stamps, film stock (Kodachrome vs Ektachrome fade signature — the learned colour features already separate them), era cues from the VLM. | Slides land in the right year in Immich instead of the scan date. |
-| **Tray-level propagation** | Anything confirmed on one slide (place, date, people, event name) is offered to its neighbours: "Apply 'Lake Garda, Aug 1978' to slides 12–31?" | This is what makes 10k slides tractable. |
-| **Damage repair** | Dust & scratch detection from the scanner's IR-less scans (morphological + learned mask), inpaint; mould spot removal; Newton-ring reduction. | The biggest remaining quality gap after colour. |
-| **Film-stock profiles** | Learn per-stock restore curves (Kodachrome holds up, Ektachrome goes magenta, Agfachrome goes cyan). Auto-detect the stock from colour features + mount type. | Better first guess → fewer edits per slide. |
-
-**Plumbing for all of it:** a job queue with per-slide "insights" stored in `session.json`
-(`g["insights"] = {"tags": [...], "caption": ..., "place": {...}, "date": {...}}`), each with a
-source and confidence, an Insights section in the inspector, and a batch "review suggestions"
-view per tray. Models downloaded on first use into the library folder, never bundled.
+| **Captions in the browser version** | Florence-2 is 276 MB per browser and well over 10 s a slide in single-threaded WebAssembly; worth it with WebGPU, or a smaller captioner. | The last suggestion the no-install version lacks. |
+| **Mount OCR** | The mount itself isn't in the scan: photograph or scan the mounts (or a scanner that images the frame edge), then OCR handwritten dates / lab stamps ("KODAK · JUN 74") into the date suggestion. | Still the single best dating signal. |
+| **Landmarks** | CLIP zero-shot over a landmark list was too overconfident to ship; needs a calibration set of real slides (or a retrieval index) before it can suggest places honestly. | Immich map view for places without signs. |
+| **Era cues** | Florence rarely says anything datable; a model or prompt that does (cars, clothes, signage). | Dates for trays without dated slides. |
 
 ## 2. Round-trip with Immich
 
-- **Pull back in.** Browse your Immich albums inside Slide Station, pick assets (including slides
-  scanned years ago with other tools), and re-develop them: restore, crop, retag, re-date. Upload
-  replaces the original asset (keep the old one in trash) and preserves album membership,
-  favourites and faces.
-- **Metadata sync.** Push date, description, tags, location and people as Immich metadata
-  instead of only baking them into EXIF; pull edits made in Immich back.
-- **Duplicates.** Before uploading, hash-match and CLIP-match against what's already in Immich
-  ("this looks like a scan you uploaded in 2021 — replace it?").
-- **Stacks.** Upload the untouched scan as a hidden stack member under the developed version, so
-  nothing is ever lost.
+Done: pull photos back in from albums and replace them on upload, metadata sync both ways (date,
+caption, place, tags), exact-duplicate check before upload, look-alikes already in Immich, stacks
+with the untouched scans (ARCHITECTURE §6a, §5e). Nothing open beyond checking it against a real
+server (§0).
 
 ## 3. iPad (and later: one native app for iPad and Mac)
 
@@ -100,63 +102,46 @@ card cleanup, locked slides). Full-resolution export: 1 s / 1.1 GB for a 20 MP b
 the real scanner on a real iPad (phase 1) and measuring memory there. The ProUI template apps
 (image editor, video editor, DAW…) had nothing to port beyond the kit itself.
 
-**Phases**
+**Phases left** (SlideKit, Simple mode and Studio mode are done, see the status above)
 
-1. *Spike (days):* scanner on the iPad in Files; a tiny app that picks the card, bookmarks it,
-   notices reconnection, lists and copies scans.
-2. *SlideKit:* port the pipeline with parity tests; run it in the simulator and on the device.
-3. *Simple mode* end to end (import → keep/skip → Immich) — the version to hand over.
-4. *Studio mode* with the ProUI Swift components.
-5. Optional: the Mac on the same code; sync trays between devices (iCloud), so a tray started on
+1. *On the device (days):* the scanner on the iPad in Files — the app picks the card, bookmarks
+   it, notices reconnection, lists and copies scans; then a real tray through Simple mode, and
+   memory measured on that iPad model.
+2. Optional: the Mac on the same code; sync trays between devices (iCloud), so a tray started on
    the iPad can be finished on the Mac.
 
 (The lighter alternative — the iPad as a browser client of the Mac server over the LAN — is still
 cheap, but needs the Mac on, which defeats the "on her own" goal.)
 
-## 4. Hosted Slide Station (for other people's Immich)
+## 4. Hosted Slide Station
 
-- **Shape:** a container that sits next to Immich (same docker-compose), not a SaaS that holds
-  photos. Users drop folders (or a zip) in the browser; processing happens on their own server;
-  output goes straight into their Immich via API key or OAuth.
-- **Needed for that:** accounts mapped to Immich users (Immich OAuth), per-user libraries,
-  resumable uploads (tus), a real job queue (Redis/RQ or SQLite-backed), GPU optional, and a
-  settings page instead of `~/.slidestation/config.json`.
-- **Then:** an Immich "external library" watcher (scan folders the user drops into a share), and
-  eventually an Immich plugin/app if their plugin system lands.
-- **Licensing check first:** ProUI is proprietary — a hosted/distributed version needs its licence
-  terms confirmed (or the UI kit swapped) before shipping to other people.
+Done: the browser version (static site, no backend — ARCHITECTURE §4c/§4d) and the container next
+to Immich (`Dockerfile`, `docker-compose.example.yml`: folder uploads from the browser, optional
+accounts per Immich user with sign-in rate limits, key re-checks, quotas, resumable jobs and a
+server-wide render limit — §4e), and watched folders: sub-folders dropped into a share become
+trays by themselves. Left: an Immich plugin / app if their plugin system lands.
 
 ## 5. Capture
 
-- **Scanner automation.** An ESP32 button macro: press the scanner's buttons at
-  three exposures per slide automatically, so bracketing costs nothing.
-- **Camera rig mode.** A DSLR/mirrorless + macro lens + light panel beats the Slide N Scan by a mile
-  (real RAW, 24 MP+). Tethered capture (gphoto2), auto-advance with a carousel projector mechanism,
-  RAW decode (rawpy) into the same pipeline. The whole app already works per "scan", so a camera is
-  just another source.
-- **Mount detection.** Detect the mount edge precisely (not just "dark border") and straighten to it
-  automatically.
+Done: mount detection and straighten-to-mount; RAW files and tethered capture through gphoto2
+(ARCHITECTURE §4f). Left, both hardware:
+
+- **Scanner automation.** An ESP32 button macro: press the Slide N Scan's buttons at three
+  exposures per slide automatically, so bracketing costs nothing.
+- **Carousel auto-advance** for the camera rig: a projector mechanism stepping the tray between
+  captures.
 
 ## 6. The tool itself
 
-- Local adjustments (brush / radial / graduated) for dodging a dark foreground or a blown sky.
-- Presets and "develop like slide 12" across trays.
-- Loupe and 1:1 zoom on the full-resolution render.
-- Batch review grid: 4×4 slides at once for the quick "all good" pass.
-- Stats: slides per hour, trays remaining, projected finish date for the 10 000.
+Done: local adjustments (graduated, radial, brush), presets and "develop like", 1:1 zoom and loupe,
+the review grid, stats. Nothing open.
 
 ---
 
 ### Suggested order
 
-Done so far: undo, aligned split compare, best-of-bracket, tray-order date estimation.
-
-1. §0 "Open now" — tests first, since a lot changed quickly
-2. iPad spike (§3 phase 1) — cheap, and it decides a lot
-3. Insights plumbing + tags (on the Mac with CLIP, or straight into SlideKit with Vision if the
-   iPad goes ahead)
-4. SlideKit + Simple mode on the iPad
-5. Faces → people, location, mount OCR
-6. Immich round-trip (pull back, metadata sync, stacks)
-7. VLM captions, damage repair, film-stock profiles
-8. Hosted container
+1. §0: run the Swift tests, try a real Immich and a real tray — a lot was built on synthetic data
+2. The iPad on the device (§3)
+3. Publish the browser version (licence check first)
+4. Mount OCR once there are mount photos; landmarks once there's a calibration set
+5. Scanner automation (ESP32)

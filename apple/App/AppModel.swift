@@ -200,6 +200,7 @@ final class AppModel {
     private func save(_ trayID: String, _ slideID: String, debounce: Bool) {
         guard let i = tray?.index(of: slideID) else { return }
         let snapshot = tray!.groups[i]
+        let stock = snapshot.effectiveStock(in: tray!)
         let learnKey = "\(trayID):\(slideID)"
         pendingSave[slideID]?.cancel()
         let library = library, learning = learning, learn = learningEnabled
@@ -214,12 +215,15 @@ final class AppModel {
                     t.groups[j].reviewed = snapshot.reviewed; t.groups[j].skip = snapshot.skip
                     t.groups[j].excluded = snapshot.excluded; t.groups[j].history = snapshot.history
                     t.groups[j].date = snapshot.date; t.groups[j].caption = snapshot.caption
+                    if snapshot.currentMount != nil { t.groups[j].mount = snapshot.mount }   // found lazily (findMount)
                 }
             }
             // learning (Python: server._learn): developed slides teach, skipped ones are forgotten
             guard learn, let f = snapshot.feat else { return }
             if snapshot.skip { learning.forget(key: learnKey) }
-            else if snapshot.developed { learning.remember(key: learnKey, features: f, params: snapshot.params) }
+            else if snapshot.developed {
+                learning.remember(key: learnKey, features: f, params: snapshot.params, stock: stock)
+            }
         }
     }
 
@@ -261,7 +265,7 @@ final class AppModel {
 
     /// Put the learned suggestion back (Python: resuggest).
     func useLearned() {
-        guard let s = slide, let f = s.feat, let sug = learning.suggest(f) else { notice = "Nothing learned for this slide yet."; return }
+        guard let s = slide, let f = s.feat, let sug = learning.suggest(f, stock: tray.flatMap { s.effectiveStock(in: $0) }) else { notice = "Nothing learned for this slide yet."; return }
         edit(s.id, what: "learned") { $0.params = sug.apply(to: $0.params); $0.paramsSource = "learned:\(sug.neighbours)" }
     }
 
@@ -300,6 +304,39 @@ final class AppModel {
         }
     }
 
+    /// Slides imported before mount detection (or whose scans changed since) have no mount yet:
+    /// look for it when the slide is shown (Python: POST …/mount).
+    func findMount() {
+        guard let tray, let g = slide, g.currentMount == nil, g.locked == nil else { return }
+        let renderer = renderer
+        Task {
+            let found = await Task.detached { () -> MountEdge? in
+                guard let a = try? renderer.fusedProxy(tray, g) else { return nil }
+                return Develop.detectMount(a)
+            }.value
+            guard let found, slide?.id == g.id, slide?.activeScans == g.activeScans else { return }
+            edit(g.id) { $0.mount = MountEdge(angle: found.angle, confidence: found.confidence, box: found.box, scans: g.activeScans) }
+        }
+    }
+
+    /// Straighten to the mount's edge; with `trim`, also crop to its window (a tighter trim).
+    func straightenToMount(trim: Bool = false) {
+        guard let tray, let g = slide, let m = g.currentMount, m.confidence > 0 else { return }
+        var straight = g.params
+        straight.angle = m.angle == 0 ? 0 : -m.angle
+        let renderer = renderer, p = straight, angle = straight.angle
+        Task {
+            var crop = g.params.crop
+            if trim {
+                crop = await Task.detached { () -> [Double]? in
+                    guard let a = try? renderer.fusedProxy(tray, g) else { return nil }
+                    return Develop.mountCrop(a.rotated(g.rotation), p, box: Develop.rotateBox(m.box, g.rotation))
+                }.value
+            }
+            edit(g.id, what: "mount") { $0.params.angle = angle; $0.params.crop = crop }
+        }
+    }
+
     func undo() { step(undo: true) }
     func redo() { step(undo: false) }
     private func step(undo: Bool) {
@@ -311,7 +348,10 @@ final class AppModel {
     func turn(clockwise: Bool = true) { rotate(clockwise ? 90 : 270) }
     func rotate(_ degrees: Int) {
         guard let s = slide else { return }
-        edit(s.id, what: "rotation") { $0.rotation = ($0.rotation + degrees) % 360; $0.rotReason = "manual" }
+        edit(s.id, what: "rotation") {
+            $0.rotation = ($0.rotation + degrees) % 360; $0.rotReason = "manual"
+            $0.params.local = LocalAdjustment.turned($0.params.local, by: degrees)   // masks turn with the picture
+        }
     }
 
     /// "Develop" / keep: mark ready and move on.
@@ -351,6 +391,33 @@ final class AppModel {
         guard let s = slide else { return }
         let v = date.trimmingCharacters(in: .whitespaces).replacingOccurrences(of: "/", with: "-")
         edit(s.id, debounce: true) { $0.date = v.isEmpty ? nil : v }
+    }
+
+    /// Date slides `from`...`to` (indices, either order, both included) at once; "" clears theirs
+    /// (Python: `POST /api/sessions/{sid}/dates`). Locked slides keep their date. Returns how many
+    /// were dated, or nil when the date doesn't parse.
+    @discardableResult
+    func dateRange(from a: Int, to b: Int, date: String) -> Int? {
+        guard let trayID = tray?.id, let t = tray, !t.groups.isEmpty else { return 0 }
+        let v = date.trimmingCharacters(in: .whitespaces).replacingOccurrences(of: "/", with: "-")
+        guard v.isEmpty || SlideDates.parse(v) != nil else {
+            error = "Use a year, year-month or full date: 1978, 1978-06, 1978-06-14"
+            return nil
+        }
+        let lo = max(0, min(a, b)), hi = min(t.groups.count - 1, max(a, b))
+        guard lo <= hi else { return 0 }
+        let ids = t.groups[lo...hi].filter { $0.locked == nil }.map(\.id)
+        let value: String? = v.isEmpty ? nil : v
+        for id in ids { if let i = tray?.index(of: id) { tray!.groups[i].date = value } }
+        Task { try? await library.update(trayID) { t in for id in ids { if let j = t.index(of: id) { t.groups[j].date = value } } } }
+        notice = (value.map { "Dated \(ids.count) slides \($0)" } ?? "Cleared the date of \(ids.count) slides") + " (\(lo + 1)–\(hi + 1))"
+        return ids.count
+    }
+
+    /// Where a run dated from slide `i` naturally ends: before the next slide with its own date.
+    func rangeEnd(from i: Int) -> Int {
+        guard let t = tray else { return i }
+        return (t.groups.indices.first { $0 > i && t.groups[$0].date != nil }).map { $0 - 1 } ?? t.groups.count - 1
     }
 
     func setCaption(_ caption: String) {

@@ -18,6 +18,7 @@ export type DesktopCommand =
   | "prev"
   | "review"
   | "rotate"
+  | "mirror"
   | "copy-prev"
   | "reset-colour"
   | "skip"
