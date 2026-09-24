@@ -13,8 +13,8 @@ plenty.
 Built but never run where it matters — the first things to check:
 
 - **Swift parity.** Everything since learned tone curves was ported to SlideKit without a Swift
-  toolchain: learned curves and per-stock learning, "Date a range…", mount detection, dust repair,
-  local adjustments, the dedupe fix. Run `swift test` on a Mac (golden fixtures are in place) and
+  toolchain: learned curves and per-stock learning, "Date a range…", mount detection, dust, mould
+  and Newton-ring repair, local adjustments, the blown-out restore fix, the dedupe fix. Run `swift test` on a Mac (golden fixtures are in place) and
   try the new pieces in the simulator.
 - **Against a real Immich** (only the mock so far): stacks, `PUT /assets/{id}` for dates, captions
   and places (does a naive `dateTimeOriginal` land on the right day?), v3.2 search paging, tags,
@@ -28,12 +28,6 @@ Built but never run where it matters — the first things to check:
 
 Small known items:
 
-- `imaging.auto_restore` gives NaN when a scan's median brightness is 1 (more than ~1.8× over-
-  exposed); the slide renders as noise.
-- Right after creating a tray the stage briefly asks for the previous tray's previews under the new
-  tray's id (harmless 404s).
-- Accounts mode: no quotas, no rate limit on sign-in, jobs don't survive a restart, a revoked
-  Immich key doesn't end an open session, one full-resolution render at a time for the whole server.
 - Publish the browser version: confirm the ProUI licence terms for a hosted copy, then run the
   "Web version" workflow (GitHub Pages).
 
@@ -42,18 +36,18 @@ Small known items:
 Done: insights plumbing (suggestions with source and confidence, accept / dismiss, review a tray,
 propagate to neighbours), scene tags (CLIP), captions (Florence-2), faces → people (SFace), places
 (GeoNames, sign OCR, neighbours), film stock (fade signature / k-NN) with era hints for dating,
-near-duplicates / split / merge hints / scenes (CLIP embeddings), dust & scratch repair.
-ARCHITECTURE §5a–5f.
+near-duplicates / split / merge hints / scenes (CLIP embeddings), dust & scratch, mould and
+Newton-ring repair. All of it but captions also runs in the browser version (onnxruntime-web).
+ARCHITECTURE §4c, §5a–5f.
 
 Left:
 
 | Idea | How | Why it matters |
 | --- | --- | --- |
-| **Models in the browser version** | Tags, look-alikes, sign OCR and people through onnxruntime-web (already used for YuNet there); captions too if a 276 MB download per browser is acceptable. | The no-install version gets the suggestions. |
+| **Captions in the browser version** | Florence-2 is 276 MB per browser and well over 10 s a slide in single-threaded WebAssembly; worth it with WebGPU, or a smaller captioner. | The last suggestion the no-install version lacks. |
 | **Mount OCR** | The mount itself isn't in the scan: photograph or scan the mounts (or a scanner that images the frame edge), then OCR handwritten dates / lab stamps ("KODAK · JUN 74") into the date suggestion. | Still the single best dating signal. |
 | **Landmarks** | CLIP zero-shot over a landmark list was too overconfident to ship; needs a calibration set of real slides (or a retrieval index) before it can suggest places honestly. | Immich map view for places without signs. |
 | **Era cues** | Florence rarely says anything datable; a model or prompt that does (cars, clothes, signage). | Dates for trays without dated slides. |
-| **More damage repair** | Mould spots and Newton rings (dust and scratches are done). | The next quality gap. |
 | **Eyes open** | Best-of-burst by blink detection needs an eye-state model on top of the face boxes. | "Keep the best" for portraits. |
 
 ## 2. Round-trip with Immich
@@ -121,8 +115,9 @@ cheap, but needs the Mac on, which defeats the "on her own" goal.)
 
 Done: the browser version (static site, no backend — ARCHITECTURE §4c/§4d) and the container next
 to Immich (`Dockerfile`, `docker-compose.example.yml`: folder uploads from the browser, optional
-accounts per Immich user — §4e). Left: see "Accounts mode" in §0; an Immich plugin / app if their
-plugin system lands; an "external library" watcher (folders dropped into a share).
+accounts per Immich user with sign-in rate limits, key re-checks, quotas, resumable jobs and a
+server-wide render limit — §4e). Left: an Immich plugin / app if their plugin system lands; an
+"external library" watcher (folders dropped into a share).
 
 ## 5. Capture
 
@@ -146,6 +141,5 @@ the review grid, stats. Nothing open.
 1. §0: run the Swift tests, try a real Immich and a real tray — a lot was built on synthetic data
 2. The iPad on the device (§3)
 3. Publish the browser version (licence check first)
-4. Models in the browser version
-5. Mount OCR once there are mount photos; landmarks once there's a calibration set
-6. Scanner automation (ESP32)
+4. Mount OCR once there are mount photos; landmarks once there's a calibration set
+5. Scanner automation (ESP32)
