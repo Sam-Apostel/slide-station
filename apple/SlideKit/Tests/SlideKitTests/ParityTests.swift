@@ -214,4 +214,27 @@ final class ParityTests: XCTestCase {
         XCTAssertLessThan(mean, 0.003)
         XCTAssertLessThan(worst, 0.06)
     }
+
+    // MARK: over-exposed scans
+
+    struct Blown: Decodable {
+        struct Case: Decodable { var scales: [Float], strength: Double }
+        var restore_blown: Case
+    }
+
+    lazy var blown: Blown = try! JSONDecoder().decode(Blown.self, from: Data(contentsOf: Self.dir.appendingPathComponent("golden.json")))
+
+    func testAutoRestoreBlownOut() throws {
+        let scene = try image("scene.png")
+        let want = try floats("restored_blown.f32")
+        let n = scene.data.count
+        for (i, k) in blown.restore_blown.scales.enumerated() {
+            let over = RGBImage(width: scene.width, height: scene.height, data: scene.data.map { min(1, max(0, $0 * k)) })
+            let out = Develop.autoRestore(over, strength: blown.restore_blown.strength)
+            XCTAssertTrue(out.data.allSatisfy { $0.isFinite }, "x\(k)")
+            let (mean, worst) = diff(out.data, Array(want[(i * n)..<((i + 1) * n)]))
+            XCTAssertLessThan(mean, 0.002, "x\(k)")
+            XCTAssertLessThan(worst, 0.05, "x\(k)")
+        }
+    }
 }

@@ -228,5 +228,15 @@ meta["local_masks"] = masks
 meta["local_mask_size"] = [180, 110]
 meta["local_turned"] = im.turn_local(lp.local, 90)
 
+# over-exposed scans (added later, from scene.png only): at x1.5 blue's median is at white, at x2
+# red's too, at x3 every channel's (auto_restore used to give NaN / inf there). The three restores
+# one after another in one file.
+# --- blown fixture start
+blown_scales = [1.5, 2.0, 3.0]
+save_f32(np.concatenate([im.auto_restore(np.clip(base * k, 0, 1), 0.6).ravel() for k in blown_scales]),
+         "restored_blown.f32")
+meta["restore_blown"] = {"scales": blown_scales, "strength": 0.6}
+# --- blown fixture end
+
 (OUT / "golden.json").write_text(json.dumps(meta, indent=1))
 print("wrote", OUT)

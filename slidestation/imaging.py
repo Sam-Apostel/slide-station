@@ -283,6 +283,10 @@ class Params:
         return asdict(self)
 
 
+RESTORE_MED_MAX = 0.999  # auto_restore: a channel median at white counts as this
+RESTORE_GAMMA = (0.25, 4.0)  # auto_restore: the midtone gamma stays within these
+
+
 def auto_restore(a: np.ndarray, strength: float) -> np.ndarray:
     """Per-channel levels + partial grey-world midtone balance, with a guard against yellow skies."""
     if strength <= 0:
@@ -297,11 +301,18 @@ def auto_restore(a: np.ndarray, strength: float) -> np.ndarray:
     k = min(1.0, strength * 2.5)  # levels reach full stretch from strength 0.4 upward
     L = L * k
     H = 1 - (1 - H) * k
+    # a flat channel (an empty, white frame) has no range to stretch: leave its levels alone
+    flat = H - L < 1e-3
+    L, H = np.where(flat, 0, L), np.where(flat, 1, H)
     b = np.clip((a - L) / np.maximum(H - L, 1e-3), 0, 1)
     sb = np.clip((s - L) / np.maximum(H - L, 1e-3), 1e-4, 1)
-    med = np.median(sb, 0)
+    # A blown-out channel (over half the picture at white, e.g. a scan ~1.8x over-exposed) has a
+    # median of 1, whose log is 0: keep it just below 1 and bound the gamma, so such a channel is
+    # pulled down as hard as grey-world ever pulls one (4) instead of turning to NaN / inf, and a
+    # scan blown in every channel keeps gamma 1 (levels only: there is nothing left to balance).
+    med = np.minimum(np.median(sb, 0), RESTORE_MED_MAX)
     tgt = np.exp(np.log(med).mean())
-    g = 1 + (np.log(tgt) / np.log(med) - 1) * strength
+    g = np.clip(1 + (np.log(tgt) / np.log(med) - 1) * strength, *RESTORE_GAMMA)
     out = b ** g.astype(np.float32)
     Hb = np.percentile(s[:, 2], 99.6)
     mask = np.clip((a[..., 2] - (Hb - 0.10)) / 0.08, 0, 1).astype(np.float32)

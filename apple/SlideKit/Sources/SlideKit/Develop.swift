@@ -5,6 +5,11 @@ import Foundation
 public enum Develop {
     // MARK: auto restore
 
+    /// A channel median at white counts as this (log 1 = 0 made the gamma NaN / inf).
+    static let restoreMedMax = 0.999
+    /// The midtone gamma stays within these.
+    static let restoreGamma = (0.25, 4.0)
+
     /// Per-channel levels + partial grey-world midtone balance, with a guard against yellow skies.
     public static func autoRestore(_ a: RGBImage, strength: Double) -> RGBImage {
         var out = a
@@ -32,17 +37,20 @@ public enum Develop {
         for c in 0..<3 {
             L[c] = percentile(sorted: sorted[c], 0.4) * k
             H[c] = 1 - (1 - percentile(sorted: sorted[c], 99.6)) * k
+            // a flat channel (an empty, white frame) has no range to stretch: leave its levels alone
+            if H[c] - L[c] < 1e-3 { L[c] = 0; H[c] = 1 }
         }
         // the median of the stretched samples is the stretched median (the stretch is monotonic)
+        // a blown-out channel's median (1) is kept just below 1 and the gamma bounded, as in imaging.py
         var med = [Double](repeating: 0, count: 3)
         for c in 0..<3 {
             let raw = percentile(sorted: sorted[c], 50)
-            med[c] = Double(min(1, max(1e-4, (raw - L[c]) / max(H[c] - L[c], 1e-3))))
+            med[c] = min(restoreMedMax, Double(min(1, max(1e-4, (raw - L[c]) / max(H[c] - L[c], 1e-3)))))
         }
         let tgt = exp(med.map(log).reduce(0, +) / 3)
         for c in 0..<3 {
-            let lm = log(med[c])
-            g[c] = lm == 0 ? 1 : Float(1 + (log(tgt) / lm - 1) * strength)
+            let gc = 1 + (log(tgt) / log(med[c]) - 1) * strength
+            g[c] = Float(min(restoreGamma.1, max(restoreGamma.0, gc)))
         }
         let hb = percentile(sorted: sorted[2], 99.6)
         // the sky guard's mask comes from the untouched blue channel, so build it first

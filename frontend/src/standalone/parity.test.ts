@@ -70,6 +70,23 @@ describe("parity with imaging.py", () => {
     expect(worst).toBeLessThan(0.05);
   });
 
+  it("auto restore of over-exposed scans (a channel's median at white)", () => {
+    const { scales, strength } = golden.restore_blown;
+    const want = floats("restored_blown.f32");
+    const n = scene.data.length;
+    scales.forEach((k: number, i: number) => {
+      const over = { ...scene, data: scene.data.map((v) => Math.min(1, Math.max(0, v * k))) };
+      const out = im.autoRestore(over, strength).data;
+      expect(out.every(Number.isFinite)).toBe(true);
+      const [mean, worst] = diff(out, want.subarray(i * n, (i + 1) * n));
+      expect(mean).toBeLessThan(0.002);
+      expect(worst).toBeLessThan(0.05);
+    });
+    // an empty, white frame stays white (a flat channel keeps its levels)
+    const white = { width: 96, height: 64, data: new Float32Array(96 * 64 * 3).fill(1) };
+    expect(im.autoRestore(white, 1).data.every((v) => v === 1)).toBe(true);
+  });
+
   it("trim bounds", () => {
     const restored = { width: golden.width, height: golden.height, data: floats("restored.f32") };
     expect(im.trimBounds(restored)).toEqual(golden.trim_bounds);

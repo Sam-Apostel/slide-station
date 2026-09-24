@@ -174,6 +174,9 @@ export function cleanCrop(v: unknown): [number, number, number, number] | null {
 
 // ------------------------------------------------------------------ restore, trim, geometry
 
+const RESTORE_MED_MAX = 0.999; // a channel median at white counts as this
+const RESTORE_GAMMA = [0.25, 4]; // the midtone gamma stays within these
+
 /** Per-channel levels + partial grey-world midtone balance, with a guard against yellow skies. */
 export function autoRestore(a: RGB, strength: number, inPlace = false): RGB {
   if (strength <= 0) return a;
@@ -196,12 +199,17 @@ export function autoRestore(a: RGB, strength: number, inPlace = false): RGB {
   const kk = Math.min(1, strength * 2.5); // levels reach full stretch from strength 0.4 upward
   const L = [0, 1, 2].map((c) => percentile(sorted[c], 0.4) * kk);
   const H = [0, 1, 2].map((c) => 1 - (1 - percentile(sorted[c], 99.6)) * kk);
+  // a flat channel (an empty, white frame) has no range to stretch: leave its levels alone
+  for (let c = 0; c < 3; c++) if (H[c] - L[c] < 1e-3) [L[c], H[c]] = [0, 1];
   // the median of the stretched samples is the stretched median (the stretch is monotonic)
+  // a blown-out channel's median (1) is kept just below 1 and the gamma bounded, as in imaging.py
   const med = [0, 1, 2].map((c) =>
-    Math.min(1, Math.max(1e-4, (percentile(sorted[c], 50) - L[c]) / Math.max(H[c] - L[c], 1e-3))),
+    Math.min(RESTORE_MED_MAX, Math.max(1e-4, (percentile(sorted[c], 50) - L[c]) / Math.max(H[c] - L[c], 1e-3))),
   );
   const tgt = Math.exp(med.reduce((s, v) => s + Math.log(v), 0) / 3);
-  const g = med.map((v) => (Math.log(v) === 0 ? 1 : 1 + (Math.log(tgt) / Math.log(v) - 1) * strength));
+  const g = med.map((v) =>
+    Math.min(RESTORE_GAMMA[1], Math.max(RESTORE_GAMMA[0], 1 + (Math.log(tgt) / Math.log(v) - 1) * strength)),
+  );
   const hb = percentile(sorted[2], 99.6);
   // the sky guard's mask comes from the untouched blue channel, so build it first
   let mask = plane(w, h);

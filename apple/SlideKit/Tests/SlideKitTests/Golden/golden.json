@@ -1958,5 +1958,6 @@
     }
    ]
   }
- ]
+ ],
+ "restore_blown": {"scales": [1.5, 2.0, 3.0], "strength": 0.6}
 }
