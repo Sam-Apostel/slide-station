@@ -154,6 +154,28 @@ export type Config = {
   /** Slides to digitise in all, for the stats' projected finish. */
   stats_target?: number;
   insights_enabled?: boolean;
+  /** Faces → people (desktop app only; opt-in, downloads a face model). */
+  people_enabled?: boolean;
+};
+
+/** Someone found on the slides: faces grouped by likeness across every tray (People dialog). */
+export type Person = {
+  id: string;
+  /** "" until named. */
+  name: string;
+  /** How many slides they are on. */
+  slides: number;
+  faces: { id: string; url: string }[];
+};
+
+export type PeoplePayload = {
+  enabled: boolean;
+  /** The face model is downloaded. */
+  model: boolean;
+  model_mb: number;
+  /** Slides whose faces haven't been looked for yet (or were before an edit). */
+  pending: number;
+  people: Person[];
 };
 
 /** An Immich album to pull photos back in from (`GET /api/immich/albums`). */

@@ -25,6 +25,7 @@ MAJOR = int(os.environ.get("MOCK_IMMICH_MAJOR", "3"))
 KEY = os.environ.get("MOCK_IMMICH_KEY", "testkey")
 STACKS = True  # False: a server from before stacks (404)
 PAGE = 1000  # search page size cap, lowered by tests to exercise paging
+TAGS = True  # False: a server without the tags API (404)
 app = FastAPI()
 if os.environ.get("MOCK_IMMICH_CORS"):
     # a real Immich only allows other origins in development builds; the browser version's test
@@ -341,29 +342,42 @@ def delete_stack(sid: str, x_api_key: str = Header(None)):
     return Response(status_code=204)
 
 
-TAGS = True  # False: an Immich without the tag API (404), like before v1.113
-
-
 @app.put("/api/tags")
 async def upsert_tags(req: Request, x_api_key: str = Header(None)):
+    """Tags by full value ("People/Ann" creates People and Ann under it); answers the leaf tags."""
     auth(x_api_key)
     if not TAGS:
         raise HTTPException(404, "Cannot PUT /api/tags")
     tags = DB.setdefault("tags", {})
     out = []
-    for name in (await req.json())["tags"]:
-        tid = next((k for k, v in tags.items() if v["value"] == name), None) or str(uuid.uuid4())
-        tags.setdefault(tid, {"value": name, "assets": []})
-        out.append({"id": tid, "name": name.split("/")[-1], "value": name, "createdAt": "", "updatedAt": ""})
+    for value in (await req.json())["tags"]:
+        parent = None
+        for i, name in enumerate(value.split("/")):
+            path = "/".join(value.split("/")[: i + 1])
+            if path not in tags:
+                tags[path] = {"id": str(uuid.uuid4()), "name": name, "value": path, "parentId": parent, "assets": []}
+            parent = tags[path]["id"]
+        out.append({k: v for k, v in tags[value].items() if k != "assets"})
     return out
 
 
 @app.put("/api/tags/{tid}/assets")
-async def tag_assets(tid: str, req: Request, x_api_key: str = Header(None)):
+async def tag_one(tid: str, req: Request, x_api_key: str = Header(None)):
     auth(x_api_key)
     ids = (await req.json())["ids"]
-    DB["tags"][tid]["assets"] += [i for i in ids if i not in DB["tags"][tid]["assets"]]
+    tag = next(t for t in DB["tags"].values() if t["id"] == tid)
+    tag["assets"] = sorted(set(tag["assets"]) | set(ids))
     return [{"id": i, "success": True} for i in ids]
+
+
+@app.put("/api/tags/assets")
+async def tag_assets(req: Request, x_api_key: str = Header(None)):
+    auth(x_api_key)
+    body = await req.json()
+    by_id = {t["id"]: t for t in DB.setdefault("tags", {}).values()}
+    for tid in body["tagIds"]:
+        by_id[tid]["assets"] = sorted(set(by_id[tid]["assets"]) | set(body["assetIds"]))
+    return {"count": len(body["assetIds"]) * len(body["tagIds"])}
 
 
 @app.get("/debug")

@@ -23,6 +23,8 @@ const JOB_DONE: Record<string, string> = {
   finish: "Upload finished",
   upload: "Upload finished",
   cleanup: "Scanner card cleaned",
+  faces: "Faces found",
+  tag: "Names sent to Immich",
 };
 
 /**

@@ -7,6 +7,7 @@ locally in your browser, keyboard-first, built for working through thousands of 
 - Groups repeated scans of one slide automatically and exposure-fuses them
 - Guesses rotation from faces and skies, and leaves slides alone when it isn't sure
 - Restores faded film, and **learns your corrections** to pre-set the next slides
+- Optionally recognises people across all your trays: name someone once, Immich gets it as a tag
 - Uploads to a per-tray Immich album (works with Immich v1.118 → v3)
 - Deletes scans from the card only after they are verified and uploaded
 
@@ -50,6 +51,9 @@ Nothing leaves your computer except what you send to your own Immich.
   stops at about 16 megapixels) are read and written in strips instead: slower, but they work.
 - **Not in the browser version:** scanner detection (pick the card's folder instead), eject,
   rotation from faces (the sky rule still runs), "show in Finder".
+
+  recognising people, background pre-rendering, "show in Finder". Rotation from faces does run: the
+  face detector (about 15 MB with its runtime) loads the first time you import.
 
 **Connecting Immich.** Immich only answers requests from its own web address (it allows other
 origins in development builds only), so the page has to reach it in one of two ways:
@@ -168,6 +172,21 @@ own:
 
 Not in the browser version yet.
 
+## People
+
+Settings → **Recognise people across my slides** (off by default; the desktop app, not the browser
+version). The first time it downloads a 39 MB face model, then finds the faces on every slide,
+new imports included, and groups them by person across all your trays. Open **People** (the
+people icon in the top bar, or ⌘K) to name each person once, tick two groups that are the same
+person and merge them, or take a wrong face out of a group (hover it, ×); naming a group with a
+name someone already has merges them too. Everything runs on your computer.
+
+Immich gets the names as **tags** `People/<name>` on the uploaded slides (Immich's API can't
+reliably assign its own faces and people to an uploaded photo across versions, so tags are the
+dependable way; they show under Tags and are searchable). The API key then also needs `tag.create`
+and `tag.asset`. Slides uploaded before you named someone: **Send names to Immich** in the People
+dialog. Names are only ever added, never removed from Immich.
+
 ## Scanning tips
 
 - One scan per slide is usually enough. For contrasty slides (snow, backlit, dark interiors) add
@@ -178,11 +197,15 @@ Not in the browser version yet.
 
 `~/.slidestation/config.json` - settings (incl. API key, readable only by you).
 Library folder → `sessions/<tray>/originals`, `cache` (previews), `export` (finished JPEGs),
-`session.json` (all edits; safe to back up).
+`session.json` (all edits; safe to back up), `faces.json` (faces found, when people are on);
+`people.json` (who is who) and `models/` (the downloaded face model) at the top.
 
 Face detection uses OpenCV's YuNet model (MIT licence, from opencv_zoo), bundled in
 `slidestation/models`. Tag suggestions download OpenAI's CLIP (MIT licence) into the library's
 `models` folder when turned on; `insights.json` in the library remembers which tags you accept and dismiss.
+
+`slidestation/models`. Recognising people uses OpenCV's SFace model (Apache 2.0), downloaded when
+you turn it on.
 
 ## Development
 

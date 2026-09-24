@@ -1,5 +1,5 @@
 import type * as React from "react";
-import { ChartNoAxesColumn, CircleHelp, FolderInput, HardDriveDownload, Plus, Settings } from "lucide-react";
+import { ChartNoAxesColumn, CircleHelp, FolderInput, HardDriveDownload, Plus, Settings, Users } from "lucide-react";
 import { ProButton } from "@/components/ui/pro-button";
 import { Tip } from "@/components/tip";
 import { desktop, isMac } from "@/lib/desktop";
@@ -29,6 +29,8 @@ type TopBarProps = {
   /** Progress across the library (slides per hour, projected finish). */
   onStats?: () => void;
   onSettings: () => void;
+  /** The People dialog; only when recognising people is on (not in the browser version). */
+  onPeople?: () => void;
 };
 
 /** Which tray is open, and a new one. */
@@ -147,13 +149,25 @@ export function ActivityWell({
 }
 
 /** Shortcuts and settings, at the right end of whichever bar is on top. */
-export function AppActions({ onHelp, onSettings, onStats }: Pick<TopBarProps, "onHelp" | "onSettings" | "onStats">) {
+export function AppActions({
+  onHelp,
+  onSettings,
+  onStats,
+  onPeople,
+}: Pick<TopBarProps, "onHelp" | "onSettings" | "onStats" | "onPeople">) {
   return (
     <>
       {onStats && (
         <Tip label="Stats: slides per hour, projected finish">
           <ProButton onClick={onStats} aria-label="Stats">
             <ChartNoAxesColumn />
+          </ProButton>
+        </Tip>
+      )}
+      {onPeople && (
+        <Tip label="People">
+          <ProButton onClick={onPeople} aria-label="People">
+            <Users />
           </ProButton>
         </Tip>
       )}

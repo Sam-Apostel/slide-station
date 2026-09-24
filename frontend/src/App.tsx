@@ -20,6 +20,7 @@ import { ReviewGrid } from "@/components/review-grid";
 import { DevelopLikeDialog, PresetsDialog } from "@/components/looks";
 import { PanelToggles, WindowTitlebar } from "@/components/window-titlebar";
 import { PropagateDialog, ReviewDialog, propagationOffer, type Offer } from "@/components/insights";
+import { PeopleDialog } from "@/components/people";
 import { useSlideStation, type SlideStation } from "@/hooks/use-slide-station";
 import { useDesktop, useFolderDrop, type DesktopHandlers } from "@/hooks/use-desktop";
 import { needsReview, plural, standalone, type Group, type InsightKind, type Source } from "@/lib/api";
@@ -90,6 +91,7 @@ function SlideStationApp() {
   }, [app.sel, sessionId]);
   const [settingsOpen, setSettingsOpen] = React.useState(false);
   const [helpOpen, setHelpOpen] = React.useState(false);
+  const [peopleOpen, setPeopleOpen] = React.useState(false);
   const [paletteOpen, setPaletteOpen] = React.useState(false);
   const [dateRangeOpen, setDateRangeOpen] = React.useState(false);
   const [immichOpen, setImmichOpen] = React.useState(false);
@@ -238,6 +240,9 @@ function SlideStationApp() {
     if (ok) app.startCleanup();
   };
 
+  // faces → people runs in the Python app only (the browser version has no face embeddings yet)
+  const onPeople = !standalone && state?.config.people_enabled ? () => setPeopleOpen(true) : undefined;
+
   const handlers: DesktopHandlers = {
     settings: () => setSettingsOpen(true),
     newTray: () => openNew(),
@@ -326,6 +331,7 @@ function SlideStationApp() {
                 onHelp={() => setHelpOpen(true)}
                 onSettings={() => setSettingsOpen(true)}
                 onStats={views.stats}
+                onPeople={onPeople}
               />
             </>
           }
@@ -343,6 +349,7 @@ function SlideStationApp() {
           onHelp={() => setHelpOpen(true)}
           onSettings={() => setSettingsOpen(true)}
           onStats={views.stats}
+          onPeople={onPeople}
         />
       )}
 
@@ -522,6 +529,14 @@ function SlideStationApp() {
         onFromImmich={openImmich}
       />
       <HelpDialog open={helpOpen} onOpenChange={setHelpOpen} />
+      {!standalone && (
+        <PeopleDialog
+          open={peopleOpen}
+          onOpenChange={setPeopleOpen}
+          job={state?.job ?? null}
+          onSettings={() => (setPeopleOpen(false), setSettingsOpen(true))}
+        />
+      )}
       <CommandPalette
         open={paletteOpen}
         onOpenChange={setPaletteOpen}
@@ -533,6 +548,7 @@ function SlideStationApp() {
         views={views}
         grid={grid}
         onReview={standalone ? undefined : () => setReviewOpen(true)}
+        onPeople={onPeople}
         busy={busy}
       />
       <ImmichImportDialog open={immichOpen} onOpenChange={setImmichOpen} onImport={app.importFromImmich} />

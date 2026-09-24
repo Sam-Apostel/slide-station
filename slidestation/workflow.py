@@ -20,6 +20,7 @@ from PIL import Image
 from . import imaging as im
 from .imaging import Params
 from . import learning
+from . import people
 from .immich import Immich, ImmichError
 from .store import (Session, active_scans, add_to_index, group_status, imported_index, load_config, lock,
                     meta_key, parse_date, render_key, sha1_file, slide_dates, slugify, statuses)
@@ -259,6 +260,8 @@ def import_scans(job: Job, sid: str, source: str) -> None:
                 target["params_source"] = f"learned:{neighbours}"
 
         update_session(sid, commit)  # slides appear in the UI one by one
+        if people_on():
+            _faces_quietly(sid, last["id"] if extend else g["id"])
         job.done += 1
     update_session(sid, lambda fresh: fresh.log(f"Imported {len(new_ids)} scans from {root} ({skipped} already imported)"))
     if restored:
@@ -506,6 +509,11 @@ def _background_renderer():
                         and not export_fresh(s, g, i) and not originals_missing(s, g)):
                     render_export(s.id, g["id"], int(load_config().get("jpeg_quality", 95)))
                     break
+            else:  # nothing to render: catch up on faces (slides turned since, trays from before)
+                if people_on():
+                    todo = faces_pending([s.id])
+                    if todo:
+                        _faces_quietly(*todo[0])
         except Exception as e:  # never let the helper thread die
             print("background render:", e)
 
@@ -564,6 +572,104 @@ def _originals_in_immich(client: Immich, s: Session, g: dict, when: datetime) ->
         if status != "duplicate":
             created.append(asset_id)
     return out, created
+# --------------------------------------------------------------------------- people (faces)
+
+
+def people_on() -> bool:
+    """Recognising people is opt-in (Settings), and needs the face model downloaded."""
+    return bool(load_config().get("people_enabled")) and people.model_ready()
+
+
+def find_faces(sid: str, gid: str) -> bool:
+    """Record one slide's faces, if they aren't up to date. Only faces.json is written, never the
+    session: the slide is read fresh and the result is stored under the key it was found for."""
+    s = Session(sid)
+    try:
+        g = s.group(gid)
+    except KeyError:
+        return False
+    if not people.stale(g, people.load_faces(sid).get(gid)):
+        return False
+    people.record(sid, g, im.rotate_arr(fused_proxy(s, g), g["rotation"]))
+    return True
+
+
+def _faces_quietly(sid: str, gid: str) -> None:
+    try:
+        find_faces(sid, gid)
+    except Exception as e:  # faces are extra: never let them fail an import
+        print("faces:", e)
+
+
+def faces_pending(sids: list[str] | None = None) -> list[tuple[str, str]]:
+    """Slides (not skipped) whose faces are missing or were found before an edit (turned, scans
+    changed). Forgets faces of slides that no longer exist (merged, split off and back)."""
+    todo = []
+    for sid in sids if sids is not None else [x["id"] for x in Session.list_all()]:
+        try:
+            s = Session(sid)
+        except (FileNotFoundError, ValueError):
+            continue
+        faces = people.load_faces(sid)
+        gids = {g["id"] for g in s.data["groups"]}
+        if set(faces) - gids:
+            people.update_faces(sid, lambda d: [d.pop(k) for k in list(d) if k not in gids])
+        todo += [(sid, g["id"]) for g in s.data["groups"] if people.stale(g, faces.get(g["id"]))]
+    return todo
+
+
+def scan_people(job: Job) -> None:
+    """Download the face model if needed, then find the faces on every slide in the library."""
+    if not people.model_ready():
+        def progress(done, total):
+            job.done, job.total = done, total
+            job.message = f"Downloading the face model ({done} of {total} MB)"
+
+        progress(0, people.MODEL_MB)
+        people.download_model(progress)
+    todo = faces_pending()
+    job.done, job.total = 0, len(todo)
+    for sid, gid in todo:
+        job.message = f"Finding faces: slide {job.done + 1} of {len(todo)}"
+        _faces_quietly(sid, gid)
+        job.done += 1
+    d = people.refresh()
+    named = sum(1 for p in d["people"].values() if p.get("name"))
+    job.message = f"Looked for faces on {len(todo)} slides: {len(d['people'])} people ({named} named)"
+
+
+def _tag_people(client: Immich, sid: str, slides: dict[str, str], names: dict) -> tuple[int, str]:
+    """Named people as Immich tags (People/<name>) on uploaded slides. (assets tagged, problem)"""
+    try:
+        return people.tag_uploaded(client, slides, names, sid), ""
+    except ImmichError as e:
+        return 0, str(e)
+
+
+def tag_people(job: Job) -> None:
+    """Put the names of the people on every slide already in Immich as tags."""
+    cfg = load_config()
+    names = people.slide_names(people.refresh())
+    client = Immich(cfg["immich_url"], cfg["immich_key"])
+    try:
+        job.message = f"Connecting to Immich {client.version()}"
+        sids = sorted({sid for sid, _ in names})
+        job.total, tagged = len(sids), 0
+        for sid in sids:
+            try:
+                s = Session(sid)
+            except FileNotFoundError:
+                continue
+            slides = {g["id"]: g["immich"]["asset_id"] for g in s.data["groups"] if g.get("immich") and not g.get("skip")}
+            n, problem = _tag_people(client, sid, slides, names)
+            if problem:
+                raise RuntimeError(problem)
+            tagged += n
+            job.done += 1
+        job.message = f"Tagged {tagged} slides in Immich with the people on them" if client.tags_supported is not False \
+            else "This Immich server has no tags API: names were not sent"
+    finally:
+        client.close()
 
 
 def finish_session(job: Job, sid: str, only_ready: bool = False) -> None:
@@ -597,6 +703,7 @@ def finish_session(job: Job, sid: str, only_ready: bool = False) -> None:
         update_session(sid, lambda f: f.data.__setitem__("immich_album_id", album))
         to_trash, uploaded, synced, duplicates, no_update = [], 0, 0, 0, False
         tagged: dict[str, list[str]] = {}  # tag -> asset ids to tag, uploaded or updated now
+        sent: dict[str, str] = {}  # slide -> asset uploaded now, for the names of the people on it
 
         for n, gid in enumerate(meta_only, 1):
             job.message = f"Updating date and caption {n} of {len(meta_only)}"
@@ -714,6 +821,7 @@ def finish_session(job: Job, sid: str, only_ready: bool = False) -> None:
             update_session(sid, commit)
             for t in g.get("tags", []):
                 tagged.setdefault(t, []).append(asset_id)
+            sent[gid] = asset_id
             if not cfg.get("keep_exports", False):
                 path.unlink(missing_ok=True)  # it's in Immich; can be re-rendered from the originals
             uploaded += 1
@@ -748,10 +856,13 @@ def finish_session(job: Job, sid: str, only_ready: bool = False) -> None:
         if tagged:
             job.message = "Tagging in Immich"
             try:
-                client.tag_assets(tagged)
+                client.tag_each(tagged)
             except ImmichError as e:  # an older Immich or a key without tag permissions: the upload stands
                 print("immich tags:", e)
                 tag_note = f"; tags not sent ({e})"
+        people_tagged, problem = 0, ""
+        if cfg.get("people_enabled") and sent:  # named people go along as tags (People/<name>)
+            people_tagged, problem = _tag_people(client, sid, sent, people.slide_names(people.refresh()))
         if not cfg.get("keep_originals", True):
             _drop_local_originals(Session(sid))
         job.message = f"Done - {uploaded} slides uploaded to '{s.data['album']}'" + (
@@ -761,7 +872,9 @@ def finish_session(job: Job, sid: str, only_ready: bool = False) -> None:
             f"; {duplicates} were in Immich already, not sent again" if duplicates else "") + (
             "; original scans not stacked: this Immich has no stacks, or the API key lacks stack.read / "
             "stack.create" if want_originals and uploaded and stacks and not stacks[0] else "") + (
-            f"; {len(lost)} skipped: their original scans were deleted after the last upload" if lost else "") + tag_note
+            f"; {len(lost)} skipped: their original scans were deleted after the last upload" if lost else "") + tag_note + (
+            f"; {people_tagged} tagged with the people on them" if people_tagged else "") + (
+            f"; names not sent: {problem}" if problem else "")
     finally:
         client.close()
 

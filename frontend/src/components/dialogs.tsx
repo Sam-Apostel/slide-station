@@ -83,6 +83,7 @@ export function SettingsDialog({
   const [keepExports, setKeepExports] = React.useState(false);
   const [stackOriginals, setStackOriginals] = React.useState(false);
   const [learning, setLearning] = React.useState(true);
+  const [people, setPeople] = React.useState(false);
   const [learned, setLearned] = React.useState<{ examples: number; min_examples: number } | null>(null);
   const [suggestTags, setSuggestTags] = React.useState(false);
   const [insights, setInsights] = React.useState<InsightsState | null>(null);
@@ -97,6 +98,7 @@ export function SettingsDialog({
     setKeepExports(config.keep_exports);
     setStackOriginals(!!config.upload_originals_stacked);
     setLearning(config.learning_enabled ?? true);
+    setPeople(!!config.people_enabled);
     api<{ examples: number; min_examples: number }>("GET", "/api/learning").then(setLearned, () => setLearned(null));
     setSuggestTags(config.insights_enabled ?? false);
     if (!standalone) api<InsightsState>("GET", "/api/insights").then(setInsights, () => setInsights(null));
@@ -125,12 +127,20 @@ export function SettingsDialog({
         upload_originals_stacked: stackOriginals,
         learning_enabled: learning,
         ...(standalone ? {} : { insights_enabled: suggestTags }),
+        ...(standalone ? {} : { people_enabled: people }),
       });
       // turning tags on fetches the model (a job in the activity pill); while another job runs, the
       // Insights section offers the download instead
       if (suggestTags && !insights?.ready && !insights?.downloading)
         await api("POST", "/api/insights/model").catch(() => {});
       toast.success("Settings saved");
+      if (people && !config?.people_enabled) {
+        // turned on: fetch the face model and look for faces on the slides already in the library
+        await api("POST", "/api/people/scan").then(
+          () => toast("Looking for faces on your slides — see People when it's done"),
+          (err) => toast.error(err instanceof Error ? err.message : String(err)),
+        );
+      }
       onOpenChange(false);
       onSaved();
     } catch (err) {
@@ -167,9 +177,10 @@ export function SettingsDialog({
               />
               <FieldDescription>
                 Create one in Immich → Account settings → API keys. It needs: asset.upload, asset.delete, album.read,
-                album.create, albumAsset.create. For the round trip also asset.read, asset.update (dates and
-                captions in place), asset.view and asset.download (pulling photos back in), albumAsset.delete and
-                stack.read / create / delete.
+                album.create, albumAsset.create. For the round trip also asset.read, asset.update (dates and captions in
+                place), asset.view and asset.download (pulling photos back in), albumAsset.delete and stack.read /
+                create / delete.
+                {!standalone && " To send the names of the people on the slides: tag.create and tag.asset."}
                 {standalone && (
                   <>
                     {" "}
@@ -219,8 +230,8 @@ export function SettingsDialog({
                 Upload the untouched scans too, stacked under each slide in Immich
               </CheckRow>
               <FieldDescription>
-                Nothing is ever lost: Immich shows the developed photo, its scans sit in the stack behind it (~5 MB
-                per scan). Needs Immich with stacks and the stack.read / stack.create permissions.
+                Nothing is ever lost: Immich shows the developed photo, its scans sit in the stack behind it (~5 MB per
+                scan). Needs Immich with stacks and the stack.read / stack.create permissions.
               </FieldDescription>
             </Field>
             <Field>
@@ -266,6 +277,17 @@ export function SettingsDialog({
                     : insights?.downloading
                       ? " Downloading the model…"
                       : ""}
+                </FieldDescription>
+              </Field>
+            )}
+            {!standalone && (
+              <Field>
+                <CheckRow id="cfg-people" checked={people} onChange={setPeople}>
+                  Recognise people across my slides
+                </CheckRow>
+                <FieldDescription>
+                  Groups the faces on your slides by person, so you can name each person once; Immich gets the names as
+                  tags. Downloads a 39 MB face model once. Everything stays on this computer.
                 </FieldDescription>
               </Field>
             )}

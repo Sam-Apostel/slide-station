@@ -13,6 +13,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from . import insights, learning
+from . import people
 from . import workflow as wf
 from . import imaging as im
 from .imaging import Params
@@ -55,7 +56,7 @@ def state():
 def set_config(body: dict = Body(...)):
     cfg = load_config()
     for k in ("library", "immich_url", "immich_key", "keep_originals", "keep_exports", "jpeg_quality",
-              "learning_enabled", "upload_originals_stacked", "insights_enabled"):
+              "learning_enabled", "upload_originals_stacked", "insights_enabled", "people_enabled"):
         if k in body and not (k == "immich_key" and body[k] == ""):
             cfg[k] = body[k]
     if "stats_target" in body:  # slides to digitise in all, for the stats' projected finish
@@ -749,6 +750,101 @@ def learning_stats():
 def learning_reset():
     learning.reset()
     return {"ok": True}
+
+
+# --------------------------------------------------------------------------- people
+
+
+def _people_payload(d: dict) -> dict:
+    faces = people.all_faces()
+    out = []
+    for pid, p in d["people"].items():
+        fs = [f for f in p["faces"] if f in faces]
+        out.append({
+            "id": pid,
+            "name": p.get("name", ""),
+            "slides": len({(faces[f]["sid"], faces[f]["gid"]) for f in fs}),
+            "faces": [{"id": f, "url": f"/api/people/faces/{f}.jpg?v={faces[f]['key']}"} for f in fs],
+        })
+    # named people first (by name), then the ones seen most
+    out.sort(key=lambda p: (not p["name"], p["name"].lower(), -len(p["faces"])))
+    cfg = load_config()
+    return {"enabled": bool(cfg.get("people_enabled")), "model": people.model_ready(), "model_mb": people.MODEL_MB,
+            "pending": len(wf.faces_pending()) if cfg.get("people_enabled") else 0, "people": out}
+
+
+@app.get("/api/people")
+def people_list():
+    """Everyone found on the slides of every tray, grouped by likeness, named or not."""
+    return _people_payload(people.refresh())
+
+
+@app.post("/api/people/scan")
+def people_scan():
+    """Download the face model if needed and find the faces on every slide not done yet."""
+    if not load_config().get("people_enabled"):
+        return _err(RuntimeError("Turn on recognising people in Settings first."))
+    try:
+        wf.start_job("faces", None, wf.scan_people)
+    except RuntimeError as e:
+        return _err(e, 409)
+    return {"ok": True}
+
+
+def _people_edit(fn, *args):
+    try:
+        return _people_payload(fn(*args))
+    except KeyError:
+        raise HTTPException(404, "No such person (the list changed meanwhile?)")
+
+
+@app.patch("/api/people/{pid}")
+def people_rename(pid: str, body: dict = Body(...)):
+    """Name a person; a name someone else already has joins the two."""
+    return _people_edit(people.rename, pid, body.get("name", ""))
+
+
+@app.post("/api/people/{pid}/merge")
+def people_merge(pid: str, body: dict = Body(...)):
+    """`people` (ids) are the same person as this one."""
+    return _people_edit(people.merge, pid, [str(x) for x in body.get("people", [])])
+
+
+@app.post("/api/people/{pid}/remove")
+def people_remove(pid: str, body: dict = Body(...)):
+    """These faces (ids) aren't this person."""
+    return _people_edit(people.remove_faces, pid, [str(x) for x in body.get("faces", [])])
+
+
+@app.post("/api/people/tag")
+def people_tag():
+    """Send the names to Immich as tags (People/<name>) on every slide already uploaded."""
+    cfg = load_config()
+    if not cfg.get("immich_url") or not cfg.get("immich_key"):
+        return _err(RuntimeError("Set your Immich URL and API key in Settings first."))
+    try:
+        wf.start_job("tag", None, wf.tag_people)
+    except RuntimeError as e:
+        return _err(e, 409)
+    return {"ok": True}
+
+
+@app.get("/api/people/faces/{sid}/{gid}/{n}.jpg")
+def people_face(sid: str, gid: str, n: str, v: str = ""):
+    """A face, cut from the slide it is on (as it was turned when the face was found)."""
+    s = _session(sid)
+    entry = people.load_faces(sid).get(gid) or {}
+    face = next((f for f in entry.get("faces", []) if f["id"] == f"{sid}/{gid}/{n}"), None)
+    try:
+        g = s.group(gid)
+    except KeyError:
+        face = None
+    if not face:
+        raise HTTPException(404)
+    a = people.face_crop(im.rotate_arr(wf.fused_proxy(s, g), entry.get("rot", 0)), face["box"])
+    fresh = v and v == entry.get("key")
+    return Response(im.to_jpeg_bytes(a, 85), media_type="image/jpeg",
+                    headers={"Cache-Control": "max-age=31536000" if fresh else "no-store"})
 
 
 @app.post("/api/sessions/{sid}/groups/{gid}/resuggest")
