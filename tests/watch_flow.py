@@ -48,6 +48,7 @@ def main():
 
         pg.get_by_role("button", name="Settings", exact=True).click()
         dialog = pg.get_by_role("dialog")
+        dialog.get_by_role("tab", name="Library").click()
         dialog.get_by_label("Watched folders").fill(str(share))
         dialog.get_by_role("button", name="Watch", exact=True).click()
         folder = dialog.locator(f'[data-watched="{share.resolve()}"]')
@@ -73,6 +74,7 @@ def main():
         # imported: a tray named and dated after the folder, shown in Settings
         expect(pg.get_by_role("combobox", name="Tray")).to_contain_text(name, timeout=60000)
         pg.get_by_role("button", name="Settings", exact=True).click()
+        dialog.get_by_role("tab", name="Library").click()
         expect(row).to_contain_text("imported 3 slides", timeout=60000)
         pg.screenshot(path=str(SHOTS / "watch-settings.png"))
         dialog.get_by_role("button", name="Cancel").click()
@@ -85,6 +87,7 @@ def main():
 
         # stop watching: the folder goes from Settings, the tray stays
         pg.get_by_role("button", name="Settings", exact=True).click()
+        dialog.get_by_role("tab", name="Library").click()
         folder.get_by_role("button", name="Stop watching").click()
         expect(folder).to_have_count(0)
         dialog.get_by_role("button", name="Cancel").click()

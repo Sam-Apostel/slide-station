@@ -14,7 +14,8 @@ import { Inspector } from "@/components/inspector";
 import { EmptyState } from "@/components/empty-state";
 import { SlideMenu } from "@/components/slide-menu";
 import { CommandPalette } from "@/components/command-palette";
-import { DateRangeDialog, HelpDialog, NewTrayDialog, SettingsDialog, StatsDialog } from "@/components/dialogs";
+import { DateRangeDialog, HelpDialog, NewTrayDialog, StatsDialog } from "@/components/dialogs";
+import { SettingsDialog, type SettingsPane } from "@/components/settings";
 import { ImmichImportDialog } from "@/components/immich-import";
 import { ReviewGrid } from "@/components/review-grid";
 import { DevelopLikeDialog, PresetsDialog } from "@/components/looks";
@@ -104,6 +105,9 @@ function SlideStationApp() {
     setZoom(null); // the full-resolution render is per slide: moving on leaves the zoom
   }, [app.sel, sessionId]);
   const [settingsOpen, setSettingsOpen] = React.useState(false);
+  const [settingsPane, setSettingsPane] = React.useState<SettingsPane>();
+  /** Settings, on the pane that matters to what asked (else where it was left). */
+  const openSettings = (pane?: SettingsPane) => (setSettingsPane(pane), setSettingsOpen(true));
   const [helpOpen, setHelpOpen] = React.useState(false);
   const [peopleOpen, setPeopleOpen] = React.useState(false);
   const [paletteOpen, setPaletteOpen] = React.useState(false);
@@ -149,7 +153,7 @@ function SlideStationApp() {
   const openNew = (src?: Source, folder?: string) => setNewTray({ open: true, source: src, folder });
   /** Pull photos back in from Immich (needs Immich set up first). */
   const openImmich = () =>
-    state?.config.has_key && state.config.immich_url ? setImmichOpen(true) : setSettingsOpen(true);
+    state?.config.has_key && state.config.immich_url ? setImmichOpen(true) : openSettings("immich");
   const importFolder = async (folder?: string) => {
     if (standalone || (uploads && folder === undefined)) {
       // the browser version: pick a folder, then import it like a card; a server in a browser tab
@@ -186,14 +190,14 @@ function SlideStationApp() {
   const upload = async (scope?: "ready" | "all") => {
     if (!session || !state) return;
     if (!state.config.has_key || !state.config.immich_url) {
-      if (!standalone) return setSettingsOpen(true);
+      if (!standalone) return openSettings("immich");
       const toDisk = await confirm({
         title: "No Immich server set up",
         description: "Save the finished slides to your disk instead? Or connect Immich in Settings.",
         confirmLabel: "Save to disk",
         cancelLabel: "Set up Immich",
       });
-      return toDisk ? save() : setSettingsOpen(true);
+      return toDisk ? save() : openSettings("immich");
     }
     const undeveloped = session.groups.filter(needsReview).length;
     const ready = session.summary.ready_upload;
@@ -290,7 +294,7 @@ function SlideStationApp() {
   const onPeople = state?.config.people_enabled ? () => setPeopleOpen(true) : undefined;
 
   const handlers: DesktopHandlers = {
-    settings: () => setSettingsOpen(true),
+    settings: () => openSettings(),
     newTray: () => openNew(),
     importFrom: openImport,
     importFolder,
@@ -372,7 +376,7 @@ function SlideStationApp() {
               onChooseFolder={() => importFolder()}
               onCapture={canCapture && session ? app.capture : undefined}
               onResume={app.resumeJob}
-              onSettings={() => setSettingsOpen(true)}
+              onSettings={() => openSettings("library")}
             />
           }
           right={
@@ -380,7 +384,7 @@ function SlideStationApp() {
               {toggles}
               <AppActions
                 onHelp={() => setHelpOpen(true)}
-                onSettings={() => setSettingsOpen(true)}
+                onSettings={() => openSettings()}
                 onStats={views.stats}
                 onPeople={onPeople}
               />
@@ -400,7 +404,7 @@ function SlideStationApp() {
           onCapture={canCapture && session ? app.capture : undefined}
           onResume={app.resumeJob}
           onHelp={() => setHelpOpen(true)}
-          onSettings={() => setSettingsOpen(true)}
+          onSettings={() => openSettings()}
           onStats={views.stats}
           onPeople={onPeople}
         />
@@ -539,7 +543,7 @@ function SlideStationApp() {
                       ocrDownloading: state?.job?.kind === "ocr" && !state.job.finished,
                       onAccepted: offerNeighbours,
                       onReview: () => setReviewOpen(true),
-                      onSettings: () => setSettingsOpen(true),
+                      onSettings: () => openSettings("smart"),
                     }}
                   />
                 </ResizablePanel>
@@ -580,6 +584,7 @@ function SlideStationApp() {
       <SettingsDialog
         open={settingsOpen}
         onOpenChange={setSettingsOpen}
+        pane={settingsPane}
         config={state?.config}
         quota={state?.quota}
         onSaved={() => {
@@ -602,7 +607,7 @@ function SlideStationApp() {
         open={peopleOpen}
         onOpenChange={setPeopleOpen}
         job={state?.job ?? null}
-        onSettings={() => (setPeopleOpen(false), setSettingsOpen(true))}
+        onSettings={() => (setPeopleOpen(false), openSettings("smart"))}
       />
       <CommandPalette
         open={paletteOpen}
