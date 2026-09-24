@@ -108,7 +108,7 @@ struct StudioView: View {
 
     private func statusbar(_ tray: Tray) -> some View {
         let st = model.statuses
-        let toDevelop = tray.groups.filter { !$0.reviewed && !$0.skip }.count
+        let toDevelop = tray.groups.filter { !$0.developed && !$0.skip }.count
         return ProStatusbar {
             Text("\(tray.groups.count) slides")
             Text("\(toDevelop) to develop")
@@ -170,7 +170,7 @@ struct StudioView: View {
             Button("") { cropping ? nudgeCrop(-0.01, 0) : model.previous() }.keyboardShortcut(.leftArrow, modifiers: [])
             Button("") { nudgeCrop(0, -0.01) }.keyboardShortcut(.upArrow, modifiers: [])
             Button("") { nudgeCrop(0, 0.01) }.keyboardShortcut(.downArrow, modifiers: [])
-            Button("") { if let s = model.slide { s.reviewed ? model.next() : model.keep() } }.keyboardShortcut(.space, modifiers: [])
+            Button("") { if let s = model.slide { s.developed ? model.next() : model.keep() } }.keyboardShortcut(.space, modifiers: [])
             Button("") { model.turn() }.keyboardShortcut("r", modifiers: [])
             Button("") { model.turn(clockwise: false) }.keyboardShortcut("r", modifiers: .shift)
             Button("") { model.skip(advance: false) }.keyboardShortcut("x", modifiers: [])

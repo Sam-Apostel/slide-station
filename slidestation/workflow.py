@@ -29,9 +29,9 @@ from . import raw
 from . import tether
 from . import uploads
 from .immich import Immich, ImmichError
-from .store import (Session, _atomic_write, active_scans, add_to_index, as_home, group_status, home, imported_index,
-                    library, load_config, lock, meta_key, parse_date, render_key, sha1_file, slide_dates, slugify,
-                    statuses, user_home)
+from .store import (Session, _atomic_write, active_scans, add_to_index, as_home, developed, group_status, home,
+                    imported_index, library, load_config, lock, meta_key, parse_date, render_key, sha1_file,
+                    slide_dates, slugify, statuses, user_home)
 
 VOLUMES = Path(os.environ.get("SLIDESTATION_VOLUMES", "/Volumes"))
 SCANNER_MODELS = {"RODFS50"}  # Kodak Slide N Scan
@@ -360,7 +360,7 @@ def import_scans(job: Job, sid: str, source: str, label: str | None = None) -> N
         # best of the bracket: leave out scans that are blurry (the slide moved or the focus
         # drifted) or almost entirely clipped; the user can put them back with 1-9
         auto_out = {}
-        if len(g["scans"]) > 1 and not g.get("reviewed"):
+        if len(g["scans"]) > 1 and not developed(g):
             qual = [im.scan_quality(im.load_rgb(str(s.cache / f"{x}.proxy.jpg"))) for x in g["scans"]]
             auto_out = {g["scans"][i]: why for i, why in im.weak_scans(qual).items()}
             # scans the user put back after an earlier import left them out stay in
@@ -368,7 +368,7 @@ def import_scans(job: Job, sid: str, source: str, label: str | None = None) -> N
             g["excluded"] = sorted(set(g.get("excluded", [])) | (set(auto_out) - manual_in))
             g["auto_excluded"] = auto_out
         rot = None
-        if not g["reviewed"] and g.get("rot_reason") != "manual":
+        if not developed(g) and g.get("rot_reason") != "manual":
             proxies = [im.load_rgb(str(s.cache / f"{x}.proxy.jpg")) for x in active_scans(g)]
             rot = im.suggest_rotation(proxies)
         fused = fused_proxy(s, g)  # pre-blend the brackets so browsing is instant
@@ -397,7 +397,7 @@ def import_scans(job: Job, sid: str, source: str, label: str | None = None) -> N
             target["mount"] = mount
             if not extend and straighten_to_mount(target):
                 target["params"]["angle"] = -mount["angle"]
-            if suggestion and not target.get("reviewed") and target.get("params_source") != "manual":
+            if suggestion and not developed(target) and target.get("params_source") != "manual":
                 target["params"] = Params.from_dict({**target["params"], **suggestion}).to_dict()
                 target["params_source"] = f"learned:{neighbours}"
 
@@ -440,7 +440,7 @@ def straighten_to_mount(g: dict) -> bool:
     """A new slide is straightened to its mount by itself only when the mount is found with
     confidence and the slide isn't framed or developed yet; otherwise it stays a suggestion."""
     m = g.get("mount") or {}
-    return (m.get("confidence", 0) >= im.MOUNT_AUTO and abs(m.get("angle", 0)) >= 0.1 and not g.get("reviewed")
+    return (m.get("confidence", 0) >= im.MOUNT_AUTO and abs(m.get("angle", 0)) >= 0.1 and not developed(g)
             and not g["params"].get("angle") and not g["params"].get("crop"))
 
 
@@ -702,7 +702,7 @@ def libraries() -> list[tuple[Path | None, str | None]]:
 def _render_next(sid: str) -> None:
     s = Session(sid)
     for i, g in enumerate(s.data["groups"]):
-        if (g.get("reviewed") and not g.get("skip") and group_status(g) != "uploaded"
+        if (developed(g) and not g.get("skip") and group_status(g) != "uploaded"
                 and not export_fresh(s, g, i) and not originals_missing(s, g)):
             render_export(s.id, g["id"], int(load_config().get("jpeg_quality", 95)))
             break
@@ -956,7 +956,7 @@ def finish_session(job: Job, sid: str, only_ready: bool = False) -> None:
     redate = s.data.get("date_key") != s.data.get("date")  # tray date changed: every slide may have a new date
     st = dict(zip((g["id"] for g in s.data["groups"]), statuses(s.data)))
     todo = [g["id"] for g in s.data["groups"] if not g.get("skip") and (redate or st[g["id"]] != "uploaded")
-            and (g.get("reviewed") or not only_ready)]
+            and (developed(g) or not only_ready)]
     meta_only = [g["id"] for g in s.data["groups"] if g["id"] in todo and _meta_only(g)]
     lost = [g["id"] for g in s.data["groups"] if g["id"] in todo and g["id"] not in meta_only
             and originals_missing(s, g)]
@@ -1041,7 +1041,7 @@ def finish_session(job: Job, sid: str, only_ready: bool = False) -> None:
             except KeyError:  # merged away meanwhile
                 job.done += 1
                 continue
-            if not path or g.get("skip") or (only_ready and not g.get("reviewed")):
+            if not path or g.get("skip") or (only_ready and not developed(g)):
                 job.done += 1
                 continue
             job.message = f"Uploading slide {n} of {len(todo)}"
@@ -1130,7 +1130,7 @@ def finish_session(job: Job, sid: str, only_ready: bool = False) -> None:
                     # the scans this uploaded for it go too, unless another slide stacks them
                     to_trash.extend(a for a in g["immich"].get("own_originals", []) if a not in used)
                     g["immich"] = None
-            if not only_ready or all(g.get("reviewed") or g.get("skip") for g in fresh.data["groups"]):
+            if not only_ready or all(developed(g) or g.get("skip") for g in fresh.data["groups"]):
                 fresh.data["date_key"] = fresh.data.get("date")  # every slide now carries the date
             fresh.log(f"Uploaded {uploaded} slides to album '{album_label(cfg, fresh.data)}'"
                       + (f", updated {synced} in place" if synced else ""))

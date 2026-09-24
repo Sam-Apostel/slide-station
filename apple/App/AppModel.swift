@@ -64,7 +64,7 @@ final class AppModel {
         guard let t = try? await library.load(id) else { return }
         tray = t
         // start where the work is: the first slide not developed or skipped yet
-        selection = t.groups.firstIndex { !$0.reviewed && !$0.skip } ?? 0
+        selection = t.groups.firstIndex { !$0.developed && !$0.skip } ?? 0
     }
 
     func close() { tray = nil; Task { await refresh() } }
@@ -221,7 +221,7 @@ final class AppModel {
             // learning (Python: server._learn): developed slides teach, skipped ones are forgotten
             guard learn, let f = snapshot.feat else { return }
             if snapshot.skip { learning.forget(key: learnKey) }
-            else if snapshot.reviewed || snapshot.immich != nil {
+            else if snapshot.developed {
                 learning.remember(key: learnKey, features: f, params: snapshot.params, stock: stock)
             }
         }
@@ -273,7 +273,7 @@ final class AppModel {
     /// `all`: every slide still to develop, each to its own data (⇧F).
     func fitCurves(all: Bool = false) {
         guard let tray else { return }
-        let targets = all ? tray.groups.filter { !$0.reviewed && !$0.skip && $0.locked == nil } : (slide.map { [$0] } ?? [])
+        let targets = all ? tray.groups.filter { !$0.developed && !$0.skip && $0.locked == nil } : (slide.map { [$0] } ?? [])
         let renderer = renderer
         Task {
             for g in targets {
@@ -432,7 +432,7 @@ final class AppModel {
     func nextUndeveloped() {
         guard let t = tray, !t.groups.isEmpty else { return }
         let n = t.groups.count
-        for k in 1...n { let i = (selection + k) % n; if !t.groups[i].reviewed && !t.groups[i].skip { selection = i; return } }
+        for k in 1...n { let i = (selection + k) % n; if !t.groups[i].developed && !t.groups[i].skip { selection = i; return } }
     }
 
     // MARK: card cleanup

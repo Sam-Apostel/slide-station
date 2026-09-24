@@ -97,6 +97,7 @@ import { LANDMARKS, MODEL_ID as EYES_MODEL, type EyesEntry } from "./eyes";
 import {
   activeScans,
   cleanPlace,
+  developed,
   dumpSession,
   groupStatus,
   metaKey,
@@ -312,7 +313,7 @@ async function learn(d: SessionData, g: GroupData) {
   const key = `${d.id}:${g.id}`;
   const m = await model();
   if (g.skip) m.forget(key);
-  else if (g.reviewed || g.immich) m.remember(key, g.feat, g.params, effective(d, g));
+  else if (developed(g)) m.remember(key, g.feat, g.params, effective(d, g));
 }
 
 // ------------------------------------------------------------------ film stock (filmstock.ts)
@@ -1308,7 +1309,7 @@ function mountView(g: GroupData) {
 function straightenToMount(g: GroupData) {
   const m = g.mount;
   return (
-    !!m && m.confidence >= MOUNT_AUTO && Math.abs(m.angle) >= 0.1 && !g.reviewed && !g.params.angle && !g.params.crop
+    !!m && m.confidence >= MOUNT_AUTO && Math.abs(m.angle) >= 0.1 && !developed(g) && !g.params.angle && !g.params.crop
   );
 }
 
@@ -1394,7 +1395,7 @@ async function payload(d: SessionData): Promise<SessionPayload> {
       rotation: g.rotation, mirror: !!g.mirror,
       rot_reason: g.rot_reason ?? "",
       params: g.params,
-      reviewed: g.reviewed,
+      reviewed: developed(g),
       skip: g.skip,
       params_source: g.params_source ?? "",
       auto_excluded: g.auto_excluded ?? {},
@@ -1683,7 +1684,7 @@ async function importScans(job: Job, sid: string, sourceId: string) {
     const extend = k === 0 && continues;
     const g: GroupData = extend ? { ...structuredClone(last), scans: [...last.scans, ...ids] } : newGroup(d, ids);
     // best of the bracket: leave out scans that are blurry or almost entirely clipped
-    if (g.scans.length > 1 && !g.reviewed) {
+    if (g.scans.length > 1 && !developed(g)) {
       const qual = await Promise.all(
         g.scans.map(
           async (x) => quality[x] ?? (await jobs.call("quality", { blob: await readCache(sid, `${x}.proxy.jpg`) })),
@@ -1706,7 +1707,7 @@ async function importScans(job: Job, sid: string, sourceId: string) {
       fused,
       scans: activeScans(g).length,
     });
-    if (!g.reviewed && g.rot_reason !== "manual") rot = [analysis.rotation, analysis.reason];
+    if (!developed(g) && g.rot_reason !== "manual") rot = [analysis.rotation, analysis.reason];
     const feats = analysis.features;
     const mount = { ...analysis.mount, scans: activeScans(g) };
     let suggestion: Partial<Params> | null = null;
@@ -1735,7 +1736,7 @@ async function importScans(job: Job, sid: string, sourceId: string) {
       target.feat = feats;
       target.mount = mount;
       if (!extend && straightenToMount(target)) target.params = { ...target.params, angle: -mount.angle };
-      if (suggestion && !target.reviewed && target.params_source !== "manual") {
+      if (suggestion && !developed(target) && target.params_source !== "manual") {
         target.params = cleanParams({ ...target.params, ...suggestion });
         target.params_source = `learned:${neighbours}`;
       }
@@ -1972,7 +1973,7 @@ async function backgroundStep() {
   }
   const st = statuses(d);
   for (const [i, g] of d.groups.entries()) {
-    if (!g.reviewed || g.skip || g.locked || st[i] === "uploaded") continue;
+    if (!developed(g) || g.skip || g.locked || st[i] === "uploaded") continue;
     if ((await exportFresh(d, g, i)) || (await originalsMissing(d, g))) continue;
     if (jobRunning() || activeSession !== sid) return; // a job started, or another tray opened
     await renderExport(sid, g.id, loadConfig().jpeg_quality);
@@ -2088,7 +2089,7 @@ async function finishSession(
   const redate = target === "immich" && d.date_key !== d.date; // tray date changed: every slide may have a new date
   const st = Object.fromEntries(d.groups.map((g, i) => [g.id, statuses(d)[i]]));
   let todo = d.groups
-    .filter((g) => !g.skip && (target === "disk" || redate || st[g.id] !== "uploaded") && (g.reviewed || !onlyReady))
+    .filter((g) => !g.skip && (target === "disk" || redate || st[g.id] !== "uploaded") && (developed(g) || !onlyReady))
     .map((g) => g.id);
   // slides whose pixels Immich has only get their date / caption / place updated there
   const meta = target === "immich" ? todo.filter((gid) => metaOnly(group(d, gid))) : [];
@@ -2177,7 +2178,7 @@ async function finishSession(
     job.done++;
     d = await loadSession(sid);
     const g = d.groups.find((x) => x.id === gid);
-    if (!out || !g || g.skip || (onlyReady && !g.reviewed)) {
+    if (!out || !g || g.skip || (onlyReady && !developed(g))) {
       job.done++;
       continue;
     }
@@ -2300,7 +2301,7 @@ async function finishSession(
         toTrash.push(...(g.immich.own_originals ?? []).filter((a) => !used.has(a)));
         g.immich = null;
       }
-    if (!onlyReady || fresh.groups.every((g) => g.reviewed || g.skip)) fresh.date_key = fresh.date; // every slide now carries the date
+    if (!onlyReady || fresh.groups.every((g) => developed(g) || g.skip)) fresh.date_key = fresh.date; // every slide now carries the date
     log(
       fresh,
       `Uploaded ${uploaded} slides to album '${albumLabel(cfg, fresh)}'` + (synced ? `, updated ${synced} in place` : ""),
@@ -3063,7 +3064,7 @@ export async function handle(method: string, url: string, body: Body = {}): Prom
       const start = body.from ? groupIndex(d, String(body.from)) : 0;
       d.groups.forEach((g, i) => {
         if (g.locked) return;
-        if (body.scope === "all" || (!g.reviewed && (body.scope !== "rest" || i > start))) {
+        if (body.scope === "all" || (!developed(g) && (body.scope !== "rest" || i > start))) {
           // colour carries over, framing (crop / straighten) is each slide's own
           remember(g, "apply");
           g.params = { ...p, ...framing(g.params) };
@@ -3124,7 +3125,7 @@ export async function handle(method: string, url: string, body: Body = {}): Prom
       if (start < 0) throw new HttpError(404, "Slide not found");
       if (!rest) editable(d.groups[start]);
       for (const [i, g] of d.groups.entries()) {
-        if (g.locked || i < start || (i > start && (!rest || g.reviewed))) continue;
+        if (g.locked || i < start || (i > start && (!rest || developed(g)))) continue;
         remember(g, what);
         g.params = cleanParams({ ...c, ...framing(g.params) });
         g.params_source = source;
@@ -3163,7 +3164,7 @@ export async function handle(method: string, url: string, body: Body = {}): Prom
     const { d } = await update(sid, (d) => {
       const targets = body.all ? d.groups : [group(d, gid)];
       for (const g of targets) {
-        if (g.reviewed || g.skip || g.locked || !g.feat) continue;
+        if (developed(g) || g.skip || g.locked || !g.feat) continue;
         const [sug, n] = mdl.suggest(g.feat, effective(d, g));
         if (sug) {
           remember(g, "learned");
@@ -3179,7 +3180,7 @@ export async function handle(method: string, url: string, body: Body = {}): Prom
     const [, sid, gid] = m;
     let d = await loadSession(sid);
     if (!body.all) editable(group(d, gid));
-    const targets = body.all ? d.groups.filter((g) => !g.reviewed && !g.skip && !g.locked) : [group(d, gid)];
+    const targets = body.all ? d.groups.filter((g) => !developed(g) && !g.skip && !g.locked) : [group(d, gid)];
     const fitted = new Map<string, [string[], Params["curves"]]>();
     for (const g of targets) {
       // the slow part, outside the lock

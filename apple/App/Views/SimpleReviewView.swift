@@ -98,7 +98,7 @@ struct SimpleReviewView: View {
     private func hint(_ slide: Slide) -> String? {
         if before { return "Before" }
         if slide.skip { return "Skipped" }
-        if slide.reviewed { return "Kept" }
+        if slide.developed { return "Kept" }
         switch slide.rotReason {
         case "faces": return "Turned upright — faces"
         case "sky": return "Turned upright — sky"
@@ -138,7 +138,7 @@ struct FinishLine: View {
 
     var body: some View {
         let s = tray.summary()
-        let undecided = tray.groups.filter { !$0.reviewed && !$0.skip }.count
+        let undecided = tray.groups.filter { !$0.developed && !$0.skip }.count
         let allUp = s.slides > 0 && s.uploaded == s.slides - s.skipped
         VStack(spacing: 22) {
             Spacer()
@@ -146,7 +146,7 @@ struct FinishLine: View {
                 .font(.system(size: 56)).foregroundStyle(allUp ? ProTheme.green : ProTheme.accent)
             Text(allUp ? "All in Immich" : "That's the tray").font(.system(size: 26, weight: .bold))
             HStack(spacing: 28) {
-                stat("\(tray.groups.filter { $0.reviewed && !$0.skip }.count)", "kept")
+                stat("\(tray.groups.filter { $0.developed && !$0.skip }.count)", "kept")
                 stat("\(s.skipped)", "skipped")
                 stat("\(s.uploaded)", "in Immich")
             }
@@ -164,7 +164,7 @@ struct FinishLine: View {
                 } else if s.uploaded > 0 {
                     Label("Everything you kept is in “\(tray.album)”", systemImage: "checkmark.circle").foregroundStyle(ProTheme.green)
                 }
-                if undecided > 0, let first = tray.groups.firstIndex(where: { !$0.reviewed && !$0.skip }) {
+                if undecided > 0, let first = tray.groups.firstIndex(where: { !$0.developed && !$0.skip }) {
                     Button("Go to the first undecided slide") { model.select(first) }.buttonStyle(BigButtonStyle()).frame(maxWidth: 360)
                 }
             }

@@ -388,6 +388,11 @@ def meta_key(g: dict, date: dict) -> str:
     return hashlib.sha1(json.dumps(k).encode()).hexdigest()[:12]
 
 
+def developed(g: dict) -> bool:
+    """Marked developed, or uploaded: a slide edited after upload is developed again, waiting to go up."""
+    return bool(g.get("reviewed") or g.get("immich"))
+
+
 def group_status(g: dict, meta: str | None = None) -> str:
     if g.get("skip"):
         return "skipped"
@@ -417,12 +422,12 @@ def summary(d: dict) -> dict:
         "created": d["created"],
         "slides": len(groups),
         "scans": len(d["scans"]),
-        "reviewed": sum(1 for g, s in zip(groups, st) if g.get("reviewed") or s in ("uploaded", "skipped")),
+        "reviewed": sum(1 for g, s in zip(groups, st) if developed(g) or s == "skipped"),
         "uploaded": st.count("uploaded"),
         "skipped": st.count("skipped"),
         "pending_upload": sum(1 for s in st if s in ("new", "reviewed", "changed")),
-        # developed (marked ready) and not in Immich yet: what "upload the ready ones" sends
-        "ready_upload": sum(1 for g, s in zip(groups, st) if g.get("reviewed") and s in ("reviewed", "changed")),
+        # developed (or edited after upload) and not in Immich as it is: what "upload the ready ones" sends
+        "ready_upload": sum(1 for s in st if s in ("reviewed", "changed")),
         "card_cleaned": d.get("card_cleaned", False),
         "sources": sorted({s.get("source_root", "") for s in d["scans"].values()}),
     }

@@ -64,7 +64,7 @@ public struct Uploader: Sendable {
         let redate = tray.dateKey != tray.date
         let statuses = tray.statuses()
         var todo = tray.groups.enumerated().filter { i, g in
-            !g.skip && (redate || statuses[i] != .uploaded) && (g.reviewed || !onlyReady)
+            !g.skip && (redate || statuses[i] != .uploaded) && (g.developed || !onlyReady)
         }.map(\.element.id)
         let lost = todo.filter { id in
             guard let g = tray.groups.first(where: { $0.id == id }) else { return false }
@@ -86,7 +86,7 @@ public struct Uploader: Sendable {
             tray = try await library.load(trayID)
             guard let index = tray.index(of: id) else { continue }   // merged away meanwhile
             let g = tray.groups[index]
-            if g.skip || (onlyReady && !g.reviewed) { continue }
+            if g.skip || (onlyReady && !g.developed) { continue }
             let estimated = SlideDates.estimate(tray)
             let rkey = g.renderKey
             let meta = Tray.metaKey(g, date: estimated[index])
@@ -113,7 +113,7 @@ public struct Uploader: Sendable {
                 toTrash.append(fresh.groups[i].immich!.assetId)
                 fresh.groups[i].immich = nil
             }
-            if !onlyReady || fresh.groups.allSatisfy({ $0.reviewed || $0.skip }) { fresh.dateKey = fresh.date }
+            if !onlyReady || fresh.groups.allSatisfy({ $0.developed || $0.skip }) { fresh.dateKey = fresh.date }
             fresh.appendLog("Uploaded \(result.uploaded) slides to album '\(fresh.album)'")
         }
         try await client.trash(toTrash)

@@ -26,7 +26,7 @@ extension Slide {
     /// and the slide isn't framed or developed yet (Python: `workflow.straighten_to_mount`).
     public var straightensToMount: Bool {
         guard let m = mount else { return false }
-        return m.confidence >= Develop.mountAuto && abs(m.angle) >= 0.1 && !reviewed && params.angle == 0 && params.crop == nil
+        return m.confidence >= Develop.mountAuto && abs(m.angle) >= 0.1 && !developed && params.angle == 0 && params.crop == nil
     }
 }
 

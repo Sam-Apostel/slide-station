@@ -13,7 +13,7 @@ struct FilmstripPanel: View {
 
     private func matches(_ g: Slide) -> Bool {
         switch filter {
-        case "develop": !g.reviewed && !g.skip
+        case "develop": !g.developed && !g.skip
         case "hdr": g.scans.count > 1
         default: true
         }
@@ -47,7 +47,9 @@ struct FilmstripPanel: View {
                             .accessibilityLabel("Slide \(i + 1), \(statuses[i].label)")
                             .accessibilityAddTraits(i == model.selection ? .isSelected : [])
                             .contextMenu {
-                                Button(g.reviewed ? "Not developed" : "Develop", systemImage: "checkmark") { model.select(i); model.toggleDeveloped() }
+                                if !(g.developed && g.immich != nil) {  // an uploaded slide stays developed
+                                    Button(g.reviewed ? "Not developed" : "Develop", systemImage: "checkmark") { model.select(i); model.toggleDeveloped() }
+                                }
                                 Button(g.skip ? "Don't skip" : "Skip", systemImage: "xmark") { model.select(i); model.skip(advance: false) }
                                 Button("Rotate right", systemImage: "rotate.right") { model.select(i); model.turn() }
                                 Button("Rotate left", systemImage: "rotate.left") { model.select(i); model.turn(clockwise: false) }
@@ -62,11 +64,11 @@ struct FilmstripPanel: View {
             }
         }
         .background(ProTheme.canvas)
-        // slides that were just developed get one sweep of light across their new gold mount
+        // a slide that takes on a new finish (developed, uploaded) gets one sweep of light across it
         .onChange(of: statuses) { _, now in
             let fresh = tray.groups.indices.filter { i in
                 guard let was = seen[tray.groups[i].id] else { return false }
-                return was != .reviewed && now[i] == .reviewed
+                return now[i].finish != nil && was.finish != now[i].finish
             }.map { tray.groups[$0].id }
             seen = Dictionary(uniqueKeysWithValues: zip(tray.groups.map(\.id), now))
             guard !fresh.isEmpty else { return }
@@ -226,7 +228,7 @@ struct InspectorPanel: View {
         return VStack(spacing: 8) {
             if let g = model.slide {
                 HStack(spacing: 6) {
-                    DevelopButton(done: g.reviewed) { g.reviewed ? model.next() : model.keep() }
+                    DevelopButton(done: g.developed) { g.developed ? model.next() : model.keep() }
                     ProButton(size: .lg, active: g.skip, activeTint: ProTheme.destructive.opacity(0.55), action: { model.skip(advance: false) }) {
                         Image(systemName: "xmark")
                     }.accessibilityLabel(g.skip ? "Don't skip" : "Skip")

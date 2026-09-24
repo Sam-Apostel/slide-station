@@ -403,6 +403,9 @@ export function cleanPlace(v: unknown): Place | null {
 export const samePlace = (a?: Place | null, b?: Place | null) =>
   !!a && !!b && a.name === b.name && Math.abs(a.lat - b.lat) < 1e-3 && Math.abs(a.lon - b.lon) < 1e-3;
 
+/** Marked developed, or uploaded: a slide edited after upload is developed again, waiting to go up. */
+export const developed = (g: GroupData) => g.reviewed || !!g.immich;
+
 export function groupStatus(g: GroupData, meta?: string): GroupStatus {
   if (g.skip) return "skipped";
   const im = g.immich;
@@ -428,12 +431,12 @@ export function summary(d: SessionData) {
     created: d.created,
     slides: g.length,
     scans: Object.keys(d.scans).length,
-    reviewed: g.filter((x, i) => x.reviewed || st[i] === "uploaded" || st[i] === "skipped").length,
+    reviewed: g.filter((x, i) => developed(x) || st[i] === "skipped").length,
     uploaded: st.filter((s) => s === "uploaded").length,
     skipped: st.filter((s) => s === "skipped").length,
     pending_upload: st.filter((s) => s === "new" || s === "reviewed" || s === "changed").length,
-    // developed (marked ready) and not in Immich yet: what "upload the ready ones" sends
-    ready_upload: g.filter((x, i) => x.reviewed && (st[i] === "reviewed" || st[i] === "changed")).length,
+    // developed (or edited after upload) and not in Immich as it is: what "upload the ready ones" sends
+    ready_upload: st.filter((s) => s === "reviewed" || s === "changed").length,
     card_cleaned: d.card_cleaned ?? false,
     sources: [...new Set(Object.values(d.scans).map((s) => s.source_root ?? ""))].sort(),
   };

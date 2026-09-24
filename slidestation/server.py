@@ -21,8 +21,8 @@ from . import workflow as wf
 from . import imaging as im
 from .imaging import Params
 from .immich import Immich, ImmichError
-from .store import (Session, active_scans, load_config, load_presets, lock, parse_date, render_key, save_config,
-                    save_presets, slide_dates, statuses, summary, tone_key)
+from .store import (Session, active_scans, developed, load_config, load_presets, lock, parse_date, render_key,
+                    save_config, save_presets, slide_dates, statuses, summary, tone_key)
 
 app = FastAPI(title="Slide Station")
 
@@ -307,7 +307,7 @@ def _learn(s: Session, g: dict) -> None:
     key = f"{s.id}:{g['id']}"
     if g.get("skip"):
         learning.model().forget(key)
-    elif g.get("reviewed") or g.get("immich"):
+    elif developed(g):
         learning.model().remember(key, g["feat"], g["params"], filmstock.effective(s.data, g))
 
 
@@ -341,7 +341,8 @@ def _session_payload(s: Session) -> dict:
     live = filmstock.views(d, dates)  # film stock and date guesses: no model, always on
     for i, g in enumerate(d["groups"]):
         groups.append({
-            **{k: g[k] for k in ("id", "scans", "excluded", "rotation", "rot_reason", "params", "reviewed", "skip")},
+            **{k: g[k] for k in ("id", "scans", "excluded", "rotation", "rot_reason", "params", "skip")},
+            "reviewed": developed(g),  # uploaded counts: an edit after upload is developed again
             "mirror": bool(g.get("mirror")),
             "params_source": g.get("params_source", ""),
             "auto_excluded": g.get("auto_excluded", {}),  # scan -> "blurry" / "clipped"
@@ -1209,7 +1210,7 @@ def apply_params(sid: str, body: dict = Body(...)):
         for i, g in enumerate(s.data["groups"]):
             if g.get("locked"):
                 continue
-            if body.get("scope") == "all" or (not g["reviewed"] and (body.get("scope") != "rest" or i > start)):
+            if body.get("scope") == "all" or (not developed(g) and (body.get("scope") != "rest" or i > start)):
                 # colour carries over, framing (crop / straighten) is each slide's own
                 _remember(g, "apply")
                 g["params"] = {**p, **{k: g["params"].get(k, v) for k, v in FRAMING.items()}}
@@ -1302,7 +1303,7 @@ def apply_look(sid: str, gid: str, body: dict = Body(...)):
             _editable(s.data["groups"][start])
         n = 0
         for i, g in enumerate(s.data["groups"]):
-            if g.get("locked") or i < start or (i > start and (not rest or g.get("reviewed"))):
+            if g.get("locked") or i < start or (i > start and (not rest or developed(g))):
                 continue
             _remember(g, "preset" if "preset" in body else "like")
             g["params"] = Params.from_dict({**colour, **{k: g["params"].get(k, v) for k, v in FRAMING.items()}}).to_dict()
@@ -1436,7 +1437,7 @@ def resuggest(sid: str, gid: str, body: dict = Body(default={})):
         targets = s.data["groups"] if body.get("all") else [s.group(gid)]
         n_applied = 0
         for g in targets:
-            if g.get("reviewed") or g.get("skip") or g.get("locked") or not g.get("feat"):
+            if developed(g) or g.get("skip") or g.get("locked") or not g.get("feat"):
                 continue
             sug, n = learning.model().suggest(g["feat"], filmstock.effective(s.data, g))
             if sug:
@@ -1457,7 +1458,7 @@ def fit_curves(sid: str, gid: str, body: dict = Body(default={})):
     s = _session(sid)
     if not body.get("all"):
         _editable(s.group(gid))
-    targets = [g for g in s.data["groups"] if not g.get("reviewed") and not g.get("skip") and not g.get("locked")] \
+    targets = [g for g in s.data["groups"] if not developed(g) and not g.get("skip") and not g.get("locked")] \
         if body.get("all") else [s.group(gid)]
     fitted = {}
     for g in targets:  # the slow part, outside the lock

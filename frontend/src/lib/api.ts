@@ -540,7 +540,7 @@ export function useImageSrc(url: string | null, priority = 0): string | null {
   return src;
 }
 
-export const needsReview = (g: Group) => !g.reviewed && !g.skip && g.status !== "uploaded";
+export const needsReview = (g: Group) => !g.reviewed && !g.skip;
 
 export const sourceLabel = (s: Source) => (s.scanner ? "Slide N Scan" : s.name);
 
