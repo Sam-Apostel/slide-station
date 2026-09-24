@@ -102,9 +102,9 @@ export function CommandPalette({
     developLike: () => void;
   };
   grid: boolean;
-  /** Opens the tray's "review suggestions" (desktop app only). */
+  /** Opens the tray's "review suggestions". */
   onReview?: () => void;
-  /** Opens the People dialog (server app, when recognising people is on). */
+  /** Opens the People dialog (when recognising people is on). */
   onPeople?: () => void;
   busy: boolean;
 }) {
@@ -252,7 +252,7 @@ export function CommandPalette({
           id: "lookalikes",
           label: "Look for this tray's slides among the photos already in Immich",
           icon: <ListChecks />,
-          // the look-alike check (desktop app, needs the tag model); runs by itself after uploads when turned on
+          // the look-alike check (needs the tag model); runs by itself after uploads when turned on
           hidden:
             !session ||
             !onReview ||

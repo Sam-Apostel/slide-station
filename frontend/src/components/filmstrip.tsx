@@ -106,7 +106,7 @@ export function Filmstrip({
   onScene: (scene: Scene, n: number) => void;
 }) {
   const sm = session.summary;
-  // scenes of the tray (desktop app, look-alikes): a separator before the first shown slide of each
+  // scenes of the tray (look-alikes): a separator before the first shown slide of each
   const scenes = session.similar?.scenes ?? [];
   const sceneOf = (i: number) => scenes.findIndex((sc) => sc.start <= i && i <= sc.end);
   const tags = trayTags(session.groups);

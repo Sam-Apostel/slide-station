@@ -131,7 +131,9 @@ async () => {
   const root = await navigator.storage.getDirectory();
   const names = async (d) => { const out = []; for await (const [n] of d) out.push(n); return out.sort(); };
   let models = [];
-  try { models = await names(await (await root.getDirectoryHandle("models")).getDirectoryHandle("clip-vit-b32")); } catch {}
+  try {
+    models = await names(await (await root.getDirectoryHandle("models")).getDirectoryHandle("clip-vit-b32"));
+  } catch {}
   const trays = {};
   try {
     for await (const [id, s] of await root.getDirectoryHandle("sessions")) {
@@ -227,8 +229,10 @@ def main() -> None:
                 (3164603, "Venice", "Venezia,Venedig", 45.43713, 12.33265, "IT", "20", 51298),
                 (4176380, "Venice", "", 27.09978, -82.45426, "US", "FL", 22211),
                 (3176959, "Florence", "Firenze", 43.77925, 11.24626, "IT", "16", 349296)]))
-    geonames = {"cities15000.zip": z.getvalue(), "countryInfo.txt": b"IT\tITA\t380\tIT\tItaly\nUS\tUSA\t840\tUS\tUnited States\n",
-                "admin1CodesASCII.txt": b"IT.20\tVeneto\tVeneto\t1\nUS.FL\tFlorida\tFlorida\t1\nIT.16\tTuscany\tTuscany\t1\n"}
+    geonames = {"cities15000.zip": z.getvalue(),
+                "countryInfo.txt": b"IT\tITA\t380\tIT\tItaly\nUS\tUSA\t840\tUS\tUnited States\n",
+                "admin1CodesASCII.txt": b"IT.20\tVeneto\tVeneto\t1\nUS.FL\tFlorida\tFlorida\t1\n"
+                                        b"IT.16\tTuscany\tTuscany\t1\n"}
     geo_files = []
     for name, data in geonames.items():
         (site / "geonames" / name).write_bytes(data)

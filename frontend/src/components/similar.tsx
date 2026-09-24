@@ -1,4 +1,4 @@
-// Look-alikes (desktop app only): what the CLIP embeddings say about slides that belong together —
+// Look-alikes: what the CLIP embeddings say about slides that belong together —
 // the same shot taken twice, a bracket that may be two slides, two slides that may be one — and
 // photos already in Immich that look like an uploaded slide. Suggestions only, like the tags.
 import * as React from "react";

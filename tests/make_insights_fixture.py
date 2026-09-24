@@ -42,6 +42,11 @@ def pattern(w: int, h: int) -> np.ndarray:
     return np.stack([(x * 7 + y * 13 + c * 50 + (x * y % 17) * 3) % 256 for c in range(3)], -1).astype(np.uint8)
 
 
+def f32(a) -> list[float]:
+    """float32 values as their shortest decimals (they read back as the same float32)."""
+    return [float(str(np.float32(x))) for x in np.asarray(a, np.float32).reshape(-1)]
+
+
 def b64(a: np.ndarray) -> str:
     return base64.b64encode(np.ascontiguousarray(a).tobytes()).decode()
 
@@ -101,8 +106,8 @@ def tag_cases(rng) -> dict:
         ranked = insights.scene_tags(B(), None, e)
         sug = [{"value": t, "confidence": round(p, 3), "source": insights.MODEL_ID, "state": "suggested"}
                for t, p in ranked if p >= insights.threshold(t, stats)][: insights.MAX_TAGS]
-        out.append({"emb": e.tolist(), "ranked": ranked, "suggested": sug})
-    return {"labels": labels.tolist(), "stats": stats, "images": out,
+        out.append({"emb": f32(e), "ranked": ranked, "suggested": sug})
+    return {"labels": [f32(r) for r in labels], "stats": stats, "images": out,
             "thresholds": {t: insights.threshold(t, stats) for t in ("beach", "city", "sea", "dog")}}
 
 
@@ -162,8 +167,8 @@ def between_cases() -> list[dict]:
 
 def pack_cases(rng) -> dict:
     vs = [unit(rng.normal(size=DIM)) for _ in range(4)] + [np.array([1e-6, -2.5e-5, 65504, 0.1, -0.3333, 1 / 3], np.float32)]
-    return {"vectors": [v.tolist() for v in vs], "packed": [similar._pack(v) for v in vs],
-            "unpacked": [similar.unpack(similar._pack(v)).tolist() for v in vs]}
+    return {"vectors": [f32(v) for v in vs], "packed": [similar._pack(v) for v in vs],
+            "unpacked": [f32(similar.unpack(similar._pack(v))) for v in vs]}
 
 
 def near(base, cos, rng):
@@ -239,8 +244,8 @@ def similar_cases(rng) -> dict:
 def image_cases() -> dict:
     a = pattern(31, 17).astype(np.float32) / 255
     a[0, 0] = [1, 1, 1]
-    return {"w": 31, "h": 17, "normalise": similar.normalise(a).reshape(-1).tolist(),
-            "levels": similar.levels(a).reshape(-1).tolist(),
+    return {"w": 31, "h": 17, "normalise": f32(similar.normalise(a).reshape(-1)),
+            "levels": f32(similar.levels(a).reshape(-1)),
             "windows": {d: similar._date_window(d) for d in ("1978", "1978-12", "1978-06-30", "junk", "")}}
 
 
@@ -382,7 +387,8 @@ def ocr_cases() -> dict:
     rgb8 = pattern(w, h)
     bxs = o.boxes(rgb8)
     lines = o.read(rgb8)
-    out["det"] = {"w": w, "h": h, "dw": dw, "dh": dh, "pred": base64.b64encode(__import__("zlib").compress(p8.tobytes(), 9)).decode(), "boxes": [b.tolist() for b in bxs],
+    pred8 = base64.b64encode(__import__("zlib").compress(p8.tobytes(), 9)).decode()
+    out["det"] = {"w": w, "h": h, "dw": dw, "dh": dh, "pred": pred8, "boxes": [b.tolist() for b in bxs],
                   "lines": lines, "rec_inputs": rec_inputs, "chars": len(o.chars), "steps": steps, "classes": classes}
     return out
 
