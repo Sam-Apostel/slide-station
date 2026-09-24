@@ -17,7 +17,17 @@ import { Kbd } from "@/components/ui/kbd";
 import { Label } from "@/components/ui/label";
 import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select";
 import { desktop, isMac } from "@/lib/desktop";
-import { api, plural, sourceLabel, standalone, type AppState, type Config, type Group, type Source } from "@/lib/api";
+import {
+  api,
+  plural,
+  sourceLabel,
+  standalone,
+  type AppState,
+  type Config,
+  type Group,
+  type InsightsState,
+  type Source,
+} from "@/lib/api";
 import type { Stats } from "@/lib/stats";
 import { cn } from "@/lib/utils";
 
@@ -74,6 +84,8 @@ export function SettingsDialog({
   const [stackOriginals, setStackOriginals] = React.useState(false);
   const [learning, setLearning] = React.useState(true);
   const [learned, setLearned] = React.useState<{ examples: number; min_examples: number } | null>(null);
+  const [suggestTags, setSuggestTags] = React.useState(false);
+  const [insights, setInsights] = React.useState<InsightsState | null>(null);
   const [test, setTest] = React.useState<{ ok?: boolean; message: string } | null>(null);
 
   React.useEffect(() => {
@@ -86,6 +98,8 @@ export function SettingsDialog({
     setStackOriginals(!!config.upload_originals_stacked);
     setLearning(config.learning_enabled ?? true);
     api<{ examples: number; min_examples: number }>("GET", "/api/learning").then(setLearned, () => setLearned(null));
+    setSuggestTags(config.insights_enabled ?? false);
+    if (!standalone) api<InsightsState>("GET", "/api/insights").then(setInsights, () => setInsights(null));
     setTest(null);
     // only when the dialog opens; config is a new object on every poll
   }, [open]);
@@ -110,7 +124,12 @@ export function SettingsDialog({
         keep_exports: keepExports,
         upload_originals_stacked: stackOriginals,
         learning_enabled: learning,
+        ...(standalone ? {} : { insights_enabled: suggestTags }),
       });
+      // turning tags on fetches the model (a job in the activity pill); while another job runs, the
+      // Insights section offers the download instead
+      if (suggestTags && !insights?.ready && !insights?.downloading)
+        await api("POST", "/api/insights/model").catch(() => {});
       toast.success("Settings saved");
       onOpenChange(false);
       onSaved();
@@ -232,6 +251,24 @@ export function SettingsDialog({
                 )}
               </FieldDescription>
             </Field>
+            {!standalone && (
+              // the browser version has no models yet (they'd run through onnxruntime-web)
+              <Field>
+                <CheckRow id="cfg-insights" checked={suggestTags} onChange={setSuggestTags}>
+                  Suggest tags (downloads a ~{insights?.model_mb ?? 155} MB model)
+                </CheckRow>
+                <FieldDescription>
+                  Recognises scenes (beach, snow, wedding, dog…) on this computer, in the background, and shows them as
+                  suggestions under Insights; nothing changes until you accept. Accepted tags go to Immich as tags (the
+                  API key then also needs tag.create and tag.asset).
+                  {insights?.ready
+                    ? " The model is downloaded."
+                    : insights?.downloading
+                      ? " Downloading the model…"
+                      : ""}
+                </FieldDescription>
+              </Field>
+            )}
           </FieldGroup>
           <DialogFooter>
             <DialogClose asChild>

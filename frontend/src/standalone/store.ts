@@ -61,6 +61,8 @@ export type GroupData = {
   locked?: string;
   date?: string;
   caption?: string;
+  /** The slide's own tags (the desktop app's scene tags; the browser version keeps them as they are). */
+  tags?: string[];
   feat?: number[];
   history?: { undo: Snapshot[]; redo: Snapshot[] };
 };
@@ -275,9 +277,9 @@ export function slideDates(d: SessionData): DateEst[] {
   });
 }
 
-/** What besides the pixels goes to Immich with a slide: its date and caption. */
+/** What besides the pixels goes to Immich with a slide: its date, caption and tags (left out when none). */
 export const metaKey = (g: GroupData, date: DateEst) =>
-  sha1Hex(pyDumps([date.value ?? "", g.caption ?? ""])).slice(0, 12);
+  sha1Hex(pyDumps([date.value ?? "", g.caption ?? "", ...(g.tags?.length ? [[...g.tags].sort()] : [])])).slice(0, 12);
 
 export function groupStatus(g: GroupData, meta?: string): GroupStatus {
   if (g.skip) return "skipped";

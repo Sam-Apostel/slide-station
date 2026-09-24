@@ -33,7 +33,8 @@ import { Kbd } from "@/components/ui/kbd";
 import { Tip } from "@/components/tip";
 import { ToneCurve } from "@/components/tone-curve";
 import { AdjustPanel, adjustSummary } from "@/components/adjust";
-import { needsReview, plural, type Group, type SessionPayload } from "@/lib/api";
+import { InsightsPanel, TagsField, insightsNote } from "@/components/insights";
+import { needsReview, plural, standalone, type Group, type InsightKind, type SessionPayload } from "@/lib/api";
 import { CHANNELS, isStraight } from "@/lib/curves";
 import type { SlideStation } from "@/hooks/use-slide-station";
 
@@ -44,7 +45,7 @@ function rotationNote(rotation: number, reason: string) {
   return `${rotation}°`;
 }
 
-type SectionId = "rotation" | "curve" | "colour" | "details" | "tray";
+type SectionId = "rotation" | "curve" | "colour" | "details" | "insights" | "tray";
 
 function storedSections(): Record<string, boolean> {
   try {
@@ -101,6 +102,7 @@ export function Inspector({
   onDateRange,
   onPresets,
   onDevelopLike,
+  insights,
 }: {
   app: SlideStation;
   session: SessionPayload;
@@ -122,6 +124,13 @@ export function Inspector({
   /** Opens the presets dialog, and the "develop like another slide" picker. */
   onPresets: () => void;
   onDevelopLike: () => void;
+  /** The Insights section (desktop app only; the browser version has no models yet). */
+  insights?: {
+    downloading: boolean;
+    onAccepted: (kind: InsightKind, value: string, groups: Group[], index: number) => void;
+    onReview: () => void;
+    onSettings: () => void;
+  };
 }) {
   const { current: g, sel } = app;
   const sm = session.summary;
@@ -221,6 +230,12 @@ export function Inspector({
             <ProDisclosureGroup title="Details" summary={detailsNote(g)} {...section("details")}>
               <SlideDetails app={app} onDateRange={onDateRange} />
             </ProDisclosureGroup>
+
+            {insights && (
+              <ProDisclosureGroup title="Insights" summary={insightsNote(g, session)} {...section("insights")}>
+                <InsightsPanel app={app} session={session} {...insights} />
+              </ProDisclosureGroup>
+            )}
           </div>
         )}
 
@@ -388,7 +403,7 @@ const DATE_FROM: Record<string, string> = {
 function detailsNote(g: Group) {
   const d = g.date_est;
   const date = d.value ? (d.source === "own" ? d.value : `≈ ${d.value}`) : "no date";
-  return g.caption ? `${date} · ${g.caption}` : date;
+  return [date, g.caption, g.tags.length ? g.tags.join(", ") : ""].filter(Boolean).join(" · ");
 }
 
 /** The slide's own date (or where its estimate comes from) and its caption. */
@@ -424,6 +439,8 @@ function SlideDetails({ app, onDateRange }: { app: SlideStation; onDateRange: ()
           Pulled in from Immich: uploading it replaces that photo there (same albums, favourite kept).
         </p>
       )}
+      {/* the browser version keeps a library's tags but can't send them yet: shown, not edited */}
+      <TagsField key={`${g.id}-tags`} tags={g.tags ?? []} onChange={app.setTags} readOnly={standalone} />
     </div>
   );
 }

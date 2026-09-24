@@ -102,6 +102,26 @@ class Immich:
             else:
                 break
         return out
+    # ------------------------------------------------------------------ tags
+    def tag_assets(self, tags: dict[str, list[str]]) -> None:
+        """Put tags on assets, {tag: [asset ids]}, creating the tags that don't exist yet
+        (`PUT /tags` upserts). Needs tag.create and tag.asset; Immich before v1.113 has no tag API."""
+        if not tags:
+            return
+        r = self.client.put(self.base + "/tags", json={"tags": sorted(tags)})
+        if r.status_code == 404:
+            raise ImmichError("this Immich has no tag API; update it to v1.113 or later")
+        if r.status_code == 403:
+            raise ImmichError("the API key needs the tag.create and tag.asset permissions")
+        ids = {t.get("value") or t.get("name"): t["id"] for t in self._check(r).json()}
+        for name, assets in tags.items():
+            if name not in ids:
+                continue
+            for i in range(0, len(assets), 200):
+                r = self.client.put(f"{self.base}/tags/{ids[name]}/assets", json={"ids": assets[i : i + 200]})
+                if r.status_code == 403:
+                    raise ImmichError("the API key needs the tag.asset permission")
+                self._check(r)
 
     # ------------------------------------------------------------------ assets
     def upload(self, path: str, taken: datetime, device_asset_id: str, favorite: bool = False) -> tuple[str, str]:

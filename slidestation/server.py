@@ -12,7 +12,7 @@ from fastapi import Body, FastAPI, HTTPException
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-from . import learning
+from . import insights, learning
 from . import workflow as wf
 from . import imaging as im
 from .imaging import Params
@@ -55,7 +55,7 @@ def state():
 def set_config(body: dict = Body(...)):
     cfg = load_config()
     for k in ("library", "immich_url", "immich_key", "keep_originals", "keep_exports", "jpeg_quality",
-              "learning_enabled", "upload_originals_stacked"):
+              "learning_enabled", "upload_originals_stacked", "insights_enabled"):
         if k in body and not (k == "immich_key" and body[k] == ""):
             cfg[k] = body[k]
     if "stats_target" in body:  # slides to digitise in all, for the stats' projected finish
@@ -199,6 +199,8 @@ def _session_payload(s: Session) -> dict:
             "status": st[i],
             "date": g.get("date", ""),
             "caption": g.get("caption", ""),
+            "tags": g.get("tags", []),
+            "insights": _slide_insights(g),
             "date_est": dates[i],  # {"value", "source": own|between|near|tray|scan, "from": [indices]}
             "active": active_scans(g),
             "key": render_key(g),  # preview cache key: the UI must use this, not its own guess
@@ -213,6 +215,7 @@ def _session_payload(s: Session) -> dict:
         "groups": groups,
         "cleanup_blockers": wf.cleanup_blockers(s),
         "log": d.get("log", [])[-20:],
+        "insights": {"enabled": insights.enabled(), "ready": insights.model_ready(), "pending": insights.pending(d)},
     }
 
 
@@ -355,6 +358,8 @@ def patch_group(sid: str, gid: str, body: dict = Body(...)):
             g["date"] = _clean_date(body["date"])
         if "caption" in body:
             g["caption"] = str(body["caption"]).strip()[:2000]
+        if "tags" in body:
+            _set_tags(g, _clean_tags(body["tags"]))
         _learn(s, g)
         if "excluded" in body:
             g["excluded"] = [x for x in body["excluded"] if x in g["scans"]]
@@ -393,6 +398,180 @@ def date_range(sid: str, body: dict = Body(...)):
     return {**_session_payload(s), "dated": n}
 
 
+# --------------------------------------------------------------------------- insights (tags, suggestions)
+
+
+def _clean_tags(v) -> list[str]:
+    """A slide's own tags: trimmed, lower case, no repeats, at most 30 of 40 characters each."""
+    out = []
+    for t in v if isinstance(v, list) else []:
+        t = " ".join(str(t).split()).lower()[:40]
+        if t and t not in out:
+            out.append(t)
+    return out[:30]
+
+
+def _set_tags(g: dict, tags: list[str]) -> None:
+    """Set a slide's tags; a suggested tag the user removes counts as dismissed (it stays away)."""
+    removed = set(g.get("tags", [])) - set(tags)
+    for e in (g.get("insights") or {}).get("tags", []):
+        if e["value"] in removed and e.get("state") == "accepted":
+            e["state"] = "dismissed"
+            insights.record("tags", e["value"], "dismiss")
+        elif e["value"] in tags and e.get("state") == "suggested":
+            e["state"] = "accepted"
+    if tags:
+        g["tags"] = tags
+    else:
+        g.pop("tags", None)
+
+
+def _slide_insights(g: dict) -> dict | None:
+    ins = g.get("insights")
+    if not ins:
+        return None
+    return {**{k: ins.get(k) for k in insights.KINDS}, "tags": ins.get("tags", []),
+            "stale": ins.get("key") != insights.insights_key(g), "error": ins.get("error", "")}
+
+
+@app.get("/api/insights")
+def insights_state():
+    job = wf.current_job
+    return {
+        "enabled": insights.enabled(),
+        "ready": insights.model_ready(),
+        "downloading": bool(job and job.kind == "model" and not job.finished),
+        "model_mb": insights.MODEL_MB,
+        "labels": insights.TAGS,
+        "learned": insights.learned().get("labels", {}),
+    }
+
+
+@app.post("/api/insights/model")
+def insights_model():
+    """Download the tag model (a job with progress in MB) unless it is already there."""
+    if insights.model_ready():
+        return {"ok": True, "ready": True}
+    try:
+        wf.start_job("model", None, insights.download_model)
+    except RuntimeError as e:
+        return _err(e, 409)
+    return {"ok": True, "ready": False}
+
+
+@app.post("/api/sessions/{sid}/insights/run")
+def insights_run(sid: str, body: dict = Body(default={})):
+    """Analyse this tray in the background (the open tray is analysed anyway). `force`: analyse
+    every slide again; decisions already made are kept."""
+    with lock:
+        s = _session(sid)
+        if body.get("force"):
+            for g in s.data["groups"]:
+                if g.get("insights"):
+                    g["insights"]["key"] = ""
+            s.save()
+    insights.queue_tray(sid)
+    return _session_payload(s)
+
+
+def _decide(g: dict, kind: str, action: str, value: str | None) -> bool:
+    """Accept or dismiss a slide's open suggestion(s) of one kind (all its values, or `value`).
+    Accepting makes it the slide's own tag / caption / date; decided ones are never revisited (a
+    tag accepted by mistake is removed from the slide's tags, which dismisses it). Returns whether
+    anything changed."""
+    ins = g.get("insights") or {}
+    if kind == "tags":
+        hits = [e for e in ins.get("tags", []) if (value is None or e["value"] == value) and e.get("state") == "suggested"]
+        if not hits:
+            return False
+        tags = list(g.get("tags", []))
+        for e in hits:
+            e["state"] = "accepted" if action == "accept" else "dismissed"
+            insights.record("tags", e["value"], action)
+            if action == "accept" and e["value"] not in tags:
+                tags.append(e["value"])
+            elif action == "dismiss" and e["value"] in tags:
+                tags.remove(e["value"])
+        if tags:
+            g["tags"] = tags
+        else:
+            g.pop("tags", None)
+        return True
+    e = ins.get(kind)
+    if not e or (value is not None and e.get("value") != value) or e.get("state") != "suggested":
+        return False
+    if action == "accept":
+        if kind == "date":
+            g["date"] = _clean_date(e["value"])
+        elif kind == "caption":
+            g["caption"] = str(e["value"]).strip()[:2000]
+        else:
+            g[kind] = e["value"]  # place: kept on the slide, not sent to Immich yet
+    e["state"] = "accepted" if action == "accept" else "dismissed"
+    return True
+
+
+@app.post("/api/sessions/{sid}/insights/decide")
+def insights_decide(sid: str, body: dict = Body(...)):
+    """Accept or dismiss suggestions: `kind` (tags / caption / date / place), `action` (accept /
+    dismiss), optionally `value` (one tag, say "beach") and `groups` (slide ids; default: the whole
+    tray, the review view's "accept all"). Locked slides can't take accepted values."""
+    kind, action, value = body.get("kind"), body.get("action"), body.get("value")
+    if kind not in insights.KINDS or action not in ("accept", "dismiss"):
+        raise HTTPException(400, "kind must be tags, caption, date or place; action accept or dismiss")
+    with lock:
+        s = _session(sid)
+        gids = body.get("groups")
+        targets = [g for g in s.data["groups"] if gids is None or g["id"] in gids]
+        if gids is not None and len(targets) == 1 and action == "accept":
+            _editable(targets[0])
+        n = 0
+        for g in targets:
+            if action == "accept" and g.get("locked"):
+                continue
+            n += _decide(g, kind, action, value)
+        s.save()
+    return {**_session_payload(s), "decided": n}
+
+
+@app.post("/api/sessions/{sid}/insights/propagate")
+def insights_propagate(sid: str, body: dict = Body(...)):
+    """Give a run of slides what one of them was confirmed to have ("Apply 'beach' to 12-31"):
+    `kind` tags / caption / date, `value`, `from` .. `to` (slide ids, either order, both included).
+    A tag is added to each slide's own tags (and marks the same suggestion there accepted); a caption
+    or date replaces theirs. Locked slides are left as they are."""
+    kind = body.get("kind")
+    if kind not in ("tags", "caption", "date"):
+        raise HTTPException(400, "kind must be tags, caption or date")
+    value = _clean_date(body.get("value", "")) if kind == "date" else str(body.get("value", "")).strip()
+    if kind == "tags":
+        value = (_clean_tags([value]) or [""])[0]
+        if not value:
+            raise HTTPException(400, "No tag given")
+    with lock:
+        s = _session(sid)
+        try:
+            a, b = sorted((s.group_index(body.get("from")), s.group_index(body.get("to"))))
+        except (KeyError, ValueError):
+            raise HTTPException(404, "Slide not found")
+        n = 0
+        for g in s.data["groups"][a : b + 1]:
+            if g.get("locked"):
+                continue
+            if kind == "tags":
+                if value not in g.get("tags", []):
+                    _set_tags(g, g.get("tags", []) + [value])
+                    n += 1
+            else:
+                g[kind] = value[:2000]
+                e = (g.get("insights") or {}).get(kind)
+                if e and e.get("value") == value:
+                    e["state"] = "accepted"
+                n += 1
+        s.save()
+    return {**_session_payload(s), "applied": n}
+
+
 @app.post("/api/sessions/{sid}/groups/{gid}/split")
 def split_group(sid: str, gid: str, body: dict = Body(...)):
     """Split before the given scan: scans from that one on become a new slide."""
@@ -406,6 +585,8 @@ def split_group(sid: str, gid: str, body: dict = Body(...)):
         tail = s.new_group(g["scans"][at:], g["rotation"], g["rot_reason"])
         tail["params"] = dict(g["params"])
         tail["excluded"] = [x for x in g.get("excluded", []) if x in tail["scans"]]
+        if g.get("tags"):
+            tail["tags"] = list(g["tags"])
         g["scans"] = g["scans"][:at]
         g["excluded"] = [x for x in g.get("excluded", []) if x in g["scans"]]
         s.data["groups"].insert(s.group_index(gid) + 1, tail)
@@ -426,6 +607,8 @@ def merge_next(sid: str, gid: str):
         g = s.data["groups"][i]
         g["scans"] += nxt["scans"]
         g["excluded"] += nxt.get("excluded", [])
+        if nxt.get("tags"):
+            g["tags"] = g.get("tags", []) + [t for t in nxt["tags"] if t not in g.get("tags", [])]
         if nxt.get("immich"):
             s.data.setdefault("orphan_assets", []).append(nxt["immich"]["asset_id"])
             if nxt["immich"].get("stack_id"):  # its scans get stacked under the merged slide's upload

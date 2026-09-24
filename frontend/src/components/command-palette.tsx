@@ -19,6 +19,7 @@ import {
   HardDriveDownload,
   Keyboard,
   Layers,
+  ListChecks,
   Merge,
   PanelLeft,
   PanelRight,
@@ -72,6 +73,7 @@ export function CommandPalette({
   onFromImmich,
   views,
   grid,
+  onReview,
   busy,
 }: {
   open: boolean;
@@ -93,6 +95,8 @@ export function CommandPalette({
     developLike: () => void;
   };
   grid: boolean;
+  /** Opens the tray's "review suggestions" (desktop app only). */
+  onReview?: () => void;
   busy: boolean;
 }) {
   const { state, session, sessionId, sel } = app;
@@ -211,6 +215,20 @@ export function CommandPalette({
           icon: <CloudDownload />,
           hidden: !session?.groups.some((x) => x.status === "uploaded" || x.status === "changed"),
           run: app.pullFromImmich,
+        },
+        {
+          id: "review-insights",
+          label: "Review suggestions (tags)…",
+          icon: <ListChecks />,
+          hidden: !session || !onReview || !session.insights?.enabled,
+          run: () => onReview?.(),
+        },
+        {
+          id: "analyse",
+          label: "Analyse the tray again",
+          icon: <ListChecks />,
+          hidden: !session || !onReview || !session.insights?.ready || !session.insights.enabled,
+          run: () => app.analyseTray(true),
         },
         { id: "reveal", label: "Show files", icon: <FolderOpen />, hidden: !session, run: app.reveal },
         {

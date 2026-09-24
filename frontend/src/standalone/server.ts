@@ -301,6 +301,7 @@ async function payload(d: SessionData): Promise<SessionPayload> {
       status: st[i],
       date: g.date ?? "",
       caption: g.caption ?? "",
+      tags: g.tags ?? [],
       date_est: dates[i],
       active: activeScans(g),
       key: renderKey(g),

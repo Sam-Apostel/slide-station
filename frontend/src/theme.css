@@ -1401,3 +1401,122 @@ body {
     0 0 0 2px color-mix(in srgb, var(--ss-accent) 70%, transparent),
     0 8px 28px rgb(0 0 0 / 60%);
 }
+
+/* ------------------------------------------------------------------ insights (suggestions, tags) */
+
+.ss-suggestion {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 4px 0 8px;
+  border-radius: 6px;
+  background: var(--ss-panel-2);
+  box-shadow: inset 0 0 0 1px var(--ss-line-soft);
+  font-size: 12px;
+}
+.ss-suggestion button,
+.ss-tag button,
+.ss-tag-add,
+.ss-pile-dismiss {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 4px;
+  color: var(--ss-muted);
+}
+.ss-suggestion button:hover,
+.ss-tag button:hover,
+.ss-tag-add:hover {
+  background: var(--ss-line);
+  color: var(--ss-text);
+}
+.ss-suggestion button[aria-label^="Accept"]:hover {
+  color: var(--ss-accent);
+}
+.ss-suggestion svg,
+.ss-tag svg,
+.ss-tag-add svg,
+.ss-pile-dismiss svg {
+  width: 13px;
+  height: 13px;
+}
+/* a small meter: how sure the model is */
+.ss-confidence {
+  min-width: 34px;
+  padding: 1px 4px;
+  border-radius: 3px;
+  background: linear-gradient(
+    90deg,
+    color-mix(in srgb, var(--ss-accent) 28%, transparent) calc(var(--c) * 100%),
+    var(--ss-field) 0
+  );
+  color: var(--ss-muted);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+.ss-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  height: 24px;
+  padding: 0 2px 0 8px;
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--ss-accent) 14%, var(--ss-panel-2));
+  color: var(--ss-text);
+  font-size: 12px;
+}
+.ss-tag:not(:has(button)) {
+  padding-right: 8px;
+}
+.ss-tag button {
+  width: 18px;
+  height: 18px;
+  border-radius: 9px;
+}
+.ss-pile {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  border-radius: 8px;
+  background: var(--ss-panel-2);
+  box-shadow: inset 0 0 0 1px var(--ss-line-soft);
+}
+.ss-pile-slide {
+  position: relative;
+}
+.ss-pile-slide > button:first-child {
+  display: flex;
+  flex-direction: column;
+  width: 76px;
+  border-radius: 4px;
+  overflow: hidden;
+  background: var(--ss-sunken);
+  font-size: 10px;
+  color: var(--ss-muted);
+}
+.ss-pile-slide img {
+  width: 76px;
+  height: 56px;
+  object-fit: cover;
+}
+.ss-pile-slide > button:first-child:hover {
+  box-shadow: 0 0 0 2px var(--ss-accent);
+}
+.ss-pile-dismiss {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  width: 18px;
+  height: 18px;
+  background: rgb(0 0 0 / 0.65);
+  color: #fff;
+  opacity: 0;
+}
+.ss-pile-slide:hover .ss-pile-dismiss,
+.ss-pile-dismiss:focus-visible {
+  opacity: 1;
+}

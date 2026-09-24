@@ -31,6 +31,13 @@ included. Not licensed for reuse — get your own ProUI licence.
 From OpenCV Zoo (<https://github.com/opencv/opencv_zoo>), MIT licence. Used to work out which way
 up a slide is.
 
+## CLIP ViT-B/32 (scene tags) — downloaded, not in the repo
+
+When "Suggest tags" is turned on, the app downloads OpenAI's CLIP ViT-B/32 (MIT licence,
+<https://github.com/openai/CLIP>) as quantized ONNX files converted by Xenova
+(<https://huggingface.co/Xenova/clip-vit-base-patch32>, a pinned revision) into the library's
+`models/` folder. Nothing of it is committed or bundled.
+
 ## Python and JavaScript dependencies
 
 See `pyproject.toml` and `frontend/package.json`; each keeps its own licence.

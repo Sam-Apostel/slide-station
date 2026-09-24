@@ -8,6 +8,7 @@ import {
   standalone,
   type AppState,
   type Group,
+  type InsightKind,
   type Params,
   type Preset,
   type Pulled,
@@ -121,13 +122,17 @@ export function useSlideStation() {
     if (j?.finished && jobKey !== lastJobKey.current && lastJobKey.current) {
       if (j.error) toast.error(j.error, { duration: 8000 });
       else if (j.message) toast.success(j.message);
-      if (j.session === sid) await loadSession(sid, true);
+      if (j.session === sid || j.kind === "model") await loadSession(sid, true);
     }
     lastJobKey.current = jobKey;
+    const ins = ref.current.session?.insights;
     if (s.sessions.length && !s.sessions.some((x) => x.id === sid)) {
       loadSession(s.sessions[0].id);
     } else if (j && !j.finished && j.kind === "import" && j.session === sid) {
       // pull in slides as the import makes them ready
+      loadSession(sid, true);
+    } else if (ins?.enabled && ins.ready && ins.pending && (!j || j.finished)) {
+      // suggestions arrive as the background analysis gets through the tray
       loadSession(sid, true);
     }
   }, [loadSession]);
@@ -492,6 +497,76 @@ export function useSlideStation() {
     }
   };
 
+  // ---------------------------------------------------------------- insights (desktop app)
+
+  /** Accept or dismiss open suggestions of a kind (one value, or all): on the given slides, or the whole tray. */
+  const decide = async (kind: InsightKind, action: "accept" | "dismiss", value?: string, groupIds?: string[]) => {
+    const { sessionId: sid } = ref.current;
+    try {
+      const p = await api<SessionPayload & { decided: number }>("POST", `/api/sessions/${sid}/insights/decide`, {
+        kind,
+        action,
+        value,
+        groups: groupIds,
+      });
+      applyPayload(p);
+      return p;
+    } catch (e) {
+      fail(e);
+      return null;
+    }
+  };
+
+  /** Give slides fromIndex..toIndex (0-based, either order) a tag, caption or date confirmed on one of them. */
+  const propagate = async (kind: "tags" | "caption" | "date", value: string, fromIndex: number, toIndex: number) => {
+    const { sessionId: sid, session: s } = ref.current;
+    const a = s?.groups[fromIndex];
+    const b = s?.groups[toIndex];
+    if (!a || !b) return false;
+    try {
+      const p = await api<SessionPayload & { applied: number }>("POST", `/api/sessions/${sid}/insights/propagate`, {
+        kind,
+        value,
+        from: a.id,
+        to: b.id,
+      });
+      applyPayload(p);
+      const lo = Math.min(fromIndex, toIndex) + 1;
+      const hi = Math.max(fromIndex, toIndex) + 1;
+      const what = kind === "tags" ? `Tagged “${value}”` : kind === "date" ? `Dated ${value}` : "Captioned";
+      toast(`${what}: ${plural(p.applied, "slide")} (${lo}–${hi})`);
+      return true;
+    } catch (e) {
+      fail(e);
+      return false;
+    }
+  };
+
+  /** The slide's own tags; removing a suggested tag counts as dismissing it. */
+  const setTags = (tags: string[]) => {
+    if (editable()) patchGroup({ tags });
+  };
+
+  /** Analyse the tray in the background (again, with `force`: keeps what was accepted or dismissed). */
+  const analyseTray = async (force = false) => {
+    const { sessionId: sid } = ref.current;
+    try {
+      applyPayload(await api<SessionPayload>("POST", `/api/sessions/${sid}/insights/run`, { force }));
+    } catch (e) {
+      fail(e);
+    }
+  };
+
+  /** Fetch the tag model (a job in the activity pill); the open tray is analysed once it's there. */
+  const downloadModel = async () => {
+    try {
+      await api("POST", "/api/insights/model");
+      refreshState();
+    } catch (e) {
+      fail(e);
+    }
+  };
+
   // ---------------------------------------------------------------- tray
 
   const patchSession = async (body: Record<string, string>) => {
@@ -657,6 +732,11 @@ export function useSlideStation() {
     savePreset,
     deletePreset,
     applyLook,
+    decide,
+    propagate,
+    setTags,
+    analyseTray,
+    downloadModel,
     undo,
     redo,
     patchSession,

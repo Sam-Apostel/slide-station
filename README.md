@@ -145,6 +145,29 @@ Importing the same card twice never duplicates: every scan is fingerprinted.
 
 Look-alike detection ("a scan you uploaded in 2021") isn't done: only exact duplicates are.
 
+## Tag suggestions (optional)
+
+Settings → **Suggest tags (downloads a ~155 MB model)**. The first time, the app downloads a
+scene-recognition model (CLIP, from Hugging Face) into the library's `models` folder — the top bar
+shows the progress; an interrupted download continues where it stopped. From then on it looks at
+each slide on this computer, in the background, and suggests tags like beach, snow, mountains,
+wedding, birthday, church, car, dog, family group, portrait or interior. Nothing is applied on its
+own:
+
+- The **Insights** section of the inspector lists this slide's suggestions: ✓ adds the tag, ×
+  dismisses it (it won't be suggested for that slide again, and a tag you keep dismissing needs a
+  surer match before it's suggested anywhere). After accepting, "Apply to 12–31…" offers the same
+  tag to the neighbouring slides.
+- **Review tray…** (or ⌘K → Review suggestions) shows every suggestion in the tray grouped by tag:
+  accept or dismiss a whole group at once, after taking out the slides that don't fit.
+- The slide's tags are also in **Details** (type to add, × to remove), and the filmstrip can be
+  filtered by tag.
+- Tags go to Immich as tags on upload (give the API key `tag.create` and `tag.asset` too; an Immich
+  older than v1.113 just skips them) and into the JPEG's keywords (XMP). Changing a slide's tags
+  after upload uploads it again, like a caption.
+
+Not in the browser version yet.
+
 ## Scanning tips
 
 - One scan per slide is usually enough. For contrasty slides (snow, backlit, dark interiors) add
@@ -158,7 +181,8 @@ Library folder → `sessions/<tray>/originals`, `cache` (previews), `export` (fi
 `session.json` (all edits; safe to back up).
 
 Face detection uses OpenCV's YuNet model (MIT licence, from opencv_zoo), bundled in
-`slidestation/models`.
+`slidestation/models`. Tag suggestions download OpenAI's CLIP (MIT licence) into the library's
+`models` folder when turned on; `insights.json` in the library remembers which tags you accept and dismiss.
 
 ## Development
 
