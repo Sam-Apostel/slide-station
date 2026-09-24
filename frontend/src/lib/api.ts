@@ -138,7 +138,7 @@ export const histogramUrl = (sid: string, g: Group) =>
 
 export const scanThumbUrl = (sid: string, scan: string) => `/api/sessions/${sid}/scans/${scan}/thumb.jpg`;
 
-export const needsReview = (g: Group) => !g.reviewed && !g.skip && g.status !== "uploaded";
+export const needsReview = (g: Group) => !g.reviewed && !g.skip;
 
 export const sourceLabel = (s: Source) => (s.scanner ? "Slide N Scan" : s.name);
 

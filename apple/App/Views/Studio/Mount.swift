@@ -15,7 +15,8 @@ enum SS {
 
 /// A filmstrip tile is a slide mount (`.ss-mount`): a raised plastic frame, the photo sunk into
 /// its window dead centre (3:2 in a square; turned slides keep the square and the window stands
-/// up), the number and year printed in the margin, always upright. Developed slides are gilded.
+/// up), the number and year printed in the margin, always upright. Developed slides are gilded
+/// (and stay gold when edited after upload, until that version goes up); slides in Immich are green.
 struct MountTile: View {
     let tray: Tray
     let slide: Slide
@@ -29,7 +30,10 @@ struct MountTile: View {
     @State private var portrait = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    private var gold: Bool { status == .reviewed }
+    private var finish: MountFinish? { status.finish }
+    private var finished: Bool { finish != nil }
+    /// The finish's colours: gold, or green once Immich has the slide as it is.
+    private var metal: MountFinish.Palette { (finish ?? .gold).palette }
 
     var body: some View {
         GeometryReader { geo in
@@ -45,11 +49,11 @@ struct MountTile: View {
         .background { frame }
         .overlay { if gilding { sweepLight } }
         .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
-        .shadow(color: current && gold ? Color(proHex: 0xf5c86e).opacity(0.7) : current ? ProTheme.accent.opacity(0.45) : .clear, radius: 9)
+        .shadow(color: current && finished ? metal.glow.opacity(0.7) : current ? ProTheme.accent.opacity(0.45) : .clear, radius: 9)
         .shadow(color: .black.opacity(0.55), radius: 4.5, x: 3, y: 4)
         .overlay {
             if current {
-                RoundedRectangle(cornerRadius: 7, style: .continuous).strokeBorder(gold ? Color(proHex: 0xfff3d0) : ProTheme.accent, lineWidth: 1.5)
+                RoundedRectangle(cornerRadius: 7, style: .continuous).strokeBorder(finished ? metal.ring : ProTheme.accent, lineWidth: 1.5)
             }
         }
         .offset(y: current ? -2 : 0)
@@ -63,16 +67,15 @@ struct MountTile: View {
     // MARK: pieces
 
     @ViewBuilder private var frame: some View {
-        if gold {
+        if finished {
             ZStack {
-                LinearGradient(stops: [.init(color: Color(proHex: 0xd9ae55), location: 0), .init(color: Color(proHex: 0xa8792a), location: 0.35),
-                                       .init(color: Color(proHex: 0xe6c173), location: 0.55), .init(color: Color(proHex: 0x8d6220), location: 1)],
+                LinearGradient(stops: zip(metal.stops, [0, 0.35, 0.55, 1]).map { .init(color: Color(proHex: $0), location: $1) },
                                startPoint: .topLeading, endPoint: .bottomTrailing)
                 BrushedLines().fill(.white.opacity(0.03))
                 LinearGradient(colors: [.white.opacity(0.18), .clear], startPoint: .topLeading, endPoint: UnitPoint(x: 0.45, y: 0.45))
             }
-            .overlay(alignment: .top) { Rectangle().fill(Color(proHex: 0xfff5d2).opacity(0.55)).frame(height: 1) }
-            .overlay(alignment: .bottom) { Rectangle().fill(Color(proHex: 0x3c2300).opacity(0.6)).frame(height: 1) }
+            .overlay(alignment: .top) { Rectangle().fill(metal.light.opacity(0.55)).frame(height: 1) }
+            .overlay(alignment: .bottom) { Rectangle().fill(metal.shade.opacity(0.6)).frame(height: 1) }
         } else {
             LinearGradient(colors: current ? [Color(proHex: 0x2e2a22), Color(proHex: 0x211e18)] : [Color(proHex: 0x26262c), Color(proHex: 0x1b1b20)],
                            startPoint: .topLeading, endPoint: .bottomTrailing)
@@ -88,32 +91,32 @@ struct MountTile: View {
             .background(Color(proHex: 0x050506), in: RoundedRectangle(cornerRadius: 2))
             .overlay { RoundedRectangle(cornerRadius: 2).strokeBorder(.black, lineWidth: 1) }
             // sunk into the mount: dark above, a catch of light below
-            .overlay(alignment: .top) { LinearGradient(colors: [.black.opacity(gold ? 0.8 : 0.9), .clear], startPoint: .top, endPoint: .bottom).frame(height: 4).allowsHitTesting(false) }
+            .overlay(alignment: .top) { LinearGradient(colors: [.black.opacity(finished ? 0.8 : 0.9), .clear], startPoint: .top, endPoint: .bottom).frame(height: 4).allowsHitTesting(false) }
             .padding(.bottom, 1)
-            .background(alignment: .bottom) { Rectangle().fill(gold ? Color(proHex: 0xfff0c8).opacity(0.45) : .white.opacity(0.07)).frame(height: 1) }
+            .background(alignment: .bottom) { Rectangle().fill(finished ? metal.light.opacity(0.45) : .white.opacity(0.07)).frame(height: 1) }
     }
 
     private var numberColor: Color {
-        gold ? Color(proHex: 0x5a3c0c) : current ? ProTheme.accent.mix(with: Color(proHex: 0x333333), by: 0.3) : Color(proHex: 0x4c4c55)
+        finished ? metal.print : current ? ProTheme.accent.mix(with: Color(proHex: 0x333333), by: 0.3) : Color(proHex: 0x4c4c55)
     }
 
     @ViewBuilder private func foot(_ s: CGFloat) -> some View {
         let number = Text(String(format: "%02d", index + 1)).font(SS.mono).tracking(1.4).foregroundStyle(numberColor)
-            .shadow(color: gold ? Color(proHex: 0xfff0c8).opacity(0.45) : .clear, radius: 0, y: 1)
+            .shadow(color: finished ? metal.light.opacity(0.45) : .clear, radius: 0, y: 1)
         let year = date.value.isEmpty ? nil : Text("’" + date.value.dropFirst(2).prefix(2))
             .font(.system(size: 9, weight: .bold, design: .monospaced)).tracking(0.5)
-            .foregroundStyle(gold ? Color(proHex: 0x5a3c0c) : date.source == .own ? Color(proHex: 0x6a6a74) : Color(proHex: 0x45454e))
+            .foregroundStyle(finished ? metal.print : date.source == .own ? Color(proHex: 0x6a6a74) : Color(proHex: 0x45454e))
         if portrait {
             // down the left margin, where the bottom edge ends up after a quarter turn; each mark upright
             VStack(spacing: 0) {
-                if !gold { dot }
+                if !finished { dot }
                 Spacer(minLength: 0); number; Spacer(minLength: 0)
                 if let year { year }
             }
             .frame(width: s * 0.225, height: s * 0.82).frame(maxWidth: .infinity, alignment: .leading)
         } else {
             ZStack {
-                HStack { if !gold { dot }; Spacer() }
+                HStack { if !finished { dot }; Spacer() }
                 number
                 HStack { Spacer(); if let year { year } }
             }
@@ -140,10 +143,10 @@ struct MountTile: View {
             .background(.black.opacity(0.7), in: RoundedRectangle(cornerRadius: 3))
     }
 
-    /// One sweep of light across a slide as it's gilded.
+    /// One sweep of light across a slide as it takes on its finish.
     private var sweepLight: some View {
         GeometryReader { g in
-            LinearGradient(colors: [.clear, Color(proHex: 0xfff0c8).opacity(0.7), .clear], startPoint: .leading, endPoint: .trailing)
+            LinearGradient(colors: [.clear, metal.light.opacity(0.7), .clear], startPoint: .leading, endPoint: .trailing)
                 .frame(width: g.size.width * 0.35)
                 .rotationEffect(.degrees(20))
                 .offset(x: g.size.width * sweep)
@@ -203,14 +206,41 @@ private struct BrushedLines: Shape {
     }
 }
 
+/// A mount's finish (`FINISH` in filmstrip.tsx): gold once developed, green once in Immich.
+enum MountFinish {
+    case gold, green
+
+    struct Palette {
+        let stops: [UInt32]
+        let light, shade, print, ring, glow: Color
+    }
+
+    var palette: Palette {
+        switch self {
+        case .gold: Palette(stops: [0xd9ae55, 0xa8792a, 0xe6c173, 0x8d6220], light: Color(proHex: 0xfff0c8), shade: Color(proHex: 0x3c2300),
+                            print: Color(proHex: 0x5a3c0c), ring: Color(proHex: 0xfff3d0), glow: Color(proHex: 0xf5c86e))
+        case .green: Palette(stops: [0x6fbf8a, 0x3f8a5a, 0x86d3a0, 0x2c6a44], light: Color(proHex: 0xd7ffe4), shade: Color(proHex: 0x002d14),
+                             print: Color(proHex: 0x123d22), ring: Color(proHex: 0xdcffe8), glow: Color(proHex: 0x78d79b))
+        }
+    }
+}
+
 extension SlideStatus {
+    /// Edited after upload is developed again: gold until that version goes up.
+    var finish: MountFinish? {
+        switch self {
+        case .reviewed, .changed: .gold
+        case .uploaded: .green
+        case .new, .skipped: nil
+        }
+    }
+
     /// The mount's status dot (`STATUS_DOT` in filmstrip.tsx).
     var dotFill: Color {
         switch self {
         case .new: Color(proHex: 0x55555f)
-        case .reviewed: ProTheme.accent
+        case .reviewed, .changed: ProTheme.accent
         case .uploaded: ProTheme.green
-        case .changed: ProTheme.warn
         case .skipped: .clear
         }
     }
@@ -255,7 +285,7 @@ struct TraySlots: View {
         .overlay { RoundedRectangle(cornerRadius: 5).stroke(.black.opacity(0.7), lineWidth: 1).blur(radius: 1.5).mask(RoundedRectangle(cornerRadius: 5)) }
         .overlay(alignment: .bottom) { Rectangle().fill(.white.opacity(0.04)).frame(height: 1).offset(y: 1) }
         .animation(.easeOut(duration: 0.12), value: current)
-        .accessibilityElement().accessibilityLabel("Tray: \(statuses.filter { $0 == .reviewed || $0 == .uploaded }.count) of \(statuses.count) done")
+        .accessibilityElement().accessibilityLabel("Tray: \(statuses.filter { $0.finish != nil }.count) of \(statuses.count) done")
     }
 }
 
@@ -266,7 +296,7 @@ extension SlideStatus {
         case .new: return g(0x3b3b44, 0x2c2c33)
         case .reviewed: return g(0xf5c26a, 0xc98d2c)
         case .uploaded: return g(0x86d6a1, 0x4b9a67)
-        case .changed: return g(0xf0b35a, 0xb67520)
+        case .changed: return g(0xf5c26a, 0xc98d2c)  // developed again, gold like its mount
         case .skipped: return AnyShapeStyle(Color(proHex: 0x1e1e23))
         }
     }

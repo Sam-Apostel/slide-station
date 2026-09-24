@@ -114,7 +114,7 @@ public struct Importer: Sendable {
             var g = extend ? last! : Slide(scans: ids, params: tray.defaults)
             if extend { g.scans += ids }
             // best of the bracket: leave out blurry or almost entirely clipped scans (1–9 puts them back)
-            if g.scans.count > 1 && !g.reviewed {
+            if g.scans.count > 1 && !g.developed {
                 let q = try g.scans.map { Brackets.quality(try renderer.proxy(tray, scan: $0)) }
                 let autoOut = Dictionary(uniqueKeysWithValues: Brackets.weakScans(q).map { (g.scans[$0.key], $0.value) })
                 let manualIn = Set((g.autoExcluded ?? [:]).keys).subtracting(g.excluded)
@@ -122,7 +122,7 @@ public struct Importer: Sendable {
                 g.autoExcluded = autoOut
             }
             var rot: (Int, String)?
-            if !g.reviewed && g.rotReason != "manual" {
+            if !g.developed && g.rotReason != "manual" {
                 rot = Brackets.suggestRotation(try g.activeScans.map { try renderer.proxy(tray, scan: $0) })
             }
             let fused = try renderer.fusedProxy(tray, g)   // pre-blend the bracket so browsing is instant
@@ -141,7 +141,7 @@ public struct Importer: Sendable {
                 }
                 if let rot, rot.1 != "", target.rotReason != "manual" { target.rotation = rot.0; target.rotReason = rot.1 }
                 target.feat = feats
-                if let suggestion, !target.reviewed, target.paramsSource != "manual" {
+                if let suggestion, !target.developed, target.paramsSource != "manual" {
                     target.params = suggestion.apply(to: target.params)
                     target.paramsSource = "learned:\(suggestion.neighbours)"
                 }

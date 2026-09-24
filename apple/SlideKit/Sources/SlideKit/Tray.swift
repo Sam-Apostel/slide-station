@@ -48,6 +48,10 @@ public struct Slide: Codable, Identifiable, Equatable, Sendable {
     /// Undo / redo of the slide's look (Python: `g["history"]`).
     public var history: History?
 
+    /// Marked developed, or uploaded: a slide edited after upload is developed again, waiting to
+    /// go up (Python: `developed(g)`).
+    public var developed: Bool { reviewed || immich != nil }
+
     enum CodingKeys: String, CodingKey {
         case id, scans, excluded, rotation, params, reviewed, skip, immich, date, caption, locked, feat, history
         case autoExcluded = "auto_excluded", rotReason = "rot_reason", paramsSource = "params_source"
@@ -251,11 +255,11 @@ public struct Tray: Codable, Identifiable, Equatable, Sendable {
         var s = Summary()
         s.slides = groups.count
         for (g, x) in zip(groups, st) {
-            if g.reviewed || x == .uploaded || x == .skipped { s.developed += 1 }
+            if g.developed || x == .skipped { s.developed += 1 }
             if x == .uploaded { s.uploaded += 1 }
             if x == .skipped { s.skipped += 1 }
             if [.new, .reviewed, .changed].contains(x) { s.pendingUpload += 1 }
-            if g.reviewed && (x == .reviewed || x == .changed) { s.readyUpload += 1 }
+            if x == .reviewed || x == .changed { s.readyUpload += 1 }
         }
         return s
     }

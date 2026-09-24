@@ -974,9 +974,10 @@ body {
   align-self: start;
 }
 
-/* Developed: the mount turns to brushed gold, the printing pressed dark into it. Gilding happens
-   with one sweep of light across the whole slide. */
-.ss-mount[data-status="reviewed"] {
+/* Developed: the mount turns to brushed gold, the printing pressed dark into it. It stays gold
+   when a slide is edited after upload (it's developed again, waiting to go up); once Immich has
+   this version it turns green. Each new finish comes with one sweep of light across the slide. */
+.ss-mount[data-finish="gold"] {
   background:
     linear-gradient(145deg, rgb(255 255 255 / 18%), transparent 40%),
     repeating-linear-gradient(100deg, rgb(255 255 255 / 3%) 0 1px, transparent 1px 3px),
@@ -988,25 +989,57 @@ body {
     inset 0 -1px 0 rgb(60 35 0 / 60%);
 }
 /* amber would vanish against gold, so the current gilded slide gets a pale ring */
-.ss-mount[data-status="reviewed"][aria-current] {
+.ss-mount[data-finish="gold"][aria-current] {
   box-shadow:
     0 0 0 1.5px #fff3d0,
     0 0 22px -3px rgb(245 200 110 / 70%),
     3px 5px 12px rgb(0 0 0 / 60%),
     inset 0 1px 0 rgb(255 245 210 / 55%);
 }
-.ss-mount[data-status="reviewed"] .ss-mount-window {
+.ss-mount[data-finish="gold"] .ss-mount-window {
   box-shadow:
     inset 0 2px 3px rgb(0 0 0 / 80%),
     0 1px 0 rgb(255 240 200 / 45%),
     0 -1px 0 rgb(60 35 0 / 60%);
 }
-.ss-mount[data-status="reviewed"] .ss-mount-number,
-.ss-mount[data-status="reviewed"] .ss-mount-year {
+.ss-mount[data-finish="gold"] .ss-mount-number,
+.ss-mount[data-finish="gold"] .ss-mount-year {
   color: #5a3c0c;
   text-shadow:
     0 1px 0 rgb(255 240 200 / 45%),
     0 -1px 0 rgb(60 35 0 / 50%);
+}
+/* In Immich: anodised green, the printing pressed dark into it */
+.ss-mount[data-finish="green"] {
+  background:
+    linear-gradient(145deg, rgb(255 255 255 / 16%), transparent 40%),
+    repeating-linear-gradient(100deg, rgb(255 255 255 / 3%) 0 1px, transparent 1px 3px),
+    linear-gradient(145deg, #6fbf8a 0%, #3f8a5a 35%, #86d3a0 55%, #2c6a44 100%);
+  box-shadow:
+    -2px -2px 5px rgb(160 255 200 / 6%),
+    3px 4px 9px rgb(0 0 0 / 55%),
+    inset 0 1px 0 rgb(215 255 228 / 50%),
+    inset 0 -1px 0 rgb(0 45 20 / 60%);
+}
+.ss-mount[data-finish="green"][aria-current] {
+  box-shadow:
+    0 0 0 1.5px #dcffe8,
+    0 0 22px -3px rgb(120 215 155 / 70%),
+    3px 5px 12px rgb(0 0 0 / 60%),
+    inset 0 1px 0 rgb(215 255 228 / 50%);
+}
+.ss-mount[data-finish="green"] .ss-mount-window {
+  box-shadow:
+    inset 0 2px 3px rgb(0 0 0 / 80%),
+    0 1px 0 rgb(215 255 228 / 40%),
+    0 -1px 0 rgb(0 45 20 / 60%);
+}
+.ss-mount[data-finish="green"] .ss-mount-number,
+.ss-mount[data-finish="green"] .ss-mount-year {
+  color: #123d22;
+  text-shadow:
+    0 1px 0 rgb(215 255 228 / 40%),
+    0 -1px 0 rgb(0 45 20 / 50%);
 }
 .ss-mount[data-gilding]::after {
   content: "";
@@ -1017,12 +1050,15 @@ body {
   background: linear-gradient(
     110deg,
     transparent 42%,
-    rgb(255 240 200 / 70%) 50%,
+    var(--ss-sweep, rgb(255 240 200 / 70%)) 50%,
     transparent 58%
   );
   background-size: 300% 100%;
   mix-blend-mode: plus-lighter;
   animation: ss-gild 900ms cubic-bezier(0.3, 0.1, 0.3, 1);
+}
+.ss-mount[data-finish="green"] {
+  --ss-sweep: rgb(215 255 228 / 65%);
 }
 @keyframes ss-gild {
   from {
@@ -1070,14 +1106,13 @@ body {
 .ss-tray-slide:hover {
   height: 19px;
 }
-.ss-tray-slide[data-status="reviewed"] {
+/* edited after upload is developed again, gold like its mount */
+.ss-tray-slide[data-status="reviewed"],
+.ss-tray-slide[data-status="changed"] {
   background: linear-gradient(90deg, #f5c26a, #c98d2c);
 }
 .ss-tray-slide[data-status="uploaded"] {
   background: linear-gradient(90deg, #86d6a1, #4b9a67);
-}
-.ss-tray-slide[data-status="changed"] {
-  background: linear-gradient(90deg, #f0b35a, #b67520);
 }
 .ss-tray-slide[data-status="skipped"] {
   height: 8px;

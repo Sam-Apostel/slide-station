@@ -36,7 +36,7 @@ extension SlideStatus {
         switch self {
         case .new: ProTheme.dim
         case .reviewed: ProTheme.accent
-        case .changed: ProTheme.warn
+        case .changed: ProTheme.accent  // developed again, waiting to go up
         case .uploaded: ProTheme.green
         case .skipped: ProTheme.destructive.opacity(0.7)
         }

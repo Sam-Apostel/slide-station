@@ -24,7 +24,7 @@ export const STATUS_DOT: Record<GroupStatus, string> = {
   new: "bg-[#55555f]",
   reviewed: "bg-primary",
   uploaded: "bg-[var(--pro-green)]",
-  changed: "bg-(--ss-warn)",
+  changed: "bg-primary", // developed again, waiting to go up
   skipped: "bg-transparent border-[#666]",
 };
 
@@ -33,9 +33,13 @@ export const STATUS_TEXT: Record<GroupStatus, string> = {
   new: "text-muted-foreground",
   reviewed: "text-primary border-primary/40",
   uploaded: "text-(--ss-ok) border-(--ss-ok)/40",
-  changed: "text-(--ss-warn) border-(--ss-warn)/40",
+  changed: "text-primary border-primary/40",
   skipped: "text-(--ss-dim)",
 };
+
+/** The mount's finish: developed slides are gilded, and stay gold when edited after upload until
+ *  that version goes up; slides Immich has as they are turn green. */
+const FINISH: Partial<Record<GroupStatus, "gold" | "green">> = { reviewed: "gold", changed: "gold", uploaded: "green" };
 
 const matches = (g: Group, f: Filter) => (f === "todo" ? needsReview(g) : f === "multi" ? g.scans.length > 1 : true);
 
@@ -61,13 +65,13 @@ export function Filmstrip({
   const groups = session.groups.filter((g) => matches(g, filter));
   const selRef = React.useRef<HTMLButtonElement>(null);
 
-  // slides that were just developed get one sweep of light across their new gold mount
+  // a slide that takes on a new finish (developed, uploaded) gets one sweep of light across it
   const seen = React.useRef(new Map<string, GroupStatus>());
   const [gilding, setGilding] = React.useState<ReadonlySet<string>>(new Set());
   React.useEffect(() => {
     const fresh = session.groups.filter((g) => {
       const was = seen.current.get(g.id);
-      return was !== undefined && was !== "reviewed" && g.status === "reviewed";
+      return was !== undefined && FINISH[g.status] !== undefined && FINISH[was] !== FINISH[g.status];
     });
     for (const g of session.groups) seen.current.set(g.id, g.status);
     if (fresh.length) setGilding((s) => new Set([...s, ...fresh.map((g) => g.id)]));
@@ -119,6 +123,7 @@ export function Filmstrip({
               aria-label={`Slide ${g.index + 1}, ${STATUS_LABEL[g.status]}`}
               aria-current={isSel || undefined}
               data-status={g.status}
+              data-finish={FINISH[g.status]}
               data-gilding={gilding.has(g.id) || undefined}
               onAnimationEnd={(e) => e.animationName === "ss-gild" && gilded(g.id)}
               className="ss-mount"
@@ -139,8 +144,8 @@ export function Filmstrip({
               </span>
               {/* along the bottom edge, or down the side when the slide is turned; always upright */}
               <span className="ss-mount-foot">
-                {g.status !== "reviewed" && (
-                  // developed slides are gilded instead
+                {!FINISH[g.status] && (
+                  // developed and uploaded slides are gilded or green instead
                   <span
                     title={STATUS_LABEL[g.status]}
                     className={cn("ss-mount-dot border-[1.5px] border-black/50", STATUS_DOT[g.status])}

@@ -19,7 +19,7 @@ from . import imaging as im
 from .imaging import Params
 from . import learning
 from .immich import Immich, ImmichError
-from .store import (Session, active_scans, add_to_index, group_status, imported_index, load_config, lock,
+from .store import (Session, active_scans, add_to_index, developed, group_status, imported_index, load_config, lock,
                     meta_key, parse_date, render_key, sha1_file, slide_dates, slugify, statuses)
 
 VOLUMES = Path(os.environ.get("SLIDESTATION_VOLUMES", "/Volumes"))
@@ -227,7 +227,7 @@ def import_scans(job: Job, sid: str, source: str) -> None:
         # best of the bracket: leave out scans that are blurry (the slide moved or the focus
         # drifted) or almost entirely clipped; the user can put them back with 1-9
         auto_out = {}
-        if len(g["scans"]) > 1 and not g.get("reviewed"):
+        if len(g["scans"]) > 1 and not developed(g):
             qual = [im.scan_quality(im.load_rgb(str(s.cache / f"{x}.proxy.jpg"))) for x in g["scans"]]
             auto_out = {g["scans"][i]: why for i, why in im.weak_scans(qual).items()}
             # scans the user put back after an earlier import left them out stay in
@@ -235,7 +235,7 @@ def import_scans(job: Job, sid: str, source: str) -> None:
             g["excluded"] = sorted(set(g.get("excluded", [])) | (set(auto_out) - manual_in))
             g["auto_excluded"] = auto_out
         rot = None
-        if not g["reviewed"] and g.get("rot_reason") != "manual":
+        if not developed(g) and g.get("rot_reason") != "manual":
             proxies = [im.load_rgb(str(s.cache / f"{x}.proxy.jpg")) for x in active_scans(g)]
             rot = im.suggest_rotation(proxies)
         fused = fused_proxy(s, g)  # pre-blend the brackets so browsing is instant
@@ -258,7 +258,7 @@ def import_scans(job: Job, sid: str, source: str) -> None:
             if rot and target.get("rot_reason") != "manual":
                 target["rotation"], target["rot_reason"] = rot
             target["feat"] = feats
-            if suggestion and not target.get("reviewed") and target.get("params_source") != "manual":
+            if suggestion and not developed(target) and target.get("params_source") != "manual":
                 target["params"] = Params.from_dict({**target["params"], **suggestion}).to_dict()
                 target["params_source"] = f"learned:{neighbours}"
 
@@ -445,7 +445,7 @@ def _background_renderer():
                 continue
             s = Session(active_session)
             for i, g in enumerate(s.data["groups"]):
-                if (g.get("reviewed") and not g.get("skip") and group_status(g) != "uploaded"
+                if (developed(g) and not g.get("skip") and group_status(g) != "uploaded"
                         and not export_fresh(s, g, i) and not originals_missing(s, g)):
                     render_export(s.id, g["id"], int(load_config().get("jpeg_quality", 95)))
                     break
@@ -465,7 +465,7 @@ def finish_session(job: Job, sid: str, only_ready: bool = False) -> None:
     redate = s.data.get("date_key") != s.data.get("date")  # date changed: every slide needs new EXIF
     st = dict(zip((g["id"] for g in s.data["groups"]), statuses(s.data)))
     todo = [g["id"] for g in s.data["groups"] if not g.get("skip") and (redate or st[g["id"]] != "uploaded")
-            and (g.get("reviewed") or not only_ready)]
+            and (developed(g) or not only_ready)]
     lost = [g["id"] for g in s.data["groups"] if g["id"] in todo and originals_missing(s, g)]
     todo = [x for x in todo if x not in lost]  # nothing to render them from: keep what Immich has
     job.total = len(todo) * 2
@@ -489,7 +489,7 @@ def finish_session(job: Job, sid: str, only_ready: bool = False) -> None:
             except KeyError:  # merged away meanwhile
                 job.done += 1
                 continue
-            if not path or g.get("skip") or (only_ready and not g.get("reviewed")):
+            if not path or g.get("skip") or (only_ready and not developed(g)):
                 job.done += 1
                 continue
             job.message = f"Uploading slide {n} of {len(todo)}"
@@ -520,7 +520,7 @@ def finish_session(job: Job, sid: str, only_ready: bool = False) -> None:
                 if g.get("skip") and g.get("immich"):
                     to_trash.append(g["immich"]["asset_id"])
                     g["immich"] = None
-            if not only_ready or all(g.get("reviewed") or g.get("skip") for g in fresh.data["groups"]):
+            if not only_ready or all(developed(g) or g.get("skip") for g in fresh.data["groups"]):
                 fresh.data["date_key"] = fresh.data.get("date")  # every slide now carries the date
             fresh.log(f"Uploaded {uploaded} slides to album '{fresh.data['album']}'")
 
