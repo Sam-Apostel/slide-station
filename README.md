@@ -30,6 +30,59 @@ See `desktop/README.md`.
 The first time the scanner is plugged in, macOS asks whether Terminal may access removable
 volumes - allow it, otherwise the scanner is not detected.
 
+## In the browser, nothing to install
+
+The same app also runs entirely in the browser, as a static web page with no backend: build it with
+`cd frontend && npm run build:web` and host `frontend/dist-web` anywhere (or `npm run dev:web` to
+try it locally). Drop a folder of scans on the window — the scanner's card or any folder of JPEGs —
+or pick one, develop the slides, then send them to Immich or save the finished JPEGs to disk.
+Nothing leaves your computer except what you send to your own Immich.
+
+- **Library.** In Chrome and Edge you can keep it in a folder on your disk (Settings → Library →
+  Choose folder…); it has the same layout as the desktop app's library, so either app can open it.
+  Elsewhere (Firefox, Safari) it lives in the browser's own storage on this computer.
+- **Saving to disk.** The download button next to "Clean card" saves the developed slides (with
+  their dates in EXIF) into a folder you pick (Chrome, Edge) or as a zip.
+- **Cleaning the card** works in Chrome and Edge when the card was picked or dropped as a folder.
+- **Not in the browser version:** scanner detection (pick the card's folder instead), eject,
+  rotation from faces (the sky rule still runs), background pre-rendering, "show in Finder".
+
+**Connecting Immich.** Immich only answers requests from its own web address (it allows other
+origins in development builds only), so the page has to reach it in one of two ways:
+
+1. *Serve Slide Station from Immich's address* (simplest). With Caddy in front of Immich:
+
+   ```
+   photos.example.com {
+     handle_path /slide-station/* {
+       root * /srv/slide-station   # the contents of frontend/dist-web
+       file_server
+     }
+     reverse_proxy immich-server:2283
+   }
+   ```
+
+   Open `https://photos.example.com/slide-station/` and use `https://photos.example.com` as the
+   Immich URL.
+2. *Let the reverse proxy allow the page's origin* (CORS), answering the browser's preflight
+   itself. With nginx:
+
+   ```
+   location /api/ {
+     if ($request_method = OPTIONS) {
+       add_header Access-Control-Allow-Origin "https://slides.example.com";
+       add_header Access-Control-Allow-Headers "x-api-key, content-type";
+       add_header Access-Control-Allow-Methods "GET, POST, PUT, DELETE";
+       return 204;
+     }
+     add_header Access-Control-Allow-Origin "https://slides.example.com" always;
+     proxy_pass http://immich-server:2283;
+   }
+   ```
+
+A page served over https can't reach an `http://` Immich (other than on localhost). Or skip Immich
+in the browser altogether: save to disk and drop the JPEGs into an Immich album yourself.
+
 ## Set up once
 
 Settings → Immich URL (e.g. `http://your-server:2283`) and an API key
@@ -94,8 +147,11 @@ npm run build   # writes slidestation/web - commit it, the launcher runs without
 ProUI components are added with the shadcn CLI and a licence key in `frontend/.env.local`
 (`PROUI_LICENSE_KEY=...`, gitignored): `scripts/proui-add.sh <name>...` from `frontend/`.
 
-Tests and a mock Immich live in `tests/`. `ARCHITECTURE.md` documents how it works and the
-invariants worth keeping; `ROADMAP.md` what's next.
+The browser version is the same UI built with `npm run build:web` (see above); its pipeline lives
+in `frontend/src/standalone` and `npm test` checks it against the Python one.
+
+Tests and a mock Immich live in `tests/` (`uv run --python 3.12 pytest tests -q`).
+`ARCHITECTURE.md` documents how it works and the invariants worth keeping; `ROADMAP.md` what's next.
 
 ## Licence
 

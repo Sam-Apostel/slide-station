@@ -14,7 +14,14 @@ export type Scan = {
   source_deleted: boolean;
 };
 
-export type Snapshot = { params: Params; rotation: number; rot_reason: string; params_source: string; what?: string; t?: number };
+export type Snapshot = {
+  params: Params;
+  rotation: number;
+  rot_reason: string;
+  params_source: string;
+  what?: string;
+  t?: number;
+};
 
 export type GroupData = {
   id: string;
@@ -73,7 +80,15 @@ export class PyInt {
 const escape = (s: string) =>
   '"' +
   s.replace(/[\\"\u0000-\u001f\u007f-￿]/g, (c) => {
-    const special: Record<string, string> = { "\\": "\\\\", '"': '\\"', "\n": "\\n", "\r": "\\r", "\t": "\\t", "\b": "\\b", "\f": "\\f" };
+    const special: Record<string, string> = {
+      "\\": "\\\\",
+      '"': '\\"',
+      "\n": "\\n",
+      "\r": "\\r",
+      "\t": "\\t",
+      "\b": "\\b",
+      "\f": "\\f",
+    };
     return special[c] ?? "\\u" + c.charCodeAt(0).toString(16).padStart(4, "0");
   }) +
   '"';
@@ -88,7 +103,9 @@ export function pyDumps(v: unknown, sortKeys = false): string {
   if (Array.isArray(v)) return "[" + v.map((x) => pyDumps(x, sortKeys)).join(", ") + "]";
   const keys = Object.keys(v as object);
   if (sortKeys) keys.sort();
-  return "{" + keys.map((k) => `${escape(k)}: ${pyDumps((v as Record<string, unknown>)[k], sortKeys)}`).join(", ") + "}";
+  return (
+    "{" + keys.map((k) => `${escape(k)}: ${pyDumps((v as Record<string, unknown>)[k], sortKeys)}`).join(", ") + "}"
+  );
 }
 
 /**
@@ -101,12 +118,15 @@ export function dumpSession(d: unknown): string {
     if (typeof v === "number") return floats ? pyFloat(v) : Number.isFinite(v) ? JSON.stringify(v) : "null";
     if (typeof v === "boolean" || typeof v === "string") return typeof v === "string" ? escape(v) : String(v);
     const inner = ind + " ";
-    if (Array.isArray(v)) return v.length ? "[\n" + v.map((x) => inner + walk(x, floats, inner)).join(",\n") + "\n" + ind + "]" : "[]";
+    if (Array.isArray(v))
+      return v.length ? "[\n" + v.map((x) => inner + walk(x, floats, inner)).join(",\n") + "\n" + ind + "]" : "[]";
     const entries = Object.entries(v as object).filter(([, x]) => x !== undefined);
     if (!entries.length) return "{}";
     return (
       "{\n" +
-      entries.map(([k, x]) => `${inner}${escape(k)}: ${walk(x, floats || k === "params" || k === "defaults", inner)}`).join(",\n") +
+      entries
+        .map(([k, x]) => `${inner}${escape(k)}: ${walk(x, floats || k === "params" || k === "defaults", inner)}`)
+        .join(",\n") +
       "\n" +
       ind +
       "}"
@@ -160,7 +180,9 @@ export function activeScans(g: GroupData): string[] {
 }
 
 const isNeutral = (k: string, v: unknown) =>
-  (k === "curves" && v && typeof v === "object" && !Object.keys(v).length) || (k === "angle" && v === 0) || (k === "crop" && v === null);
+  (k === "curves" && v && typeof v === "object" && !Object.keys(v).length) ||
+  (k === "angle" && v === 0) ||
+  (k === "crop" && v === null);
 
 /** Identifies the exact output of a slide; changes whenever the result would change. */
 export function renderKey(g: GroupData): string {
@@ -197,7 +219,11 @@ export function parseDate(v: string | undefined): [number, number] | null {
 
 export function formatDate(t: number, precision: number): string {
   const d = new Date(t);
-  const parts = [String(d.getUTCFullYear()).padStart(4, "0"), String(d.getUTCMonth() + 1).padStart(2, "0"), String(d.getUTCDate()).padStart(2, "0")];
+  const parts = [
+    String(d.getUTCFullYear()).padStart(4, "0"),
+    String(d.getUTCMonth() + 1).padStart(2, "0"),
+    String(d.getUTCDate()).padStart(2, "0"),
+  ];
   return parts.slice(0, precision).join("-");
 }
 
@@ -227,7 +253,8 @@ export function slideDates(d: SessionData): DateEst[] {
 }
 
 /** What besides the pixels goes to Immich with a slide: its date and caption. */
-export const metaKey = (g: GroupData, date: DateEst) => sha1Hex(pyDumps([date.value ?? "", g.caption ?? ""])).slice(0, 12);
+export const metaKey = (g: GroupData, date: DateEst) =>
+  sha1Hex(pyDumps([date.value ?? "", g.caption ?? ""])).slice(0, 12);
 
 export function groupStatus(g: GroupData, meta?: string): GroupStatus {
   if (g.skip) return "skipped";

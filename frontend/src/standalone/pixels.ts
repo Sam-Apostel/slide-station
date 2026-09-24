@@ -27,7 +27,8 @@ export function cropped(a: RGB, top: number, bottom: number, left: number, right
   if (t === 0 && l === 0 && b === a.height && r === a.width) return a;
   const ow = r - l;
   const out = rgb(ow, b - t);
-  for (let y = t; y < b; y++) out.data.set(a.data.subarray((y * a.width + l) * 3, (y * a.width + r) * 3), (y - t) * ow * 3);
+  for (let y = t; y < b; y++)
+    out.data.set(a.data.subarray((y * a.width + l) * 3, (y * a.width + r) * 3), (y - t) * ow * 3);
   return out;
 }
 
@@ -44,9 +45,9 @@ export function rotated(a: RGB, degrees: number): RGB {
   for (let y = 0; y < oh; y++) {
     for (let x = 0; x < ow; x++) {
       let sx: number, sy: number;
-      if (rot === 90) (sx = y), (sy = h - 1 - x);
-      else if (rot === 180) (sx = w - 1 - x), (sy = h - 1 - y);
-      else (sx = w - 1 - y), (sy = x);
+      if (rot === 90) ((sx = y), (sy = h - 1 - x));
+      else if (rot === 180) ((sx = w - 1 - x), (sy = h - 1 - y));
+      else ((sx = w - 1 - y), (sy = x));
       const si = (sy * w + sx) * 3;
       const di = (y * ow + x) * 3;
       d[di] = s[si];
@@ -61,7 +62,8 @@ export function rotated(a: RGB, degrees: number): RGB {
 export function gray(a: RGB): Plane {
   const out = plane(a.width, a.height);
   const s = a.data;
-  for (let i = 0; i < out.data.length; i++) out.data[i] = 0.299 * s[i * 3] + 0.587 * s[i * 3 + 1] + 0.114 * s[i * 3 + 2];
+  for (let i = 0; i < out.data.length; i++)
+    out.data[i] = 0.299 * s[i * 3] + 0.587 * s[i * 3 + 1] + 0.114 * s[i * 3 + 2];
   return out;
 }
 
@@ -88,15 +90,15 @@ function areaWeights(n: number, m: number): Taps {
       f = f <= 0 ? 0 : f - Math.floor(f);
       const i0 = Math.min(n - 1, sx);
       const i1 = Math.min(n - 1, sx + 1);
-      if (i0 === i1 || f === 0) idx.push(i0), wt.push(1);
-      else idx.push(i0, i1), wt.push(1 - f, f);
+      if (i0 === i1 || f === 0) (idx.push(i0), wt.push(1));
+      else (idx.push(i0, i1), wt.push(1 - f, f));
       continue;
     }
     const a = j * scale;
     const b = a + scale;
     for (let i = Math.floor(a); i < b && i < n; i++) {
       const cover = Math.min(b, i + 1) - Math.max(a, i);
-      if (cover > 1e-9) idx.push(i), wt.push(cover / scale);
+      if (cover > 1e-9) (idx.push(i), wt.push(cover / scale));
     }
   }
   start[m] = idx.length;

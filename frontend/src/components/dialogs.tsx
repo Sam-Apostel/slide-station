@@ -17,7 +17,7 @@ import { Kbd } from "@/components/ui/kbd";
 import { Label } from "@/components/ui/label";
 import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select";
 import { desktop, isMac } from "@/lib/desktop";
-import { api, sourceLabel, type AppState, type Config, type Group, type Source } from "@/lib/api";
+import { api, sourceLabel, standalone, type AppState, type Config, type Group, type Source } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
 const primary = "bg-primary text-primary-foreground";
@@ -145,6 +145,13 @@ export function SettingsDialog({
               <FieldDescription>
                 Create one in Immich → Account settings → API keys. It needs: asset.upload, asset.delete, album.read,
                 album.create, albumAsset.create — and asset.view to show locked slides as they are in Immich.
+                {standalone && (
+                  <>
+                    {" "}
+                    It is kept in this browser only. Immich has to accept requests from this page: serve Slide Station
+                    from Immich's own address, or let its reverse proxy allow {location.origin} (CORS).
+                  </>
+                )}
               </FieldDescription>
             </Field>
             <div className="flex items-center gap-3">
@@ -164,14 +171,18 @@ export function SettingsDialog({
                 </span>
               )}
             </div>
-            <Field>
-              <FieldLabel htmlFor="cfg-lib">Library folder</FieldLabel>
-              <FolderInput id="cfg-lib" value={library} onChange={setLibrary} pickerTitle="Library folder" />
-              <FieldDescription>
-                Originals, previews and finished JPEGs live here. With the defaults that's about 6 MB per slide (60 GB
-                for 10,000), so an external drive is a good home.
-              </FieldDescription>
-            </Field>
+            {standalone ? (
+              <BrowserLibrary config={config} />
+            ) : (
+              <Field>
+                <FieldLabel htmlFor="cfg-lib">Library folder</FieldLabel>
+                <FolderInput id="cfg-lib" value={library} onChange={setLibrary} pickerTitle="Library folder" />
+                <FieldDescription>
+                  Originals, previews and finished JPEGs live here. With the defaults that's about 6 MB per slide (60 GB
+                  for 10,000), so an external drive is a good home.
+                </FieldDescription>
+              </Field>
+            )}
             <CheckRow id="cfg-keep" checked={keepOriginals} onChange={setKeepOriginals}>
               Keep original scans after upload (safest, ~5 MB per slide)
             </CheckRow>
@@ -223,6 +234,51 @@ export function SettingsDialog({
   );
 }
 
+/** Browser version: where the library lives, and moving it to a folder on disk (Chrome, Edge). */
+function BrowserLibrary({ config }: { config: Config | undefined }) {
+  const canPick = "showDirectoryPicker" in window;
+  const where =
+    config?.storage === "disk"
+      ? `The folder “${config.library}” on your disk.`
+      : config?.storage === "browser"
+        ? "This browser's own storage, on this computer. Clearing the site's data deletes it."
+        : "This tab only: nothing is kept when you close it.";
+  const choose = async () => {
+    const boot = await import("@/standalone/boot");
+    if (await boot.chooseLibraryFolder()) toast.success("Library moved to the folder you picked");
+  };
+  const browser = async () => {
+    const boot = await import("@/standalone/boot");
+    await boot.switchToBrowserStorage();
+    toast.success("Using this browser's storage");
+  };
+  return (
+    <Field>
+      <FieldLabel>Library</FieldLabel>
+      <div className="flex items-center gap-1.5">
+        <span className="min-w-0 flex-1 truncate text-[12px]">{where}</span>
+        {canPick && (
+          <Button type="button" onClick={choose}>
+            Choose folder…
+          </Button>
+        )}
+        {config?.storage === "disk" && (
+          <Button type="button" variant="outline" onClick={browser}>
+            Use browser
+          </Button>
+        )}
+      </div>
+      <FieldDescription>
+        Originals, previews and finished JPEGs live here, about 6 MB per slide.{" "}
+        {canPick
+          ? "A folder on disk has the same layout as the desktop app's library, so either app can open it."
+          : "To keep the library in a folder on disk, use Chrome or Edge (or the desktop app)."}{" "}
+        Trays already in one place stay there when you switch.
+      </FieldDescription>
+    </Field>
+  );
+}
+
 function CheckRow({
   id,
   checked,
@@ -256,6 +312,7 @@ export function NewTrayDialog({
   preferSource,
   preferFolder,
   onCreate,
+  onChooseFolder,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -264,6 +321,8 @@ export function NewTrayDialog({
   /** Opened from a dropped or picked folder: import that. */
   preferFolder?: string;
   onCreate: (body: { name: string; album: string; date: string }, source: string) => void;
+  /** Browser version: pick a folder of scans to import (resolves to the new source). */
+  onChooseFolder?: () => Promise<Source | null>;
 }) {
   const sources = (state?.sources ?? []).filter((x) => x.count > 0);
   const [name, setName] = React.useState("");
@@ -330,15 +389,33 @@ export function NewTrayDialog({
             </Field>
             <Field>
               <FieldLabel htmlFor="n-source">Import from</FieldLabel>
-              <NativeSelect id="n-source" className="w-full" value={source} onChange={(e) => setSource(e.target.value)}>
-                {sources.map((x) => (
-                  <NativeSelectOption key={x.path} value={x.path}>
-                    {sourceLabel(x)} ({x.new} new of {x.count})
-                  </NativeSelectOption>
-                ))}
-                <NativeSelectOption value={FOLDER}>A folder on this Mac…</NativeSelectOption>
-                <NativeSelectOption value={NOTHING}>Nothing yet</NativeSelectOption>
-              </NativeSelect>
+              <div className="flex gap-1.5">
+                <NativeSelect
+                  id="n-source"
+                  className="w-full min-w-0 flex-1"
+                  value={source}
+                  onChange={(e) => setSource(e.target.value)}
+                >
+                  {sources.map((x) => (
+                    <NativeSelectOption key={x.path} value={x.path}>
+                      {sourceLabel(x)} ({x.new} new of {x.count})
+                    </NativeSelectOption>
+                  ))}
+                  {!standalone && <NativeSelectOption value={FOLDER}>A folder on this Mac…</NativeSelectOption>}
+                  <NativeSelectOption value={NOTHING}>Nothing yet</NativeSelectOption>
+                </NativeSelect>
+                {onChooseFolder && (
+                  <Button
+                    type="button"
+                    onClick={async () => {
+                      const src = await onChooseFolder();
+                      if (src) setSource(src.path);
+                    }}
+                  >
+                    Choose folder…
+                  </Button>
+                )}
+              </div>
             </Field>
             {source === FOLDER && (
               <Field>

@@ -1,7 +1,8 @@
 """Mock Immich server for development. Run: uv run --with fastapi --with uvicorn python tests/fake_immich.py
 
 Set MOCK_IMMICH_MAJOR=1|2|3 to test the version-dependent upload fields (v1/v2 require
-deviceAssetId + deviceId, v3 rejects them).
+deviceAssetId + deviceId, v3 rejects them). MOCK_IMMICH_CORS=1 lets other origins in (the browser
+version calls Immich from the page).
 """
 import os
 import uuid
@@ -12,6 +13,12 @@ from fastapi import FastAPI, Header, HTTPException, Request
 MAJOR = int(os.environ.get("MOCK_IMMICH_MAJOR", "3"))
 KEY = os.environ.get("MOCK_IMMICH_KEY", "testkey")
 app = FastAPI()
+if os.environ.get("MOCK_IMMICH_CORS"):
+    # a real Immich only allows other origins in development builds; the browser version's test
+    # (tests/web_flow.py) plays a reverse proxy that allows them
+    from fastapi.middleware.cors import CORSMiddleware
+
+    app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 DB = {"albums": {}, "assets": {}, "log": []}
 
 

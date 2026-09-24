@@ -5,13 +5,15 @@ import { Tip } from "@/components/tip";
 import { CropBar, CropOverlay, FULL, fitAspect, maxAspect, moveRect, resizeRect, type Rect } from "@/components/crop";
 import { ProButton } from "@/components/ui/pro-button";
 import { Spinner } from "@/components/ui/spinner";
-import { previewUrl, scanThumbUrl, type Group, type SessionPayload } from "@/lib/api";
+import { imageSrc, previewUrl, scanThumbUrl, useImageSrc, type Group, type SessionPayload } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { STATUS_DOT, STATUS_LABEL, STATUS_TEXT } from "@/components/filmstrip";
 
 /** Loads the wanted preview off-screen and only swaps it in once decoded, so browsing never flashes. */
 function usePreloadedImage(url: string | null, warm: string | null) {
-  const [shown, setShown] = React.useState<string | null>(null);
+  // `for` is the API URL the shown image answers; `src` what the <img> loads (the same URL, or in
+  // the browser version an object URL of the render)
+  const [shown, setShown] = React.useState<{ for: string; src: string } | null>(null);
   const [loading, setLoading] = React.useState(false);
   React.useEffect(() => {
     if (!url) {
@@ -21,21 +23,33 @@ function usePreloadedImage(url: string | null, warm: string | null) {
     }
     let live = true;
     setLoading(true);
-    const img = new Image();
-    img.onload = () => {
-      if (!live) return;
-      setShown(url);
-      setLoading(false);
-    };
-    img.onerror = () => live && setLoading(false);
-    img.src = url;
+    imageSrc(url, 10).then(
+      (src) => {
+        if (!live) return;
+        const img = new Image();
+        img.onload = () => {
+          if (!live) return;
+          setShown({ for: url, src });
+          setLoading(false);
+        };
+        img.onerror = () => live && setLoading(false);
+        img.src = src;
+      },
+      () => live && setLoading(false),
+    );
     // warm the next slide so arrow-key browsing feels instant
-    if (warm) new Image().src = warm;
+    if (warm) imageSrc(warm, 5).then((src) => void (new Image().src = src), () => undefined);
     return () => {
       live = false;
     };
   }, [url, warm]);
-  return { shown, loading: loading && shown !== url };
+  return { shown: shown?.src ?? null, loading: loading && shown?.for !== url };
+}
+
+/** A scan thumbnail from the API. */
+function ScanThumb({ url, ...props }: { url: string } & Omit<React.ComponentProps<"img">, "src">) {
+  const src = useImageSrc(url, 3);
+  return src ? <img src={src} {...props} /> : <span className={props.className} />;
 }
 
 /** Where a click lands on an object-fit: contain image, as 0..1 of the picture (null: on the letterbox). */
@@ -362,11 +376,11 @@ export function Stage({
                     off && "border-dashed",
                   )}
                 >
-                  <img
-                    src={scanThumbUrl(sessionId, sc)}
+                  <ScanThumb
+                    url={scanThumbUrl(sessionId, sc)}
                     alt=""
                     draggable={false}
-                    className={cn("block h-[52px]", off && "opacity-35")}
+                    className={cn("block h-[52px] min-w-[52px]", off && "opacity-35")}
                   />
                   <span className="absolute top-px left-[3px] text-[10px] [text-shadow:0_1px_2px_#000]">{k + 1}</span>
                   {off && g.auto_excluded?.[sc] && (

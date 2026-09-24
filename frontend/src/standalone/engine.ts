@@ -22,7 +22,8 @@ export class Engine {
       this.worker.onerror = (e) => {
         // a crash (usually out of memory on a huge export) fails everything waiting, and the next
         // call starts a fresh worker
-        for (const p of this.pending.values()) p.reject(new Error(e.message || "The image worker stopped (out of memory?)"));
+        for (const p of this.pending.values())
+          p.reject(new Error(e.message || "The image worker stopped (out of memory?)"));
         this.pending.clear();
         this.worker?.terminate();
         this.worker = null;

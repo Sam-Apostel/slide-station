@@ -10,15 +10,24 @@ plenty.
 
 ## 0. Open now
 
-Small, known items (the old handoff's leftovers):
+Small, known items:
 
-- **Browser test script** — `tests/ui_flow.py` predates the Develop button, the Frame section and
-  the panel cleanup; update its selectors, and add backend tests for curves, crop, undo, dates and
-  locked slides.
-- **Crop tool polish** — with a locked aspect ratio an edge drag that hits the photo's border stops
-  instead of sliding along it; keyboard nudging.
-- **Learning** — also learn curves (and maybe crop) from developed slides, not only the sliders.
-- **Dates** — date a range of slides at once ("12–31: Aug 1978").
+- **Swift parity for the latest features** — learned tone curves (`Learning.swift`,
+  `testLearnedCurvesMatchPython`) and "Date a range…" were ported to the native app without a Swift
+  toolchain at hand: run `swift test` on a Mac and try the popover in the simulator.
+- **Dedupe fingerprint** — import skips a file whose name, size and modification time (to the
+  second) match one already imported, before comparing content. A different scan matching all three
+  (e.g. the scanner restarting its numbering) would be skipped silently; check the SHA-1 when the
+  fingerprint hits but the tray doesn't have that scan.
+- **Crop keys on Windows / Linux** — Alt+← is also the browser's Back; the crop tool calls
+  `preventDefault`, confirm that's enough there.
+- **Browser version** (see §4):
+  - rotation from faces (today only the sky rule runs in the browser): YuNet through
+    onnxruntime-web, or the Shape Detection API where a browser has it;
+  - pre-render developed slides in the background like the desktop app, so uploading is network time;
+  - scans above ~16 MP in Safari on iPad / iPhone (its canvas limit): decode and encode in strips;
+  - publish it: confirm the ProUI licence terms for a hosted copy, then run the "Web version"
+    workflow (GitHub Pages).
 
 ## 1. Understand the tray (local models, no cloud)
 
@@ -100,20 +109,29 @@ card cleanup, locked slides). Full-resolution export: 1 s / 1.1 GB for a 20 MP b
 the real scanner on a real iPad (phase 1) and measuring memory there. The ProUI template apps
 (image editor, video editor, DAW…) had nothing to port beyond the kit itself.
 
-**Phases**
+**Phases left** (SlideKit, Simple mode and Studio mode are done, see the status above)
 
-1. *Spike (days):* scanner on the iPad in Files; a tiny app that picks the card, bookmarks it,
-   notices reconnection, lists and copies scans.
-2. *SlideKit:* port the pipeline with parity tests; run it in the simulator and on the device.
-3. *Simple mode* end to end (import → keep/skip → Immich) — the version to hand over.
-4. *Studio mode* with the ProUI Swift components.
-5. Optional: the Mac on the same code; sync trays between devices (iCloud), so a tray started on
+1. *On the device (days):* the scanner on the iPad in Files — the app picks the card, bookmarks
+   it, notices reconnection, lists and copies scans; then a real tray through Simple mode, and
+   memory measured on that iPad model.
+2. Optional: the Mac on the same code; sync trays between devices (iCloud), so a tray started on
    the iPad can be finished on the Mac.
 
 (The lighter alternative — the iPad as a browser client of the Mac server over the LAN — is still
 cheap, but needs the Mac on, which defeats the "on her own" goal.)
 
 ## 4. Hosted Slide Station (for other people's Immich)
+
+**Done: the browser version** (`frontend/src/standalone`, `npm run build:web`). The whole app as a
+static site, no backend: drop a folder of scans (or pick one), develop, then send the slides to
+your Immich or save the finished JPEGs to disk. The pipeline runs in web workers, parity-tested
+against `imaging.py`; the library is a folder on disk (Chrome, Edge — the same layout as the
+desktop app's, so either can open it) or the browser's own storage. Immich must accept requests
+from the page (serve it from Immich's address, or CORS on the reverse proxy — README). Missing
+compared to the desktop app: scanner detection, eject, rotation from faces, background
+pre-rendering, "show in Finder". Open items are in §0.
+
+Later, if people want their server to do the work instead of their browser:
 
 - **Shape:** a container that sits next to Immich (same docker-compose), not a SaaS that holds
   photos. Users drop folders (or a zip) in the browser; processing happens on their own server;
@@ -124,7 +142,8 @@ cheap, but needs the Mac on, which defeats the "on her own" goal.)
 - **Then:** an Immich "external library" watcher (scan folders the user drops into a share), and
   eventually an Immich plugin/app if their plugin system lands.
 - **Licensing check first:** ProUI is proprietary — a hosted/distributed version needs its licence
-  terms confirmed (or the UI kit swapped) before shipping to other people.
+  terms confirmed (or the UI kit swapped) before shipping to other people. This applies to
+  publishing the browser version too.
 
 ## 5. Capture
 
@@ -149,14 +168,14 @@ cheap, but needs the Mac on, which defeats the "on her own" goal.)
 
 ### Suggested order
 
-Done so far: undo, aligned split compare, best-of-bracket, tray-order date estimation.
+Done so far: undo, aligned split compare, best-of-bracket, tray-order date estimation, API tests
+and the updated browser flow, crop polish, learned tone curves, dating a range of slides, the
+browser version, SlideKit with Simple and Studio mode (in the simulator).
 
-1. §0 "Open now" — tests first, since a lot changed quickly
-2. iPad spike (§3 phase 1) — cheap, and it decides a lot
-3. Insights plumbing + tags (on the Mac with CLIP, or straight into SlideKit with Vision if the
-   iPad goes ahead)
-4. SlideKit + Simple mode on the iPad
-5. Faces → people, location, mount OCR
-6. Immich round-trip (pull back, metadata sync, stacks)
-7. VLM captions, damage repair, film-stock profiles
-8. Hosted container
+1. The iPad on the device (§3) — cheap, and it decides a lot
+2. Publish the browser version (licence check first, §4)
+3. Insights plumbing + tags (on the Mac with CLIP, or straight into SlideKit with Vision)
+4. Faces → people, location, mount OCR
+5. Immich round-trip (pull back, metadata sync, stacks)
+6. VLM captions, damage repair, film-stock profiles
+7. Hosted container

@@ -1,12 +1,12 @@
 import type * as React from "react";
-import { CircleHelp, HardDriveDownload, Plus, Settings } from "lucide-react";
+import { CircleHelp, FolderInput, HardDriveDownload, Plus, Settings } from "lucide-react";
 import { ProButton } from "@/components/ui/pro-button";
 import { Tip } from "@/components/tip";
 import { desktop, isMac } from "@/lib/desktop";
 import { ProSeparator, ProToolbar } from "@/components/ui/pro-toolbar";
 import { ProTitlebarWell } from "@/components/ui/pro-titlebar";
 import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select";
-import { plural, sourceLabel, type AppState, type Source } from "@/lib/api";
+import { plural, sourceLabel, standalone, type AppState, type Source } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
 /** Shows a job for a few seconds after it finishes, and failures until the next job. */
@@ -23,6 +23,8 @@ type TopBarProps = {
   onNewTray: () => void;
   onImport: (src: Source) => void;
   onEject: (src: Source) => void;
+  /** Browser version: pick a folder of scans (there is no scanner to wait for). */
+  onChooseFolder?: () => void;
   onHelp: () => void;
   onSettings: () => void;
 };
@@ -67,8 +69,9 @@ export function ActivityWell({
   state,
   onImport,
   onEject,
+  onChooseFolder,
   className,
-}: Pick<TopBarProps, "state" | "onImport" | "onEject"> & { className?: string }) {
+}: Pick<TopBarProps, "state" | "onImport" | "onEject" | "onChooseFolder"> & { className?: string }) {
   const src = state?.sources.find((x) => x.new > 0) ?? state?.sources[0];
   const job = visibleJob(state);
   return (
@@ -119,9 +122,20 @@ export function ActivityWell({
             <ProButton active onClick={() => onImport(src)}>
               <HardDriveDownload /> Import
             </ProButton>
+          ) : standalone ? (
+            <ProButton onClick={onChooseFolder}>
+              <FolderInput /> Another folder
+            </ProButton>
           ) : (
             <ProButton onClick={() => onEject(src)}>Eject</ProButton>
           )}
+        </>
+      ) : standalone ? (
+        <>
+          <span className="min-w-0 truncate pl-1 text-muted-foreground">Drop a folder of scans, or</span>
+          <ProButton active onClick={onChooseFolder}>
+            <FolderInput /> Choose folder
+          </ProButton>
         </>
       ) : (
         <span className="px-1 text-muted-foreground">Waiting for the scanner…</span>

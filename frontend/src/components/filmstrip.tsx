@@ -1,10 +1,33 @@
 import * as React from "react";
 import { Lock, RotateCw } from "lucide-react";
 import { ProScope, ProScopebar } from "@/components/ui/pro-toolbar";
-import { needsReview, plural, previewUrl, type Group, type GroupStatus, type SessionPayload } from "@/lib/api";
+import {
+  needsReview,
+  plural,
+  previewUrl,
+  standalone,
+  useImageSrc,
+  type Group,
+  type GroupStatus,
+  type SessionPayload,
+} from "@/lib/api";
 import { cn } from "@/lib/utils";
 
 export type Filter = "all" | "todo" | "multi";
+
+/** A filmstrip thumbnail. The browser version renders only the ones scrolled into view. */
+function PreviewImg({ url, ...props }: { url: string } & Omit<React.ComponentProps<"img">, "src">) {
+  const [el, setEl] = React.useState<HTMLElement | null>(null);
+  const [seen, setSeen] = React.useState(!standalone);
+  React.useEffect(() => {
+    if (seen || !el) return;
+    const io = new IntersectionObserver((e) => e.some((x) => x.isIntersecting) && setSeen(true), { rootMargin: "400px" });
+    io.observe(el);
+    return () => io.disconnect();
+  }, [el, seen]);
+  const src = useImageSrc(seen ? url : null, 0);
+  return src ? <img loading="lazy" src={src} {...props} /> : <span ref={setEl} className={props.className} />;
+}
 
 const FILTERS: [Filter, string][] = [
   ["all", "All"],
@@ -125,9 +148,8 @@ export function Filmstrip({
             >
               {/* the mount's window, with the photo sunk into it */}
               <span className="ss-mount-window">
-                <img
-                  loading="lazy"
-                  src={previewUrl(sessionId, g, 320)}
+                <PreviewImg
+                  url={previewUrl(sessionId, g, 320)}
                   alt=""
                   draggable={false}
                   onLoad={(e) => {

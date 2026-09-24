@@ -9,7 +9,10 @@ export class Immich {
   private base: string;
   private major: number | null = null;
 
-  constructor(url: string, private key: string) {
+  constructor(
+    url: string,
+    private key: string,
+  ) {
     if (!url || !key) throw new ImmichError("Immich URL and API key are not set (Settings).");
     let u = url.trim().replace(/\/+$/, "");
     if (u.endsWith("/api")) u = u.slice(0, -4);
@@ -17,7 +20,12 @@ export class Immich {
     this.key = key.trim();
   }
 
-  private async req(method: string, path: string, body?: BodyInit | object, accept = "application/json"): Promise<Response> {
+  private async req(
+    method: string,
+    path: string,
+    body?: BodyInit | object,
+    accept = "application/json",
+  ): Promise<Response> {
     const headers: Record<string, string> = { "x-api-key": this.key, Accept: accept };
     let payload: BodyInit | undefined;
     if (body instanceof FormData || body instanceof Blob) payload = body;
@@ -36,7 +44,8 @@ export class Immich {
       throw new ImmichError(
         `The API key lacks a permission for ${path} (403). Give it asset.upload, asset.delete, album.read, album.create and albumAsset.create.`,
       );
-    if (r.status >= 400) throw new ImmichError(`Immich ${method} ${path} failed: ${r.status} ${(await r.text()).slice(0, 300)}`);
+    if (r.status >= 400)
+      throw new ImmichError(`Immich ${method} ${path} failed: ${r.status} ${(await r.text()).slice(0, 300)}`);
     return r;
   }
 
@@ -59,7 +68,8 @@ export class Immich {
   }
 
   async addToAlbum(album: string, ids: string[]) {
-    for (let i = 0; i < ids.length; i += 200) await this.req("PUT", `/albums/${album}/assets`, { ids: ids.slice(i, i + 200) });
+    for (let i = 0; i < ids.length; i += 200)
+      await this.req("PUT", `/albums/${album}/assets`, { ids: ids.slice(i, i + 200) });
   }
 
   /** Upload a JPEG. Returns [asset id, created / duplicate / replaced]. */
@@ -99,7 +109,11 @@ export function unreachable(base: string): string {
       return base;
     }
   })();
-  if (location.protocol === "https:" && origin.startsWith("http:") && !/^http:\/\/(localhost|127\.0\.0\.1)/.test(origin))
+  if (
+    location.protocol === "https:" &&
+    origin.startsWith("http:") &&
+    !/^http:\/\/(localhost|127\.0\.0\.1)/.test(origin)
+  )
     return `This page is served over https, so the browser won't talk to ${origin} over plain http. Use Immich's https address.`;
   return (
     `Couldn't reach Immich at ${origin} from the browser. Either it's offline, or it doesn't allow requests ` +

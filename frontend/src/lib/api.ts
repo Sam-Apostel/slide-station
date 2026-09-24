@@ -1,5 +1,10 @@
-// Typed client for the Python API (slidestation/server.py).
+// Typed client for the Python API (slidestation/server.py). The browser-only build answers the
+// same API inside the page (src/standalone/server.ts) — same routes, same payloads.
+import * as React from "react";
 import type { Curves } from "@/lib/curves";
+
+/** Built with `npm run build:web`: no backend, everything in the browser. */
+export const standalone = import.meta.env.VITE_STANDALONE === "1";
 
 export type Params = {
   strength: number;
@@ -98,6 +103,8 @@ export type Job = {
 
 export type Config = {
   library: string;
+  /** Browser version only: where the library lives. */
+  storage?: "disk" | "browser" | "memory";
   immich_url: string;
   has_key: boolean;
   keep_originals: boolean;
@@ -113,6 +120,10 @@ export type AppState = {
 };
 
 export async function api<T = unknown>(method: string, url: string, body?: unknown): Promise<T> {
+  if (standalone) {
+    const server = await import("@/standalone/server");
+    return (await server.handle(method, url, (body ?? {}) as Record<string, unknown>)) as T;
+  }
   const r = await fetch(url, {
     method,
     headers: body ? { "Content-Type": "application/json" } : {},
@@ -137,6 +148,61 @@ export const histogramUrl = (sid: string, g: Group) =>
   `/api/sessions/${sid}/groups/${g.id}/histogram?v=${g.tone_key}`;
 
 export const scanThumbUrl = (sid: string, scan: string) => `/api/sessions/${sid}/scans/${scan}/thumb.jpg`;
+
+// ---------------------------------------------------------------- images
+
+/** Rendered images by URL, as object URLs (browser version), oldest first. */
+const images = new Map<string, string>();
+const rendering = new Map<string, Promise<string>>();
+const IMAGES_MAX = 400;
+
+/**
+ * What to put in an <img src> for an API image URL. The server answers those URLs itself; the
+ * browser version renders them in a worker and hands back an object URL, cached like the server's
+ * HTTP cache: only a render of the key the URL names is kept. `priority` puts the photo on screen
+ * ahead of filmstrip thumbnails.
+ */
+export function imageSrc(url: string, priority = 0): Promise<string> {
+  if (!standalone) return Promise.resolve(url);
+  const hit = images.get(url);
+  if (hit) return Promise.resolve(hit);
+  const busy = rendering.get(url);
+  if (busy) return busy;
+  const p = import("@/standalone/server")
+    .then((server) => server.image(url, priority))
+    .then(({ blob, fresh }) => {
+      const src = URL.createObjectURL(blob);
+      if (fresh) {
+        images.set(url, src);
+        for (const [k, v] of images) {
+          if (images.size <= IMAGES_MAX) break;
+          images.delete(k);
+          URL.revokeObjectURL(v);
+        }
+      }
+      return src;
+    })
+    .finally(() => rendering.delete(url));
+  rendering.set(url, p);
+  return p;
+}
+
+/** imageSrc as a hook: null until the image is ready. */
+export function useImageSrc(url: string | null, priority = 0): string | null {
+  const [src, setSrc] = React.useState<string | null>(standalone ? (url && (images.get(url) ?? null)) : url);
+  React.useEffect(() => {
+    if (!standalone || !url) return setSrc(url);
+    let live = true;
+    imageSrc(url, priority).then(
+      (s) => live && setSrc(s),
+      () => undefined,
+    );
+    return () => {
+      live = false;
+    };
+  }, [url, priority]);
+  return src;
+}
 
 export const needsReview = (g: Group) => !g.reviewed && !g.skip && g.status !== "uploaded";
 

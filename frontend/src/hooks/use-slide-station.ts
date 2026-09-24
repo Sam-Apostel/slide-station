@@ -1,7 +1,17 @@
 import * as React from "react";
 import { toast } from "sonner";
 import { desktop } from "@/lib/desktop";
-import { api, needsReview, plural, type AppState, type Group, type Params, type SessionPayload } from "@/lib/api";
+import {
+  api,
+  needsReview,
+  plural,
+  standalone,
+  type AppState,
+  type Group,
+  type Params,
+  type SessionPayload,
+  type Source,
+} from "@/lib/api";
 
 const NEUTRAL = { brightness: 0, contrast: 0, warmth: 0, tint: 0, saturation: 0, curves: {} };
 const POLL_MS = 2000;
@@ -447,6 +457,36 @@ export function useSlideStation() {
     }
   };
 
+  /** Save finished JPEGs to disk instead of Immich (browser version): a folder you pick, or a zip. */
+  const startSave = async (onlyReady = false) => {
+    try {
+      await api("POST", `/api/sessions/${ref.current.sessionId}/finish`, { only_ready: onlyReady, target: "disk" });
+      refreshState();
+    } catch (e) {
+      fail(e);
+    }
+  };
+
+  /** Browser version: a folder of scans picked, or dropped on the window, as an import source. */
+  const addSource = async (how: "pick" | DataTransfer): Promise<Source | null> => {
+    if (!standalone) return null;
+    try {
+      const pick = await import("@/standalone/pick");
+      const id = await (how === "pick" ? pick.chooseFolder() : pick.fromDrop(how));
+      if (!id) {
+        if (how !== "pick") toast("Drop a folder of scans (JPEGs)");
+        return null;
+      }
+      await refreshState();
+      const src = ref.current.state?.sources.find((x) => x.path === id) ?? null;
+      if (src && !src.count) toast(`No JPEG scans in “${src.name}”`);
+      return src && src.count ? src : null;
+    } catch (e) {
+      fail(e);
+      return null;
+    }
+  };
+
   const startCleanup = async () => {
     try {
       await api("POST", `/api/sessions/${ref.current.sessionId}/cleanup`);
@@ -503,6 +543,8 @@ export function useSlideStation() {
     startImport,
     createSession,
     startUpload,
+    startSave,
+    addSource,
     startCleanup,
     eject,
     reveal,

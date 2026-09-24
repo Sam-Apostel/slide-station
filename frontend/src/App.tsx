@@ -18,7 +18,7 @@ import { DateRangeDialog, HelpDialog, NewTrayDialog, SettingsDialog } from "@/co
 import { PanelToggles, WindowTitlebar } from "@/components/window-titlebar";
 import { useSlideStation, type SlideStation } from "@/hooks/use-slide-station";
 import { useDesktop, useFolderDrop, type DesktopHandlers } from "@/hooks/use-desktop";
-import { needsReview, plural, type Source } from "@/lib/api";
+import { needsReview, plural, standalone, type Source } from "@/lib/api";
 import { desktop, isMac } from "@/lib/desktop";
 
 type Panels = { filmstrip: boolean; inspector: boolean };
@@ -111,6 +111,11 @@ function SlideStationApp() {
 
   const openNew = (src?: Source, folder?: string) => setNewTray({ open: true, source: src, folder });
   const importFolder = async (folder?: string) => {
+    if (standalone) {
+      // the browser version: pick a folder, then import it like a card
+      const src = await app.addSource("pick");
+      return src ? openImport(src) : undefined;
+    }
     const path = folder ?? (await desktop?.pickFolder({ title: "Import scans from a folder", buttonLabel: "Import" }));
     if (desktop && !path) return; // cancelled the picker
     openNew(undefined, path ?? "");
@@ -139,7 +144,16 @@ function SlideStationApp() {
    */
   const upload = async (scope?: "ready" | "all") => {
     if (!session || !state) return;
-    if (!state.config.has_key || !state.config.immich_url) return setSettingsOpen(true);
+    if (!state.config.has_key || !state.config.immich_url) {
+      if (!standalone) return setSettingsOpen(true);
+      const toDisk = await confirm({
+        title: "No Immich server set up",
+        description: "Save the finished slides to your disk instead? Or connect Immich in Settings.",
+        confirmLabel: "Save to disk",
+        cancelLabel: "Set up Immich",
+      });
+      return toDisk ? save() : setSettingsOpen(true);
+    }
     const undeveloped = session.groups.filter(needsReview).length;
     const ready = session.summary.ready_upload;
     if ((scope ?? (ready ? "ready" : "all")) === "ready" && undeveloped) return app.startUpload(true);
@@ -155,8 +169,27 @@ function SlideStationApp() {
     app.startUpload();
   };
 
+  /** Browser version: the finished JPEGs to disk — the developed ones, or (asking first) all of them. */
+  const save = async () => {
+    if (!session) return;
+    const developed = session.groups.filter((g) => g.reviewed && !g.skip).length;
+    if (!developed) {
+      const ok = await confirm({
+        title: "No slide has been developed yet",
+        description: "Save all of them with the automatic settings?",
+        confirmLabel: "Save all",
+      });
+      if (!ok) return;
+    }
+    app.startSave(developed > 0);
+  };
+
   /** Import this tray's scans again: from the connected card, else a folder you pick (desktop). */
   const reimport = async () => {
+    if (standalone) {
+      const picked = await app.addSource("pick");
+      return picked ? app.startImport(sessionId, picked.path) : undefined;
+    }
     const src = state?.sources.find((x) => x.count > 0);
     if (src) return app.startImport(sessionId, src.path);
     const path = await desktop?.pickFolder({ title: "Folder with this tray's scans", buttonLabel: "Import" });
@@ -190,7 +223,10 @@ function SlideStationApp() {
   };
   useKeyboard(app, setBefore, () => setHelpOpen(true), () => setPaletteOpen(true), setPicking, setCropping, setCompare);
   useDesktop(app, panels, handlers);
-  const dropping = useFolderDrop((path) => importFolder(path));
+  const dropping = useFolderDrop(
+    (path) => importFolder(path),
+    standalone ? (dt) => void app.addSource(dt).then((src) => src && openImport(src)) : undefined,
+  );
 
   const toggles = session ? (
     <PanelToggles
@@ -224,7 +260,14 @@ function SlideStationApp() {
               onNewTray={() => openNew()}
             />
           }
-          center={<ActivityWell state={state} onImport={openImport} onEject={(src) => app.eject(src.path)} />}
+          center={
+            <ActivityWell
+              state={state}
+              onImport={openImport}
+              onEject={(src) => app.eject(src.path)}
+              onChooseFolder={() => importFolder()}
+            />
+          }
           right={
             <>
               {toggles}
@@ -241,6 +284,7 @@ function SlideStationApp() {
           onNewTray={() => openNew()}
           onImport={openImport}
           onEject={(src) => app.eject(src.path)}
+          onChooseFolder={() => importFolder()}
           onHelp={() => setHelpOpen(true)}
           onSettings={() => setSettingsOpen(true)}
         />
@@ -329,6 +373,7 @@ function SlideStationApp() {
                     cropping={cropping}
                     onCrop={() => app.current?.locked || setCropping((v) => !v)}
                     onReimport={reimport}
+                    onSave={standalone ? save : undefined}
                     onDateRange={() => setDateRangeOpen(true)}
                   />
                 </ResizablePanel>
@@ -379,6 +424,7 @@ function SlideStationApp() {
         preferSource={newTray.source}
         preferFolder={newTray.folder}
         onCreate={app.createSession}
+        onChooseFolder={standalone ? () => app.addSource("pick") : undefined}
       />
       <HelpDialog open={helpOpen} onOpenChange={setHelpOpen} />
       <CommandPalette
@@ -403,7 +449,9 @@ function SlideStationApp() {
         <div className="ss-drop pointer-events-none fixed inset-0 z-50 flex items-center justify-center">
           <div className="rounded-lg border border-primary/60 bg-(--ss-panel) px-6 py-4 text-center shadow-2xl">
             <div className="text-[14px] font-semibold">Drop a folder of scans</div>
-            <div className="mt-1 text-[12px] text-muted-foreground">It becomes a new tray</div>
+            <div className="mt-1 text-[12px] text-muted-foreground">
+              {standalone ? "Its scans are imported into a tray" : "It becomes a new tray"}
+            </div>
           </div>
         </div>
       )}

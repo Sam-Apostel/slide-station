@@ -121,7 +121,13 @@ describe("parity with imaging.py", () => {
     const o = im.signature(png("scene_other.png"));
     expect(Math.abs(im.similarity(a, d) - golden.sim_same)).toBeLessThan(0.01);
     expect(Math.abs(im.similarity(a, o) - golden.sim_other)).toBeLessThan(0.03);
-    expect(im.groupSequence([a, d, o, o])).toEqual([[[0, 1], [2, 3]], false]);
+    expect(im.groupSequence([a, d, o, o])).toEqual([
+      [
+        [0, 1],
+        [2, 3],
+      ],
+      false,
+    ]);
     expect(im.groupSequence([d, o], [a])).toEqual([[[0], [1]], true]);
   });
 
@@ -166,7 +172,8 @@ describe("parity with imaging.py", () => {
     let n = 0;
     for (let y = 10; y < out.height - 10; y++)
       for (let x = 10; x < out.width - 10; x++)
-        for (let c = 0; c < 3; c++, n++) sum += Math.abs(out.data[(y * out.width + x) * 3 + c] - ref[(y * out.width + x) * 3 + c]);
+        for (let c = 0; c < 3; c++, n++)
+          sum += Math.abs(out.data[(y * out.width + x) * 3 + c] - ref[(y * out.width + x) * 3 + c]);
     expect(sum / n).toBeLessThan(0.01);
   });
 
@@ -186,5 +193,17 @@ describe("parity with imaging.py", () => {
     for (const [k, v] of Object.entries(golden.learning_suggestion as Record<string, number | boolean>))
       if (typeof v === "boolean") expect(sugg![k as "trim"]).toBe(v);
       else expect(Math.abs((sugg as Record<string, number>)[k] - v)).toBeLessThan(0.002);
+  });
+
+  it("learned tone curves", () => {
+    const m = new Model({ examples: golden.learning_curve_examples }, () => {});
+    const [sugg] = m.suggest(golden.learning_query);
+    const want = golden.learning_curve_suggestion as Record<string, number[][]>;
+    expect(Object.keys(sugg!.curves!)).toEqual(Object.keys(want));
+    for (const [ch, pts] of Object.entries(want))
+      pts.forEach((p, i) => {
+        expect(sugg!.curves![ch as "r"]![i][0]).toBeCloseTo(p[0], 4);
+        expect(Math.abs(sugg!.curves![ch as "r"]![i][1] - p[1])).toBeLessThan(0.002);
+      });
   });
 });

@@ -78,7 +78,8 @@ export function cleanCurves(d: unknown): Curves {
       if (clean.length && pt[0] - clean[clean.length - 1][0] < 0.004) continue;
       clean.push([round(pt[0], 4), round(pt[1], 4)]);
     }
-    const straight = clean.length === 2 && clean[0][0] === 0 && clean[0][1] === 0 && clean[1][0] === 1 && clean[1][1] === 1;
+    const straight =
+      clean.length === 2 && clean[0][0] === 0 && clean[0][1] === 0 && clean[1][0] === 1 && clean[1][1] === 1;
     if (clean.length >= 2 && !straight) out[ch] = clean;
   }
   return out;
@@ -129,7 +130,10 @@ export function curveLut(pts: Point[], n = LUT_SIZE): Float32Array {
       const u2 = u * u;
       const u3 = u2 * u;
       out[j] = clamp01(
-        (2 * u3 - 3 * u2 + 1) * ys[i] + (u3 - 2 * u2 + u) * h[i] * m[i] + (-2 * u3 + 3 * u2) * ys[i + 1] + (u3 - u2) * h[i] * m[i + 1],
+        (2 * u3 - 3 * u2 + 1) * ys[i] +
+          (u3 - 2 * u2 + u) * h[i] * m[i] +
+          (-2 * u3 + 3 * u2) * ys[i + 1] +
+          (u3 - u2) * h[i] * m[i + 1],
       );
     }
   }
@@ -188,7 +192,9 @@ export function autoRestore(a: RGB, strength: number, inPlace = false): RGB {
   const L = [0, 1, 2].map((c) => percentile(sorted[c], 0.4) * kk);
   const H = [0, 1, 2].map((c) => 1 - (1 - percentile(sorted[c], 99.6)) * kk);
   // the median of the stretched samples is the stretched median (the stretch is monotonic)
-  const med = [0, 1, 2].map((c) => Math.min(1, Math.max(1e-4, (percentile(sorted[c], 50) - L[c]) / Math.max(H[c] - L[c], 1e-3))));
+  const med = [0, 1, 2].map((c) =>
+    Math.min(1, Math.max(1e-4, (percentile(sorted[c], 50) - L[c]) / Math.max(H[c] - L[c], 1e-3))),
+  );
   const tgt = Math.exp(med.reduce((s, v) => s + Math.log(v), 0) / 3);
   const g = med.map((v) => (Math.log(v) === 0 ? 1 : 1 + (Math.log(tgt) / Math.log(v) - 1) * strength));
   const hb = percentile(sorted[2], 99.6);
@@ -306,7 +312,13 @@ export function geometry(a: RGB, p: Params, crop = true): RGB {
     const [l, t, r, b] = p.crop;
     const top = Math.trunc(t * out.height);
     const left = Math.trunc(l * out.width);
-    out = cropped(out, top, Math.max(top + 1, Math.trunc(b * out.height)), left, Math.max(left + 1, Math.trunc(r * out.width)));
+    out = cropped(
+      out,
+      top,
+      Math.max(top + 1, Math.trunc(b * out.height)),
+      left,
+      Math.max(left + 1, Math.trunc(r * out.width)),
+    );
   }
   return out;
 }
@@ -510,7 +522,8 @@ export function scanQuality(a: RGB): Quality {
   const t = Math.trunc(h / 10);
   const l = Math.trunc(w / 10);
   const core = plane(w - 2 * l, h - 2 * t);
-  for (let y = 0; y < core.height; y++) core.data.set(g.data.subarray((y + t) * w + l, (y + t) * w + l + core.width), y * core.width);
+  for (let y = 0; y < core.height; y++)
+    core.data.set(g.data.subarray((y + t) * w + l, (y + t) * w + l + core.width), y * core.width);
   const lit: number[] = [];
   const mask = new Uint8Array(core.data.length);
   core.data.forEach((v, i) => {
@@ -607,4 +620,3 @@ export function suggestRotation(images: RGB[], faceVotes?: (a: RGB) => Record<nu
   if ((top === 90 || top === 270) && ranked[0][1] - ranked[1][1] >= 0.2) return [top, "sky"];
   return [0, ""];
 }
-

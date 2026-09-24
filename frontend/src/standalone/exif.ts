@@ -58,13 +58,17 @@ type Tag = [number, string];
 /** An APP1 EXIF segment (little endian) with the given ASCII tags in IFD0 and the Exif IFD. */
 export function exifSegment(ifd0: Tag[], exif: Tag[], orientation = 1): Uint8Array {
   const enc = new TextEncoder();
-  const entries0 = [...ifd0.map(([t, s]) => ({ t, type: 2, data: enc.encode(s + "\0") })), { t: 274, type: 3, data: null, value: orientation }];
+  const entries0 = [
+    ...ifd0.map(([t, s]) => ({ t, type: 2, data: enc.encode(s + "\0") })),
+    { t: 274, type: 3, data: null, value: orientation },
+  ];
   const entriesX = exif.map(([t, s]) => ({ t, type: 2, data: enc.encode(s + "\0") }));
   entries0.push({ t: 0x8769, type: 4, data: null, value: 0 }); // pointer, filled in below
   entries0.sort((a, b) => a.t - b.t);
   entriesX.sort((a, b) => a.t - b.t);
   const ifdSize = (n: number) => 2 + n * 12 + 4;
-  const dataSize = (es: { data: Uint8Array | null }[]) => es.reduce((s, e) => s + (e.data && e.data.length > 4 ? e.data.length + (e.data.length % 2) : 0), 0);
+  const dataSize = (es: { data: Uint8Array | null }[]) =>
+    es.reduce((s, e) => s + (e.data && e.data.length > 4 ? e.data.length + (e.data.length % 2) : 0), 0);
   const off0 = 8;
   const offX = off0 + ifdSize(entries0.length) + dataSize(entries0);
   const total = offX + ifdSize(entriesX.length) + dataSize(entriesX);

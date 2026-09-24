@@ -2,6 +2,8 @@
 // 14 image features per developed slide plus the settings you accepted, distance-weighted k-NN.
 // The examples are stored in the library's learning.json in the same format as the Python app's.
 import type { Params } from "@/lib/api";
+import type { CurveChannel, Curves, Point } from "@/lib/curves";
+import { cleanCurves, curveLut } from "./imaging";
 import { percentile, resized, type RGB } from "./pixels";
 
 export const FEATURES = 14;
@@ -10,14 +12,54 @@ const K = 7;
 const MAX_EXAMPLES = 20_000;
 const MAX_DISTANCE = 3.0; // in standardised feature space
 export const LEARNED_KEYS = ["strength", "brightness", "contrast", "warmth", "tint", "saturation"] as const;
-const DEFAULTS: Record<string, number> = { strength: 0.6, brightness: 0, contrast: 0, warmth: 0, tint: 0, saturation: 0 };
+const DEFAULTS: Record<string, number> = {
+  strength: 0.6,
+  brightness: 0,
+  contrast: 0,
+  warmth: 0,
+  tint: 0,
+  saturation: 0,
+};
+// a learned curve is the neighbours' curves averaged at these inputs (0, 1/8 ... 1)
+const CURVE_SAMPLES = 9;
+const CURVE_STRAIGHT = 0.005; // an averaged curve closer than this to the diagonal everywhere is dropped
+const XS = Array.from({ length: CURVE_SAMPLES }, (_, i) => i / (CURVE_SAMPLES - 1));
+
+/** A curve's output at the sample inputs (a missing curve is the straight line). */
+function sample(pts: Point[] | undefined): number[] {
+  if (!pts?.length) return XS;
+  const lut = curveLut(pts);
+  return XS.map((x) => {
+    const p = x * (lut.length - 1);
+    const i = Math.min(lut.length - 2, Math.floor(p));
+    return lut[i] + (lut[i + 1] - lut[i]) * (p - i);
+  });
+}
+
+/**
+ * Weighted average of the neighbours' tone curves, channel by channel (learning.learned_curves):
+ * a channel is curved only if neighbours holding at least half the weight curved it.
+ */
+export function learnedCurves(curves: Curves[], w: number[]): Curves {
+  const out: Curves = {};
+  for (const ch of ["rgb", "r", "g", "b"] as CurveChannel[]) {
+    if (curves.reduce((s, c, i) => s + (c[ch]?.length ? w[i] : 0), 0) < 0.5) continue;
+    const y = XS.map((_, j) => curves.reduce((s, c, i) => s + w[i] * sample(c[ch])[j], 0));
+    if (Math.max(...y.map((v, j) => Math.abs(v - XS[j]))) < CURVE_STRAIGHT) continue;
+    out[ch] = XS.map((x, j) => [Math.round(x * 1e4) / 1e4, Math.round(y[j] * 1e4) / 1e4] as Point);
+  }
+  return cleanCurves(out);
+}
 
 /** Describe a blended slide in a way that captures fading, cast and contrast. */
 export function features(a: RGB, scans = 1): number[] {
   const s = resized(a, 160, 107);
   const n = s.width * s.height;
   const ch = [0, 1, 2].map((c) => Float32Array.from({ length: n }, (_, i) => s.data[i * 3 + c]).sort());
-  const lum = Float32Array.from({ length: n }, (_, i) => (s.data[i * 3] + s.data[i * 3 + 1] + s.data[i * 3 + 2]) / 3).sort();
+  const lum = Float32Array.from(
+    { length: n },
+    (_, i) => (s.data[i * 3] + s.data[i * 3 + 1] + s.data[i * 3 + 2]) / 3,
+  ).sort();
   const p = ch.map((v) => [1, 50, 99].map((q) => percentile(v, q)));
   const [lo, mid, hi] = [5, 50, 95].map((q) => percentile(lum, q));
   const eps = 1e-3;
@@ -32,7 +74,7 @@ export function features(a: RGB, scans = 1): number[] {
   ];
 }
 
-export type Example = { key: string; f: number[]; p: Record<string, number>; trim: boolean; t: number };
+export type Example = { key: string; f: number[]; p: Record<string, number>; trim: boolean; c?: Curves; t: number };
 
 /** Examples + standardisation. `save` is called with the JSON to persist after every change. */
 export class Model {
@@ -41,7 +83,10 @@ export class Model {
   private mu: number[] = [];
   private sd: number[] = [];
 
-  constructor(data: unknown, private save: (json: unknown) => void) {
+  constructor(
+    data: unknown,
+    private save: (json: unknown) => void,
+  ) {
     const ex = (data as { examples?: Example[] } | null)?.examples;
     this.examples = Array.isArray(ex) ? ex : [];
     this.fit();
@@ -71,7 +116,14 @@ export class Model {
     if (feats.length !== FEATURES) return;
     const p: Record<string, number> = {};
     for (const k of LEARNED_KEYS) if (k in params) p[k] = Number(params[k]);
-    const entry: Example = { key, f: feats.map((x) => Math.round(x * 1e5) / 1e5), p, trim: params.trim !== false, t: Date.now() / 1000 };
+    const entry: Example = {
+      key,
+      f: feats.map((x) => Math.round(x * 1e5) / 1e5),
+      p,
+      trim: params.trim !== false,
+      c: cleanCurves(params.curves ?? {}),
+      t: Date.now() / 1000,
+    };
     const i = this.examples.findIndex((e) => e.key === key);
     if (i >= 0) this.examples[i] = entry;
     else this.examples.push(entry);
@@ -109,6 +161,18 @@ export class Model {
       out[k] = Math.round(v * 1000) / 1000;
     }
     out.trim = idx.reduce((s, i, n) => s + (this.examples[i].trim !== false ? 1 : 0) * w[n], 0) >= 0.5;
+    // curves: only from examples that recorded them (older learning.json files have no "c");
+    // none of those among the neighbours leaves the slide's curves alone
+    const withC = idx.flatMap((i, n) =>
+      this.examples[i].c && typeof this.examples[i].c === "object" ? [[this.examples[i].c!, w[n]] as const] : [],
+    );
+    if (withC.length) {
+      const cw = withC.reduce((s, [, x]) => s + x, 0);
+      out.curves = learnedCurves(
+        withC.map(([c]) => c),
+        withC.map(([, x]) => x / cw),
+      );
+    }
     return [out as Partial<Params>, idx.length];
   }
 

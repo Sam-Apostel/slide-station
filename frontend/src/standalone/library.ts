@@ -78,7 +78,8 @@ export function handleLibrary(root: FileSystemDirectoryHandle, kind: LibraryKind
       const d = await dir(split(path), false);
       const out: { name: string; kind: "file" | "directory" }[] = [];
       if (!d) return out;
-      for await (const [name, h] of d as unknown as AsyncIterable<[string, FileSystemHandle]>) out.push({ name, kind: h.kind });
+      for await (const [name, h] of d as unknown as AsyncIterable<[string, FileSystemHandle]>)
+        out.push({ name, kind: h.kind });
       return out;
     },
   };
@@ -125,7 +126,11 @@ export function memoryLibrary(): Library {
 
 export const canPickFolders = typeof window !== "undefined" && "showDirectoryPicker" in window;
 
-type Picker = (opts?: { id?: string; mode?: "read" | "readwrite"; startIn?: string }) => Promise<FileSystemDirectoryHandle>;
+type Picker = (opts?: {
+  id?: string;
+  mode?: "read" | "readwrite";
+  startIn?: string;
+}) => Promise<FileSystemDirectoryHandle>;
 export const pickDirectory = (opts: { id?: string; mode?: "read" | "readwrite"; startIn?: string }) =>
   (window as unknown as { showDirectoryPicker: Picker }).showDirectoryPicker(opts);
 

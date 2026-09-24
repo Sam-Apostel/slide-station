@@ -6,7 +6,7 @@ import type { Params } from "@/lib/api";
 import * as im from "./imaging";
 import { fuseSources, materialise, rgba8Source, type RowSource } from "./fusion";
 import { features } from "./learning";
-import { fitting, resized, rgb, rotated, type RGB } from "./pixels";
+import { fitting, rgb, rotated, type RGB } from "./pixels";
 
 /** An image to work on: `key` names its decoded pixels in the cache, `blob` decodes them on a miss. */
 export type Src = { key: string; blob: Blob };
@@ -21,20 +21,29 @@ async function jpegSize(blob: Blob): Promise<[number, number] | null> {
   while (o + 9 < v.byteLength) {
     const m = v.getUint16(o);
     if ((m & 0xff00) !== 0xff00) return null;
-    if (m >= 0xffc0 && m <= 0xffcf && m !== 0xffc4 && m !== 0xffc8 && m !== 0xffcc) return [v.getUint16(o + 7), v.getUint16(o + 5)];
+    if (m >= 0xffc0 && m <= 0xffcf && m !== 0xffc4 && m !== 0xffc8 && m !== 0xffcc)
+      return [v.getUint16(o + 7), v.getUint16(o + 5)];
     o += 2 + v.getUint16(o + 2);
   }
   return null;
 }
 
 /** RGBA bytes of an image, optionally shrunk on decode (the browser's fast path, like PIL's draft). */
-async function decodeRGBA(blob: Blob, maxEdge?: number): Promise<{ width: number; height: number; bytes: Uint8ClampedArray }> {
+async function decodeRGBA(
+  blob: Blob,
+  maxEdge?: number,
+): Promise<{ width: number; height: number; bytes: Uint8ClampedArray }> {
   let opts: ImageBitmapOptions = { colorSpaceConversion: "none" };
   if (maxEdge) {
     const size = await jpegSize(blob);
     if (size && Math.max(...size) > maxEdge) {
       const s = maxEdge / Math.max(...size);
-      opts = { ...opts, resizeWidth: Math.max(1, Math.round(size[0] * s)), resizeHeight: Math.max(1, Math.round(size[1] * s)), resizeQuality: "high" };
+      opts = {
+        ...opts,
+        resizeWidth: Math.max(1, Math.round(size[0] * s)),
+        resizeHeight: Math.max(1, Math.round(size[1] * s)),
+        resizeQuality: "high",
+      };
     }
   }
   const bmp = await createImageBitmap(blob, opts);
@@ -74,10 +83,11 @@ async function load(src: Src): Promise<RGB> {
 async function encode(a: RGB, quality: number, maxEdge?: number): Promise<Blob> {
   const s = maxEdge ? fitting(a, maxEdge) : a;
   const px = new Uint8ClampedArray(s.width * s.height * 4);
+  // Uint8ClampedArray clamps and rounds to nearest: Python's clip, * 255 + 0.5, astype(uint8)
   for (let i = 0, n = s.width * s.height; i < n; i++) {
-    px[i * 4] = s.data[i * 3] * 255 + 0.5;
-    px[i * 4 + 1] = s.data[i * 3 + 1] * 255 + 0.5;
-    px[i * 4 + 2] = s.data[i * 3 + 2] * 255 + 0.5;
+    px[i * 4] = s.data[i * 3] * 255;
+    px[i * 4 + 1] = s.data[i * 3 + 1] * 255;
+    px[i * 4 + 2] = s.data[i * 3 + 2] * 255;
     px[i * 4 + 3] = 255;
   }
   const c = new OffscreenCanvas(s.width, s.height);
@@ -95,7 +105,8 @@ function rotateRGBA(width: number, height: number, bytes: Uint8ClampedArray, deg
   const out = new Uint32Array(ow * oh);
   for (let y = 0; y < oh; y++)
     for (let x = 0; x < ow; x++) {
-      const [sx, sy] = rot === 90 ? [y, height - 1 - x] : rot === 180 ? [width - 1 - x, height - 1 - y] : [width - 1 - y, x];
+      const [sx, sy] =
+        rot === 90 ? [y, height - 1 - x] : rot === 180 ? [width - 1 - x, height - 1 - y] : [width - 1 - y, x];
       out[y * ow + x] = src[sy * width + sx];
     }
   return { width: ow, height: oh, bytes: new Uint8ClampedArray(out.buffer) };
@@ -113,10 +124,19 @@ const ops = {
     };
   },
 
+  /** Sharpness and clipping of a scan's proxy (best of bracket). */
+  async quality({ blob }: { blob: Blob }) {
+    return im.scanQuality(await decode(blob));
+  },
+
   /** Blend a bracket's proxies (aligned, Mertens) into one JPEG. */
   async fuse({ blobs }: { blobs: Blob[] }) {
     const imgs = await Promise.all(blobs.map((b) => decode(b)));
-    const sources: RowSource[] = imgs.map((a) => ({ width: a.width, height: a.height, row: (y, out) => out.set(a.data.subarray(y * a.width * 3, (y + 1) * a.width * 3)) }));
+    const sources: RowSource[] = imgs.map((a) => ({
+      width: a.width,
+      height: a.height,
+      row: (y, out) => out.set(a.data.subarray(y * a.width * 3, (y + 1) * a.width * 3)),
+    }));
     return encode(fuseSources(sources), 95);
   },
 
@@ -153,7 +173,17 @@ const ops = {
   },
 
   /** Full resolution: blend the originals, turn, develop, JPEG (EXIF is added by the page). */
-  async full({ blobs, rotation, params, quality }: { blobs: Blob[]; rotation: number; params: Params; quality: number }) {
+  async full({
+    blobs,
+    rotation,
+    params,
+    quality,
+  }: {
+    blobs: Blob[];
+    rotation: number;
+    params: Params;
+    quality: number;
+  }) {
     const decoded = [];
     for (const b of blobs) {
       const d = await decodeRGBA(b);
@@ -200,5 +230,3 @@ self.onmessage = (e: MessageEvent<Task | { drop: string }>) => {
   queue.push(e.data);
   pump();
 };
-
-export { resized };

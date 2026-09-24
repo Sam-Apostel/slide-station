@@ -19,6 +19,7 @@ import {
   SkipForward,
   Undo2,
   Upload,
+  Download,
 } from "lucide-react";
 import { ProInspector } from "@/components/ui/pro-inspector";
 import { ProDisclosureGroup } from "@/components/ui/pro-disclosure";
@@ -93,6 +94,7 @@ export function Inspector({
   cropping,
   onCrop,
   onReimport,
+  onSave,
   onDateRange,
 }: {
   app: SlideStation;
@@ -108,6 +110,8 @@ export function Inspector({
   onCrop: () => void;
   /** Import the tray's scans again (brings deleted originals back and unlocks their slides). */
   onReimport?: () => void;
+  /** Browser version: save the finished JPEGs to disk (replaces "show the finished files"). */
+  onSave?: () => void;
   /** Opens the "date a range of slides" dialog. */
   onDateRange: () => void;
 }) {
@@ -294,11 +298,19 @@ export function Inspector({
               </ProButton>
             </span>
           </Tip>
-          <Tip label="Show the finished files" side="top">
-            <ProButton onClick={app.reveal} aria-label="Show files">
-              <FolderOpen />
-            </ProButton>
-          </Tip>
+          {onSave ? (
+            <Tip label="Save the finished slides to disk: a folder you pick, or a zip" side="top">
+              <ProButton onClick={onSave} disabled={busy || !sm.slides} aria-label="Save to disk">
+                <Download />
+              </ProButton>
+            </Tip>
+          ) : (
+            <Tip label="Show the finished files" side="top">
+              <ProButton onClick={app.reveal} aria-label="Show files">
+                <FolderOpen />
+              </ProButton>
+            </Tip>
+          )}
         </div>
       </div>
     </ProInspector>

@@ -4,8 +4,11 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "dev:web": "vite --mode web",
     "build": "tsc -b --noCheck && vite build",
+    "build:web": "tsc -b --noCheck && vite build --mode web",
     "typecheck": "tsc -b",
+    "test": "vitest run",
     "preview": "vite preview"
   },
   "dependencies": {

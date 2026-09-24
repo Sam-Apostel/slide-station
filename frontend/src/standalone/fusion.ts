@@ -154,7 +154,11 @@ function laplacianOf(p: Plane): Plane {
     const r = y * w;
     for (let x = 0; x < w; x++)
       out.data[r + x] =
-        p.data[yu + x] + p.data[yd + x] + p.data[r + reflect101(x - 1, w)] + p.data[r + reflect101(x + 1, w)] - 4 * p.data[r + x];
+        p.data[yu + x] +
+        p.data[yd + x] +
+        p.data[r + reflect101(x - 1, w)] +
+        p.data[r + reflect101(x + 1, w)] -
+        4 * p.data[r + x];
   }
   return out;
 }
@@ -220,8 +224,8 @@ function pyrUp(p: Plane, width: number, height: number): Plane {
       const i = Math.min(n - 1, d >> 1);
       const prev = i === 0 ? Math.min(1, n - 1) : i - 1;
       const next = Math.min(n - 1, i + 1);
-      if (d % 2 === 0) a.set([prev, i, next], d * 3), wt.set([0.125, 0.75, 0.125], d * 3);
-      else a.set([i, next, next], d * 3), wt.set([0.5, 0.5, 0], d * 3);
+      if (d % 2 === 0) (a.set([prev, i, next], d * 3), wt.set([0.125, 0.75, 0.125], d * 3));
+      else (a.set([i, next, next], d * 3), wt.set([0.5, 0.5, 0], d * 3));
     }
     return { a, wt };
   };
@@ -233,7 +237,9 @@ function pyrUp(p: Plane, width: number, height: number): Plane {
     for (let x = 0; x < width; x++) {
       const k = x * 3;
       tmp[y * width + x] =
-        p.data[r + xs.a[k]] * xs.wt[k] + p.data[r + xs.a[k + 1]] * xs.wt[k + 1] + p.data[r + xs.a[k + 2]] * xs.wt[k + 2];
+        p.data[r + xs.a[k]] * xs.wt[k] +
+        p.data[r + xs.a[k + 1]] * xs.wt[k + 1] +
+        p.data[r + xs.a[k + 2]] * xs.wt[k + 2];
     }
   }
   const out = plane(width, height);
@@ -333,7 +339,7 @@ export function mtbShift(a: Plane, b: Plane, maxBits = 6): [number, number] {
       for (let i = -1; i <= 1; i++) {
         if (!i && !j) continue;
         const e = mtbError(ba, bb, sx + i, sy + j);
-        if (e < bestErr) (bestErr = e), (best = [sx + i, sy + j]);
+        if (e < bestErr) ((bestErr = e), (best = [sx + i, sy + j]));
       }
     [sx, sy] = best;
   }

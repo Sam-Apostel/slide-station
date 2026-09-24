@@ -42,6 +42,7 @@ slidestation/
   models/                 YuNet face detector (MIT, from opencv_zoo)
   web/                    UI build output (`npm run build` in frontend/), committed
 frontend/                 the UI: React 19 + Vite 7 + Tailwind 4 + ProUI (§4)
+  src/standalone/         the browser-only version: the API and pipeline in the page (§4c)
 desktop/                  Electron shell around server + UI (§4a, desktop/README.md)
 tests/                    API tests (pytest), synthetic scans, mock Immich, Playwright flow (§7)
 ```
@@ -274,9 +275,61 @@ A universal iPad/iPhone SwiftUI app with the pipeline ported to Swift (`apple/Sl
 `apple/README.md` for the mapping. Invariants carried over: trays use the same JSON field names;
 every change goes through `Library.update` (reload, apply, save); imports verify each copy by SHA-1
 and record the dedupe index straight after copying; the Immich v1/v2 vs v3 field rules. **Keep
-`imaging.py` and SlideKit in step:** change both, then regenerate the golden fixtures
-(`apple/SlideKit/Tests/make_golden.py`) and run `swift test`. The fusion fixture is Mertens without
+`imaging.py` and SlideKit in step** (and the browser's `imaging.ts`, §4c): change all of them, then
+regenerate the golden fixtures (`apple/SlideKit/Tests/make_golden.py`) and run `swift test` and
+`npm test` in `frontend`. The fusion fixture is Mertens without
 alignment, because AlignMTB shifts identical synthetic scans by a pixel.
+
+## 4c. Browser version (`frontend/src/standalone`)
+
+The same UI as a static site with no backend (`npm run build:web` → `frontend/dist-web`; `npm run
+dev:web`). The build flag `VITE_STANDALONE` (set by `--mode web` in `vite.config.ts`) makes
+`lib/api.ts` answer every `/api/...` call inside the page instead of over HTTP, so the React code
+is the same in both builds; in the regular build `@/standalone/*` resolves to an empty stub and
+none of it is bundled.
+
+```
+standalone/
+  server.ts          server.py + workflow.py as one module: every route, jobs, import, upload
+  store.ts           store.py: render / tone / meta keys, dates, statuses, session.json writer
+  imaging.ts         imaging.py function by function; pixels.ts: resize, blur, percentiles
+  fusion.ts          Mertens (OpenCV's exact pyramids, from SlideKit) + median-threshold alignment
+  learning.ts        learning.py, same learning.json
+  engine.worker.ts   the pixel work in a worker; engine.ts talks to it (one worker for the UI,
+                     one for jobs, so browsing stays quick during an import or upload)
+  library.ts         the library: a folder on disk (File System Access) or the browser's OPFS
+  boot.tsx, pick.ts  start-up (re-allowing a disk folder takes a click) and picking / dropping folders
+  exif.ts, npy.ts,   reading scan EXIF / writing the export's; the .sig.npy signature cache;
+  zip.ts, immich.ts  the save-to-disk zip; the Immich client (fetch)
+```
+
+- **Same library, same keys.** The library layout is the Python app's (`sessions/<id>/...`,
+  `imported.json`, `learning.json`, `.sig.npy`). `store.ts` computes render / tone / meta keys byte
+  for byte like Python (`pyDumps` mimics `json.dumps`, float formatting included) and writes
+  `session.json` with params as floats, so a tray moves between the browser and the desktop app
+  without every slide turning `changed`. `store.test.ts` pins the keys to values computed in Python.
+- **Keep the three pipelines in step:** `imaging.py`, SlideKit and `imaging.ts`.
+  `parity.test.ts` (`npm test`) runs the TypeScript pipeline on SlideKit's golden fixtures with the
+  same tolerances as `ParityTests.swift`: restore, trim, develop, crop, curves, fit, eyedropper,
+  grouping, best of bracket, fusion, alignment, straighten, learning (incl. learned curves).
+- **Images.** Preview URLs stay the same; `imageSrc()` / `useImageSrc()` in `lib/api.ts` render them
+  in the worker and hand out object URLs, cached only when the render matches the URL's key (the
+  server's cache rule). The stage asks with high priority, filmstrip tiles only once scrolled into
+  view, so the photo on screen never waits behind thumbnails.
+- **Browser gestures.** Folder pickers and permission prompts need a click that just happened, so
+  `finish` (save to disk) and `cleanup` ask for their folder in the route itself, before the job
+  starts; dropped items are read inside the drop event (`pick.fromDrop`).
+- **Immich from the page** needs CORS or the same origin (Immich enables CORS in development only);
+  `immich.ts` turns a failed fetch into an explanation (mixed content, CORS). README has proxy
+  snippets. Saving to disk (a picked folder, the library's export folder, or a zip) is the way
+  around it.
+- **Card cleanup** keeps the safety rules: only folders picked or dropped as a directory with
+  `DCIM` at the root are removable (their handle is remembered in IndexedDB), write access is asked
+  for at cleanup time, and each file is re-hashed before it is deleted.
+- **Not ported:** YuNet faces (the sky rule runs), scanner detection and eject, the background
+  renderer, reveal in Finder. Full resolution decodes and encodes through one canvas, so Safari on
+  iPad / iPhone tops out around 16 MP (ROADMAP §0).
+- Config (Immich URL and key, keep originals, learning) is in `localStorage` of that browser only.
 
 ## 5. Learning from past edits (new, working, untested in the wild)
 
@@ -367,6 +420,15 @@ undo), and consider learning rotation corrections per film type once enough exam
   and note `SLIDESTATION_HOME` alone isn't enough: without a `config.json` in it the library
   defaults to `~/Pictures/Slide Station`. Write one with a scratch `library` (plus the mock's
   `immich_url` and `"immich_key": "testkey"`, and `"learning_enabled": false`) first.
+
+- `frontend`: `npm test` (vitest) — the browser pipeline against the golden fixtures and the tray
+  keys against Python (§4c).
+- `tests/web_flow.py` — the browser version end to end in headless Chromium: it serves
+  `frontend/dist-web` (build it first) and the mock Immich with CORS on (`MOCK_IMMICH_CORS=1`), and
+  stands in folders in the page's OPFS for the pickers, so import, develop (rotate, fit, crop,
+  undo), date a range, upload, save to disk (EXIF checked), card cleanup and a reload all run
+  through the real code. `SS_NO_FS_ACCESS=1` hides the picker API, as in Firefox and Safari: a
+  folder `<input>`, a zip download, cleaning locked. Command in its docstring.
 
 Things to re-check after changes: grouping across two imports (a bracket set split over two card
 reads must merge), rotation suggestions, upload of a `changed` slide, skip-after-upload, and that

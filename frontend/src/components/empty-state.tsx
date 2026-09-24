@@ -1,7 +1,7 @@
 import { FolderInput, HardDriveDownload, Images } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
-import { plural, sourceLabel, type Source } from "@/lib/api";
+import { plural, sourceLabel, standalone, type Source } from "@/lib/api";
 
 const STEPS = [
   <>
@@ -10,6 +10,17 @@ const STEPS = [
   <>Import into a tray. Brackets are grouped, blended and turned upright automatically.</>,
   <>Step through the slides with the arrow keys and fix anything the auto-restore got wrong.</>,
   <>Upload to Immich, then clean the card.</>,
+];
+
+// The browser version: no scanner detection and nothing to install.
+const WEB_STEPS = [
+  <>
+    Drop a folder of scans on this window (the scanner's card, or any folder of JPEGs), or choose one. Everything
+    happens <b>in this browser</b>: nothing is uploaded anywhere until you send it to Immich.
+  </>,
+  <>Scans of the same slide are grouped and blended, turned upright and restored automatically.</>,
+  <>Step through the slides with the arrow keys and fix anything the auto-restore got wrong.</>,
+  <>Send them to your Immich, or save the finished JPEGs to disk.</>,
 ];
 
 export function EmptyState({
@@ -31,14 +42,18 @@ export function EmptyState({
           <EmptyTitle className="text-[18px]">Scan, review, upload</EmptyTitle>
           <EmptyDescription>
             <ol className="mt-2 list-decimal space-y-1 pl-5 text-left leading-relaxed text-muted-foreground [&_b]:text-foreground/90">
-              {STEPS.map((s, i) => (
+              {(standalone ? WEB_STEPS : STEPS).map((s, i) => (
                 <li key={i}>{s}</li>
               ))}
             </ol>
           </EmptyDescription>
         </EmptyHeader>
         <EmptyContent>
-          {source ? (
+          {standalone && !source ? (
+            <Button className="bg-primary text-primary-foreground" onClick={onImportFolder}>
+              <FolderInput /> Choose a folder of scans
+            </Button>
+          ) : source ? (
             <Button className="bg-primary text-primary-foreground" onClick={() => onImport(source)}>
               <HardDriveDownload />
               Import {plural(source.new, "scan")} from {source.scanner ? "the Slide N Scan" : sourceLabel(source)}

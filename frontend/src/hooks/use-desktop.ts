@@ -137,13 +137,19 @@ export function useDesktop(
  * Dropping a folder (or any file in it) onto the window starts a new tray from that folder.
  * Only in the desktop app: a browser tab never sees real file paths.
  */
-export function useFolderDrop(onFolder: (path: string) => void) {
+/**
+ * A folder dropped on the window. The desktop app hands over its path (onFolder); the browser
+ * version gets the DataTransfer (onDrop), to read in the drop event itself.
+ */
+export function useFolderDrop(onFolder: (path: string) => void, onDrop?: (dt: DataTransfer) => void) {
   const [over, setOver] = React.useState(false);
   const cb = React.useRef(onFolder);
   cb.current = onFolder;
+  const dropCb = React.useRef(onDrop);
+  dropCb.current = onDrop;
 
   React.useEffect(() => {
-    if (!desktop) return;
+    if (!desktop && !dropCb.current) return;
     let depth = 0;
     const hasFiles = (e: DragEvent) => !!e.dataTransfer?.types.includes("Files");
     const enter = (e: DragEvent) => {
@@ -166,6 +172,7 @@ export function useFolderDrop(onFolder: (path: string) => void) {
       e.preventDefault();
       depth = 0;
       setOver(false);
+      if (!desktop) return void dropCb.current?.(e.dataTransfer!);
       const item = e.dataTransfer?.items[0];
       const file = e.dataTransfer?.files[0];
       if (!file) return;
