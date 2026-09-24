@@ -5,6 +5,7 @@ import * as React from "react";
 import { Check, Combine, RefreshCw, Scissors, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Tip } from "@/components/tip";
+import { PreviewImg } from "@/components/filmstrip";
 import { immichThumbUrl, plural, previewUrl, type Group, type SessionPayload, type SimilarSuggestion } from "@/lib/api";
 import type { SlideStation } from "@/hooks/use-slide-station";
 import { cn } from "@/lib/utils";
@@ -87,7 +88,7 @@ function SimilarCard({
               onClick={() => (sug.kind === "duplicates" ? setKeep(g.id) : onGo?.(g.index))}
               onDoubleClick={() => onGo?.(g.index)}
             >
-              <img src={previewUrl(sessionId, g, 320)} alt="" loading="lazy" draggable={false} />
+              <PreviewImg url={previewUrl(sessionId, g, 320)} alt="" draggable={false} />
               <span>
                 {g.index + 1}
                 {sug.kind === "duplicates" && (keep === g.id ? " · keep" : " · skip")}
@@ -171,7 +172,12 @@ export function SimilarPanel({
             </b>
           </header>
           <div className="flex items-center gap-2">
-            <img src={immichThumbUrl(m.id)} alt="" className="h-14 w-[76px] rounded object-cover" draggable={false} />
+            <PreviewImg
+              url={immichThumbUrl(m.id)}
+              alt=""
+              className="h-14 w-[76px] rounded object-cover"
+              draggable={false}
+            />
             <span className="min-w-0 flex-1 text-[11px] text-muted-foreground">
               <span className="block truncate text-foreground/90">{m.name || "A photo"}</span>
               {m.date}
@@ -239,7 +245,7 @@ export function SimilarReview({
             {looks.map((g) => (
               <span key={g.id} className="ss-pile-slide">
                 <button type="button" aria-label={`Go to slide ${g.index + 1}`} onClick={() => onGo(g.index)}>
-                  <img src={previewUrl(sessionId, g, 320)} alt="" loading="lazy" draggable={false} />
+                  <PreviewImg url={previewUrl(sessionId, g, 320)} alt="" draggable={false} />
                   <span>
                     {g.index + 1} · {pct(openLookalikes(g)[0].similarity)}
                   </span>

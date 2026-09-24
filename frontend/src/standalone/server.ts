@@ -2,17 +2,68 @@
 // the same React UI runs with no backend at all. Every route keeps the Python semantics — undo
 // history, render keys, locked slides, dedupe, the upload rules — over a Library (library.ts)
 // instead of the file system, with the pixel work in web workers (engine.ts).
-import type { AppState, Config, FullInfo, Job, Params, Preset, SessionPayload, Source } from "@/lib/api";
+import type {
+  AppState,
+  Config,
+  FullInfo,
+  Job,
+  Params,
+  Preset,
+  SessionPayload,
+  Source,
+  SuggestionModel,
+} from "@/lib/api";
 import { DEFAULT_TARGET, libraryStats, slideTimes } from "@/lib/stats";
 import { jobs, ui } from "./engine";
-import type { Src } from "./engine.worker";
-import { exifSegment, readExif, withExif } from "./exif";
+import type { ModelRef, Src } from "./engine.worker";
+import { exifSegment, readExif, withExif, xmpSegment } from "./exif";
 import { cleanParams, groupSequence, MOUNT_AUTO, rotateBox, turnLocal, weakScans, type Quality } from "./imaging";
-import { Immich, ImmichError } from "./immich";
+import { Immich, ImmichError, NotIndexed, Unsupported, type Asset } from "./immich";
+import { dot, LABELS_KEY, MODEL_ID, promptBatch, tagSuggestions, TAGS, Tokenizer, type Learned } from "./clip";
 import { cleanStock, effective, label, Labels, views } from "./filmstock";
+import {
+  cleanTags,
+  insightsKey,
+  KINDS as INSIGHT_KINDS,
+  merge as mergeInsights,
+  needsAnalysis,
+  pending as pendingInsights,
+  setTags,
+  slideInsights,
+  placeSuggestion,
+  suggestBetween,
+} from "./insights";
 import { Model } from "./learning";
 import { canPickFolders, kvGet, kvSet, permission, pickDirectory, type Library } from "./library";
+import { CLIP, fetchFiles, filesReady, megabytes, source } from "./models";
 import { npy, readNpy } from "./npy";
+import { alphabet, OCR, OCR_DIR, OCR_ID } from "./ocr";
+import {
+  GAZETTEER,
+  GAZETTEER_DIR,
+  GAZETTEER_MB,
+  Gazetteer,
+  placeFromText,
+  search as searchPlaces,
+  unzipEntry,
+} from "./places";
+import {
+  CANDIDATES,
+  DATE_CANDIDATES,
+  dateWindow,
+  dismiss as dismissSimilar,
+  emptyEmbeddings,
+  KINDS as SIMILAR_KINDS,
+  LOOKALIKE,
+  lookalikeView,
+  pack,
+  pending as pendingEmbeddings,
+  slideKey,
+  suggest as suggestSimilar,
+  threshold as dupThreshold,
+  todo as todoEmbeddings,
+  type Embeddings,
+} from "./similar";
 import {
   activeScans,
   cleanPlace,
@@ -23,6 +74,7 @@ import {
   parseDate,
   randomHex,
   renderKey,
+  samePlace,
   sha1Hex,
   slideDates,
   slugify,
@@ -35,6 +87,7 @@ import {
   type Scan,
   type SessionData,
   type Snapshot,
+  type StoredInsights,
 } from "./store";
 import { zip } from "./zip";
 
@@ -58,6 +111,9 @@ type StoredConfig = {
   jpeg_quality: number;
   upload_originals_stacked: boolean;
   stats_target: number;
+  /** Scene tags and look-alikes from CLIP (downloads the model), and the look-alike check in Immich. */
+  insights_enabled: boolean;
+  lookalike_enabled: boolean;
 };
 
 const CONFIG_KEY = "slide-station-config";
@@ -70,6 +126,8 @@ const DEFAULT_CONFIG: StoredConfig = {
   jpeg_quality: 95,
   upload_originals_stacked: false,
   stats_target: DEFAULT_TARGET,
+  insights_enabled: false,
+  lookalike_enabled: false,
 };
 
 function loadConfig(): StoredConfig {
@@ -99,7 +157,9 @@ export function setLibrary(l: Library, onChange?: (l: Library) => void) {
   cache.clear();
   activeSession = null;
   learningModel = null;
+  stockLabels = null;
   importedIndex = null;
+  queuedTrays.length = 0;
 }
 
 const sessionDir = (sid: string) => `sessions/${sid}`;
@@ -251,6 +311,623 @@ function setStock(g: GroupData, v: string) {
   else delete g.stock;
 }
 
+// ------------------------------------------------------------------ insights: scene tags, look-alikes
+
+// The scene-tag model (clip.ts, insights.py) in the jobs worker: downloaded on request into the
+// library's models/clip-vit-b32/ (models.ts), the same files and label cache as the desktop app.
+const CLIP_DIR = `models/${MODEL_ID}`;
+const clipSource = () => source(MODEL_ID, CLIP);
+let clipReady: { t: number; lib: Library; ready: boolean } | null = null;
+
+/** Every file of the tag model there at its size (asked on every poll: cached for 2 s). */
+async function modelReady(): Promise<boolean> {
+  if (clipReady?.lib === lib && Date.now() - clipReady.t < 2000) return clipReady.ready;
+  const ready = await filesReady(lib, CLIP_DIR, clipSource());
+  clipReady = { t: Date.now(), lib, ready };
+  return ready;
+}
+
+/** What analyses a slide now (insights.active_models): the tag model turned on and downloaded; the
+ *  text reader once it and the place names are there. Part of every slide's insights key. */
+async function activeModels(): Promise<string[]> {
+  const out = loadConfig().insights_enabled && (await modelReady()) ? [MODEL_ID, LABELS_KEY] : [];
+  if (await ocrOn()) out.push(OCR_ID); // signs are read for places
+  return out;
+}
+
+async function modelFile(name: string, dir = CLIP_DIR): Promise<ModelRef> {
+  const f = await lib.read(`${dir}/${name}`);
+  if (!f) throw new Error(`The model file ${dir}/${name} is missing`);
+  return { key: `${lib.name}/${dir}/${name}:${f.size}:${f.lastModified}`, blob: f };
+}
+
+// Places: GeoNames' cities (places.ts) and the text reader (ocr.ts), into data/geonames/ and
+// models/ppocr/ like the desktop app. A gazetteer the desktop app downloaded (another day's files,
+// other sizes) counts too: ready = the three files are there, as in places.gazetteer_ready.
+const ocrSource = () => source(OCR_ID, OCR);
+const gazSource = () => source("geonames", GAZETTEER);
+let ocrState: { t: number; lib: Library; gaz: boolean; ocr: boolean } | null = null;
+
+async function placesState() {
+  if (ocrState?.lib !== lib || Date.now() - ocrState.t > 2000) {
+    let gaz = true;
+    for (const [, name] of gazSource().files) gaz &&= await lib.exists(`${GAZETTEER_DIR}/${name}`);
+    ocrState = { t: Date.now(), lib, gaz, ocr: await filesReady(lib, OCR_DIR, ocrSource()) };
+  }
+  return ocrState;
+}
+const gazetteerReady = async () => (await placesState()).gaz;
+/** Signs are read for places once the text reader and the place names are downloaded. */
+const ocrOn = async () => {
+  const s = await placesState();
+  return s.gaz && s.ocr;
+};
+
+let gazCache: { lib: Library; stamp: number; gaz: Promise<Gazetteer> } | null = null;
+
+/** The loaded gazetteer (parsed once, again when the files change), or null while it isn't there. */
+async function gazetteer(): Promise<Gazetteer | null> {
+  if (!(await gazetteerReady())) return null;
+  const zip = await lib.read(`${GAZETTEER_DIR}/cities15000.zip`);
+  if (!zip) return null;
+  if (gazCache?.lib !== lib || gazCache.stamp !== zip.lastModified) {
+    const gaz = (async () => {
+      const cities = new TextDecoder().decode(await unzipEntry(zip, "cities15000.txt"));
+      const [country, admin] = [
+        await lib.readText(`${GAZETTEER_DIR}/countryInfo.txt`),
+        await lib.readText(`${GAZETTEER_DIR}/admin1CodesASCII.txt`),
+      ];
+      return new Gazetteer(cities, country ?? "", admin ?? "");
+    })();
+    const entry = { lib, stamp: zip.lastModified, gaz };
+    gazCache = entry;
+    gaz.catch(() => gazCache === entry && (gazCache = null));
+  }
+  return gazCache.gaz;
+}
+
+/** Fetch the place names that are missing (a job; the pinned snapshot is checked against its checksums). */
+async function downloadGazetteer(job: Job) {
+  const src = gazSource();
+  const missing = [];
+  for (const f of src.files) if (!(await lib.exists(`${GAZETTEER_DIR}/${f[1]}`))) missing.push(f);
+  if (missing.length) await fetchFiles(lib, job, { ...src, files: missing }, GAZETTEER_DIR, "place names");
+  ocrState = null;
+  job.message = "Place names ready";
+}
+
+let ocrChars: { key: string; chars: string[] } | null = null;
+
+/** The text in a slide's upright blend, a line each (places.read_text). */
+async function readText(d: SessionData, g: GroupData) {
+  const [det, rec, dict] = [
+    await modelFile("det.onnx", OCR_DIR),
+    await modelFile("rec.onnx", OCR_DIR),
+    await modelFile("dict.txt", OCR_DIR),
+  ];
+  if (ocrChars?.key !== dict.key) ocrChars = { key: dict.key, chars: alphabet(await dict.blob.text()) };
+  const src = await fusedSrc(d, g, jobs);
+  return jobs.call("ocrRead", { det, rec, chars: ocrChars.chars, src, rotation: g.rotation }, -1);
+}
+
+let labelCache: { lib: Library; rows: Promise<Float32Array> } | null = null;
+
+/** The label prompts' embeddings, computed once with the text model and kept as
+ *  labels-<key>.npy next to it (the desktop app reads and writes the same file). */
+function labelEmbeds(): Promise<Float32Array> {
+  if (labelCache?.lib !== lib) {
+    const rows = (async () => {
+      const path = `${CLIP_DIR}/labels-${LABELS_KEY}.npy`;
+      const hit = await lib.read(path);
+      if (hit) return readNpy(hit);
+      const [vocab, merges] = [
+        await lib.readText(`${CLIP_DIR}/vocab.json`),
+        await lib.readText(`${CLIP_DIR}/merges.txt`),
+      ];
+      const b = promptBatch(new Tokenizer(JSON.parse(vocab ?? "{}"), merges ?? ""));
+      const out = await jobs.call(
+        "clipText",
+        { model: await modelFile("text.onnx"), ids: b.ids, length: b.length },
+        -1,
+      );
+      await lib.write(path, npy(out, [TAGS.length, out.length / TAGS.length]));
+      return out;
+    })();
+    const entry = { lib, rows };
+    labelCache = entry;
+    rows.catch(() => labelCache === entry && (labelCache = null)); // try again next time
+  }
+  return labelCache!.rows;
+}
+
+// insights.json: accepts and dismisses counted per label (tags) or kind (look-alikes); the
+// thresholds rise with dismissals. Writes are queued, so one read-modify-write follows another.
+let learnedQueue: Promise<void> = Promise.resolve();
+
+async function learned(): Promise<Learned> {
+  await learnedQueue;
+  try {
+    const d = JSON.parse((await lib.readText("insights.json")) ?? "null");
+    return d && typeof d === "object" ? { labels: {}, ...d } : { labels: {} };
+  } catch {
+    return { labels: {} };
+  }
+}
+
+/** Count an accept / dismiss (insights.record). */
+function record(kind: string, value: string, action: string, n = 1) {
+  if (!["tags", "duplicates", "split", "merge"].includes(kind) || !["accept", "dismiss"].includes(action) || n <= 0)
+    return;
+  const l = lib;
+  learnedQueue = learnedQueue
+    .then(async () => {
+      let d: Learned = { labels: {} };
+      try {
+        d = { labels: {}, ...JSON.parse((await l.readText("insights.json")) ?? "{}") };
+      } catch {
+        /* start fresh */
+      }
+      const c = (d.labels[value] ??= { accepted: 0, dismissed: 0 });
+      c[action === "accept" ? "accepted" : "dismissed"] += n;
+      await l.write("insights.json", JSON.stringify(d, null, 1));
+    })
+    .catch((e) => console.warn("insights.json:", e));
+}
+
+// embeddings.json per tray (similar.py): derived data next to session.json, never in it; its own
+// queue for reload-apply-save, so the background helper never waits for the session lock
+const embPath = (sid: string) => `${sessionDir(sid)}/embeddings.json`;
+let embQueue: Promise<unknown> = Promise.resolve();
+
+async function loadEmb(sid: string): Promise<Embeddings> {
+  try {
+    const e = JSON.parse((await lib.readText(embPath(sid))) ?? "{}");
+    return { slides: e.slides ?? {}, scans: e.scans ?? {} };
+  } catch {
+    return emptyEmbeddings();
+  }
+}
+
+function updateEmb(sid: string, fn: (e: Embeddings) => void): Promise<void> {
+  const run = embQueue.then(async () => {
+    const e = await loadEmb(sid);
+    fn(e);
+    await lib.write(embPath(sid), JSON.stringify(e, null, 1));
+  });
+  embQueue = run.catch(() => undefined);
+  return run;
+}
+
+/** Keep a slide's embedding (of its upright blend) and the blend's sharpness / clipping. */
+const recordSlide = (sid: string, g: GroupData, emb: Float32Array, q: Quality) => {
+  const entry = { key: slideKey(g), emb: pack(emb), q };
+  return updateEmb(sid, (e) => void (e.slides[g.id] = entry));
+};
+
+/** A scan's grouping signature, for the merge check (null when it isn't cached). */
+const sigOf = (sid: string) => async (scan: string) => {
+  const f = await lib.read(cachePath(sid, `${scan}.sig.npy`));
+  return f ? readNpy(f) : null;
+};
+
+/** One slide analysed: CLIP on its upright blend -> tag suggestions, kept only if the slide is still
+ *  the same slide afterwards (insights.analyse_slide). The embedding is kept for look-alikes. */
+async function analyseSlide(sid: string, gid: string, models: string[]) {
+  const d = await loadSession(sid);
+  const g = group(d, gid);
+  const fresh: StoredInsights & { key: string } = { key: insightsKey(g, models) };
+  if (models.includes(MODEL_ID)) {
+    const model = await modelFile("vision.onnx");
+    const r = await jobs.call("clipImage", { model, src: await fusedSrc(d, g, jobs), rotation: g.rotation }, -1);
+    fresh.tags = tagSuggestions(await labelEmbeds(), r.emb, await learned());
+    await recordSlide(sid, g, r.emb, r.quality);
+  }
+  if (models.includes(OCR_ID)) {
+    // signs: the text in the photo, and a place it names
+    const [lines, gaz] = [await readText(d, g), await gazetteer()];
+    if (gaz) {
+      fresh.text = lines.slice(0, 20);
+      const hit = placeFromText(lines, gaz);
+      if (hit) fresh.place = placeSuggestion(hit.place, hit.confidence, OCR_ID, hit.text);
+    }
+  }
+  await update(sid, (f) => {
+    const fg = f.groups.find((x) => x.id === gid);
+    if (!fg || insightsKey(fg, models) !== fresh.key || fg.insights?.key === fresh.key) return;
+    fg.insights = mergeInsights(fg.insights, fresh, fg.tags ?? [], fg.caption ?? "", fg.place ?? null);
+  });
+}
+
+/** The embeddings of slides from before (or turned since) and of every scan (similar.step). A slide or
+ *  scan that fails gets an entry with `error`, so it isn't tried forever. */
+async function similarStep(d: SessionData): Promise<boolean> {
+  const { g, scan } = todoEmbeddings(d, await loadEmb(d.id));
+  const why = (e: unknown) => (e instanceof Error ? e.message : String(e)) || "error";
+  if (g) {
+    try {
+      const model = await modelFile("vision.onnx");
+      const r = await jobs.call("clipImage", { model, src: await fusedSrc(d, g, jobs), rotation: g.rotation }, -1);
+      await recordSlide(d.id, g, r.emb, r.quality);
+    } catch (e) {
+      console.warn("similar:", e);
+      const entry = { key: slideKey(g), error: why(e) };
+      await updateEmb(d.id, (x) => void (x.slides[g.id] = entry));
+    }
+    return true;
+  }
+  if (scan) {
+    let entry: Embeddings["scans"][string];
+    try {
+      await ensureProxies(d, scan);
+      const blob = await readCache(d.id, `${scan}.proxy.jpg`);
+      const r = await jobs.call("clipScan", { model: await modelFile("vision.onnx"), blob }, -1);
+      entry = { emb: pack(r.emb), lum: r.lum };
+    } catch (e) {
+      console.warn("similar:", e);
+      entry = { error: why(e) };
+    }
+    await updateEmb(d.id, (x) => void (x.scans[scan] = entry));
+    return true;
+  }
+  return false;
+}
+
+// Background analysis (insights.step / _worker): the open tray first, then trays queued with
+// "Analyse", one slide at a time, only while no job runs (imports reshape slides, uploads need the
+// memory). Runs next to the background renderer; the jobs worker takes its calls last.
+const queuedTrays: string[] = [];
+let insightsBusy: Promise<void> | null = null;
+let clipLoaded = false;
+
+async function insightsStep(): Promise<boolean> {
+  const models = await activeModels();
+  if (!models.length) {
+    if (clipLoaded) void jobs.call("clipRelease", undefined).catch(() => undefined); // turned off: let go of it
+    clipLoaded = false;
+    return false;
+  }
+  if (jobRunning()) return false;
+  for (const sid of [...new Set([activeSession, ...queuedTrays])]) {
+    if (!sid) continue;
+    let d: SessionData | null = null;
+    try {
+      d = await loadSession(sid);
+    } catch {
+      /* deleted */
+    }
+    const g = d?.groups.find((x) => needsAnalysis(x, models));
+    clipLoaded = true;
+    if (!g) {
+      // analysed: then the embeddings for look-alikes (slides from before, scans)
+      if (d && models.includes(MODEL_ID) && (await similarStep(d))) return true;
+      if (queuedTrays.includes(sid)) queuedTrays.splice(queuedTrays.indexOf(sid), 1);
+      continue;
+    }
+    try {
+      await analyseSlide(sid, g.id, models);
+    } catch (e) {
+      // e.g. an unreadable scan: note it, don't try that slide forever
+      console.warn("insights:", e);
+      const key = insightsKey(g, models);
+      const err = (e instanceof Error ? e.message : String(e)) || "error";
+      await update(sid, (f) => {
+        const fg = f.groups.find((x) => x.id === g.id);
+        if (fg && insightsKey(fg, models) === key)
+          fg.insights = {
+            ...mergeInsights(fg.insights, { key }, fg.tags ?? [], fg.caption ?? "", fg.place ?? null),
+            error: err,
+          };
+      });
+    }
+    return true;
+  }
+  return false;
+}
+
+function kickInsights() {
+  if (insightsBusy || !lib) return;
+  const l = lib;
+  insightsBusy = (async () => {
+    while (lib === l && (await insightsStep()));
+  })()
+    .catch((e) => console.warn("insights:", e))
+    .finally(() => (insightsBusy = null));
+}
+
+/** Top-level insights state for the tray payload, and the look-alike suggestions once the tag model
+ *  is there (server._insights_payload). `pending` counts slides to analyse plus slides and scans
+ *  to embed: the UI keeps reloading the tray while it's above 0. */
+async function insightsPayload(d: SessionData, models: string[]) {
+  const on = !!loadConfig().insights_enabled;
+  const ready = on && (await modelReady());
+  const status = {
+    enabled: on,
+    ready,
+    pending: pendingInsights(d.groups, models),
+    missing: (on && !ready ? ["tags"] : []) as SuggestionModel[],
+  };
+  if (!ready) return { insights: status, similar: null };
+  const e = await loadEmb(d.id);
+  const all = await suggestSimilar(d, e, dupThreshold(await learned()), sigOf(d.id));
+  // a slide still to analyse gets its embedding from that same analysis: count it once
+  const overlap = d.groups.filter(
+    (g) => !g.skip && needsAnalysis(g, models) && e.slides[g.id]?.key !== slideKey(g),
+  ).length;
+  status.pending += pendingEmbeddings(d, e) - overlap;
+  return { insights: status, similar: all };
+}
+
+/** Give a slide its own caption (server._set_caption): an open caption suggestion goes, and
+ *  suggestions that were up to date stay so. */
+function setCaption(g: GroupData, caption: string, models: string[]) {
+  const fresh = !!g.insights && !needsAnalysis(g, models);
+  g.caption = caption;
+  const ins = g.insights;
+  if (!ins || !caption) return;
+  if (ins.caption?.state === "suggested") ins.caption = null;
+  if (fresh) ins.key = insightsKey(g, models);
+}
+
+/** Set (or clear) a slide's place; an open place suggestion is settled by it (server._set_place). */
+function setPlace(g: GroupData, p: Place | null) {
+  if (p) g.place = p;
+  else delete g.place;
+  const e = g.insights?.place;
+  if (p && e?.state === "suggested") e.state = samePlace(e.place, p) ? "accepted" : "dismissed";
+}
+
+/** Accept or dismiss a slide's open suggestion(s) of one kind (server._decide). Whether anything changed. */
+function decideOne(
+  g: GroupData,
+  kind: string,
+  action: string,
+  value: string | null,
+  text: string | null,
+  models: string[],
+) {
+  const ins = g.insights ?? {};
+  if (kind === "tags") {
+    const hits = (ins.tags ?? []).filter((e) => (value === null || e.value === value) && e.state === "suggested");
+    if (!hits.length) return false;
+    const tags = [...(g.tags ?? [])];
+    for (const e of hits) {
+      e.state = action === "accept" ? "accepted" : "dismissed";
+      record("tags", e.value, action);
+      if (action === "accept" && !tags.includes(e.value)) tags.push(e.value);
+      else if (action === "dismiss" && tags.includes(e.value)) tags.splice(tags.indexOf(e.value), 1);
+    }
+    if (tags.length) g.tags = tags;
+    else delete g.tags;
+    return true;
+  }
+  const k = kind as "caption" | "date" | "place" | "stock";
+  const e = ins[k];
+  if (!e || (value !== null && e.value !== value) || e.state !== "suggested") return false;
+  if (action === "accept") {
+    if (k === "date") g.date = cleanDate(e.value);
+    else if (k === "caption") {
+      if (g.caption) return false; // typed (or pulled from Immich) meanwhile: that one stays
+      const caption = String(text ?? e.value)
+        .split(/\s+/)
+        .filter(Boolean)
+        .join(" ")
+        .slice(0, 2000);
+      if (!caption) return false;
+      e.state = "accepted";
+      setCaption(g, caption, models);
+      return true;
+    } else if (k === "stock") setStock(g, e.value);
+    else g.place = placeOf(e.place) ?? undefined;
+  }
+  e.state = action === "accept" ? "accepted" : "dismissed";
+  return true;
+}
+
+/** Scans from `scan` on become a new slide right after this one (server._split). */
+function splitAt(d: SessionData, g: GroupData, scan: string) {
+  const at = g.scans.indexOf(scan);
+  if (at <= 0) return false;
+  const tail = newGroup(d, g.scans.slice(at), g.rotation, g.rot_reason);
+  tail.params = { ...g.params };
+  tail.excluded = (g.excluded ?? []).filter((x) => tail.scans.includes(x));
+  if (g.tags?.length) tail.tags = [...g.tags];
+  if (g.stock) tail.stock = g.stock; // one piece of film
+  g.scans = g.scans.slice(0, at);
+  g.excluded = (g.excluded ?? []).filter((x) => g.scans.includes(x));
+  d.groups.splice(groupIndex(d, g.id) + 1, 0, tail);
+  return true;
+}
+
+/** The slide after slide i becomes more scans of it (server._merge_next). */
+function mergeNext(d: SessionData, i: number) {
+  const [nxt] = d.groups.splice(i + 1, 1);
+  const g = d.groups[i];
+  g.scans.push(...nxt.scans);
+  g.excluded.push(...(nxt.excluded ?? []));
+  if (nxt.tags?.length) g.tags = [...(g.tags ?? []), ...nxt.tags.filter((t) => !(g.tags ?? []).includes(t))];
+  if (nxt.immich) (d.orphan_assets ??= []).push(nxt.immich.asset_id);
+  if (nxt.immich?.stack_id) (d.orphan_stacks ??= []).push(nxt.immich.stack_id); // restacked under the merged one
+}
+
+/** A look-alike suggestion by its id (server._decide_similar). Accept: duplicates keep one slide
+ *  (`keep`, default the best) and skip the rest; split cuts the stack; merge joins the two. */
+async function decideSimilar(sid: string, kind: string, action: string, value: string, keep: string | null) {
+  const { d } = await update(sid, async (d) => {
+    const all = await suggestSimilar(d, await loadEmb(sid), dupThreshold(await learned()), sigOf(sid));
+    const sug = all[kind as "duplicates" | "split" | "merge"].find((x) => x.id === value);
+    if (!sug) throw new HttpError(404, "That suggestion no longer applies (the slides changed)");
+    if (action === "dismiss") dismissSimilar(d, sug);
+    else if (kind === "duplicates") {
+      const k = keep && sug.groups.includes(keep) ? keep : sug.best;
+      for (const gid of sug.groups)
+        if (gid !== k) {
+          const g = group(d, gid);
+          g.skip = true;
+          await learn(d, g);
+        }
+    } else if (kind === "split") {
+      const g = group(d, sug.groups[0]);
+      editable(g);
+      splitAt(d, g, sug.scan!);
+    } else {
+      const i = groupIndex(d, sug.groups[0]);
+      if (i + 1 >= d.groups.length || d.groups[i + 1].id !== sug.groups[1])
+        throw new HttpError(409, "These slides are no longer next to each other");
+      mergeNext(d, i);
+    }
+  });
+  record(kind, kind, action);
+  return { ...(await payload(d)), decided: 1 };
+}
+
+/** A photo in Immich that looks like this slide's upload (server._decide_lookalike). Accept =
+ *  replace it: the new upload joins its albums (and becomes a favourite if it was), it goes to the
+ *  Immich trash. Dismiss: keep both. */
+async function decideLookalike(sid: string, action: string, value: string, gids: string[]) {
+  if (gids.length !== 1) throw new HttpError(400, "Give the slide (groups: [id])");
+  const g = group(await loadSession(sid), gids[0]);
+  const match = g.immich?.lookalike?.matches.find((x) => x.id === value);
+  if (!match || match.state !== "suggested") throw new HttpError(404, "No such look-alike for this slide");
+  if (action === "accept") {
+    const c = immichClient();
+    const carry = await carryOver(c, value);
+    for (const a of carry.albums) await c.addToAlbum(a, [g.immich!.asset_id]);
+    if (carry.favorite) await c.updateAsset(g.immich!.asset_id, { isFavorite: true });
+    await c.trash([value]);
+  }
+  const { d } = await update(sid, (fresh) => {
+    for (const x of group(fresh, g.id).immich?.lookalike?.matches ?? [])
+      if (x.id === value) x.state = action === "accept" ? "accepted" : "dismissed";
+  });
+  return { ...(await payload(d)), decided: 1 };
+}
+
+/**
+ * After upload: does Immich hold a photo that looks like each of these slides (similar.check_lookalikes)?
+ * Candidates from Immich's smart search by image (no scores), else the photos taken around the
+ * slide's date; each verified here, its thumbnail and the upload's through the local CLIP.
+ */
+async function checkLookalikes(c: Immich, sid: string, gids: string[], job?: Job) {
+  let d = await loadSession(sid);
+  const dates = slideDates(d);
+  const own = new Set<string>();
+  for (const g of d.groups) {
+    for (const x of [g.immich?.asset_id, g.source_asset?.id]) if (x) own.add(x);
+    for (const x of Object.values(g.immich?.originals ?? {})) own.add(x);
+  }
+  const model = await modelFile("vision.onnx");
+  const cache = new Map<string, Float32Array | null>();
+  const thumb = async (id: string) => {
+    if (!cache.has(id))
+      try {
+        cache.set(id, await jobs.call("clipThumb", { model, blob: await c.thumbnail(id) }));
+      } catch (e) {
+        console.warn("look-alike thumbnail:", e); // a video, a missing thumbnail, a key without asset.view
+        cache.set(id, null);
+      }
+    return cache.get(id)!;
+  };
+  const byWindow = new Map<string, Asset[]>();
+  const out = { checked: 0, found: 0, pending: 0 };
+  for (const [n, gid] of gids.entries()) {
+    if (job) {
+      job.message = `Looking for look-alikes in Immich: slide ${n + 1} of ${gids.length}`;
+      if (job.kind === "lookalike") job.done = n;
+    }
+    d = await loadSession(sid);
+    const g = d.groups.find((x) => x.id === gid);
+    const aid = g?.immich?.asset_id;
+    if (!g || !aid) continue;
+    let [via, state]: ["smart" | "date", "checked" | "pending" | "unsupported"] = ["smart", "checked"];
+    let candidates: Asset[] = [];
+    try {
+      candidates = await c.similarAssets(aid, CANDIDATES + 1);
+    } catch (e) {
+      if (e instanceof NotIndexed) state = "pending";
+      else if (e instanceof Unsupported || e instanceof ImmichError) {
+        console.warn("smart search:", e);
+        via = "date";
+        const win = dateWindow(dates[groupIndex(d, gid)]?.value ?? "");
+        if (!win) state = "unsupported";
+        else {
+          const k = win.join("|");
+          if (!byWindow.has(k))
+            byWindow.set(
+              k,
+              await c.takenBetween(win[0], win[1], DATE_CANDIDATES).catch((e2) => {
+                console.warn("date search:", e2);
+                return [];
+              }),
+            );
+          candidates = byWindow.get(k)!;
+        }
+      } else throw e;
+    }
+    let matches: { id: string; similarity: number; name: string; date: string; state: "suggested" }[] = [];
+    if (state === "checked") {
+      const mine = await thumb(aid);
+      for (const x of candidates) {
+        if (own.has(x.id) || x.id === aid || x.isTrashed || (x.type ?? "IMAGE") !== "IMAGE" || !mine) continue;
+        const v = await thumb(x.id);
+        if (!v) continue;
+        const sim = dot(mine, v);
+        if (sim >= LOOKALIKE)
+          matches.push({
+            id: x.id,
+            similarity: Math.round(sim * 1000) / 1000,
+            name: x.originalFileName ?? "",
+            date: (x.localDateTime || x.fileCreatedAt || "").slice(0, 10),
+            state: "suggested",
+          });
+      }
+      matches = matches.sort((a, b) => b.similarity - a.similarity).slice(0, 3);
+    }
+    out[state === "pending" ? "pending" : "checked"]++;
+    if (matches.length) out.found++;
+    await update(sid, (fresh) => {
+      const fr = fresh.groups.find((x) => x.id === gid)?.immich;
+      if (fr?.asset_id !== aid) return; // uploaded again meanwhile
+      const old = new Map((fr.lookalike?.matches ?? []).map((x) => [x.id, x.state]));
+      const kept = matches.map((x) => {
+        const was = old.get(x.id);
+        return was === "accepted" || was === "dismissed" ? { ...x, state: was } : x;
+      });
+      fr.lookalike = { asset: aid, state, via, matches: kept };
+    });
+  }
+  return out;
+}
+
+const slidesWord = (n: number) => `${n} slide${n === 1 ? "" : "s"}`;
+const lookalikeNote = (n: { found: number; pending: number }) =>
+  (n.found ? `; ${slidesWord(n.found)} may already be in Immich (see Insights)` : "") +
+  (n.pending ? `; ${slidesWord(n.pending)} to check for look-alikes once Immich has indexed them` : "");
+
+/** The look-alike check after an upload: best effort, never fails the upload. */
+async function lookalikesQuietly(c: Immich, sid: string, gids: string[], job: Job) {
+  if (!(await modelReady())) return "; look-alikes not checked: the tag model isn't downloaded";
+  try {
+    return lookalikeNote(await checkLookalikes(c, sid, gids, job));
+  } catch (e) {
+    console.warn("look-alikes:", e);
+    return `; look-alikes not checked (${e instanceof Error ? e.message : e})`;
+  }
+}
+
+/** A job: the tray's uploaded slides not checked yet or not indexed at the last check (all: every one). */
+async function checkLookalikesJob(job: Job, sid: string, everything: boolean) {
+  const d = await loadSession(sid);
+  const gids = d.groups
+    .filter(
+      (g) => !g.skip && g.immich?.asset_id && (everything || [undefined, "pending"].includes(lookalikeView(g)?.state)),
+    )
+    .map((g) => g.id);
+  job.total = gids.length;
+  const n = await checkLookalikes(immichClient(), sid, gids, job);
+  job.done = job.total;
+  job.message = `Checked ${slidesWord(n.checked)} for look-alikes in Immich` + lookalikeNote(n);
+}
+
 // ------------------------------------------------------------------ undo
 
 const HISTORY_MAX = 60;
@@ -351,7 +1028,9 @@ async function payload(d: SessionData): Promise<SessionPayload> {
   const dates = slideDates(d);
   const st = statuses(d);
   const live = views(d, dates, await labels()); // film stock and date guesses: no model
+  const models = await activeModels(); // once: every slide's insights key depends on it
   return {
+    ...(await insightsPayload(d, models)),
     summary: summary(d),
     defaults: d.defaults,
     stock: d.stock ?? "",
@@ -374,11 +1053,9 @@ async function payload(d: SessionData): Promise<SessionPayload> {
       tags: g.tags ?? [],
       stock: g.stock ?? "",
       place: g.place ?? null,
-      // only the model-free kinds here: the scene tags' model doesn't run in the browser (yet)
-      insights:
-        live[i].stock || live[i].date
-          ? { tags: [], caption: null, place: null, ...live[i], stale: false, error: "" }
-          : null,
+      insights: slideInsights(g, live[i], models),
+      // after upload: photos already in Immich that look like this one
+      lookalike: lookalikeView(g),
       date_est: dates[i],
       active: activeScans(g),
       key: renderKey(g),
@@ -390,6 +1067,11 @@ async function payload(d: SessionData): Promise<SessionPayload> {
     })),
     cleanup_blockers: cleanupBlockers(d),
     log: (d.log ?? []).slice(-20),
+    // place suggestions from signs: the text reader + place names are there (else ocr_mb to download)
+    places: {
+      ocr: models.includes(OCR_ID),
+      ocr_mb: megabytes(ocrSource()) + ((await gazetteerReady()) ? 0 : GAZETTEER_MB),
+    },
   };
 }
 
@@ -861,6 +1543,7 @@ async function renderExport(sid: string, gid: string, quality: number): Promise<
       1,
       g.place ?? undefined, // the slide's place as EXIF GPS
     ),
+    ...(g.tags?.length ? [xmpSegment(g.tags)] : []), // tags as XMP keywords (Immich reads them too)
   );
   const name = `${slugify(d.name)}_${scans[0]}.jpg`;
   await lib.write(`${sessionDir(sid)}/export/${name}`, blob);
@@ -912,6 +1595,7 @@ async function backgroundStep() {
 function watchTray(sid: string) {
   activeSession = sid;
   backgroundTimer ??= setInterval(() => {
+    kickInsights(); // scene tags and look-alikes, next to the renders
     if (background) return;
     background = backgroundStep()
       .catch((e) => console.warn("background render:", e))
@@ -1034,6 +1718,11 @@ async function finishSession(
   let synced = 0;
   let duplicates = 0;
   let noUpdate = false;
+  const tagged: Record<string, string[]> = {}; // tag -> asset ids to tag, uploaded or updated now
+  const sent: string[] = []; // slides uploaded now, for the look-alike check
+  const tagAll = (g: GroupData, asset: string) => {
+    for (const t of g.tags ?? []) (tagged[t] ??= []).push(asset);
+  };
   const wantOriginals = cfg.upload_originals_stacked;
   let stacks: boolean | null = null; // asked once, and only if needed
   const hasStacks = async () => (stacks ??= await client!.hasStacks());
@@ -1076,6 +1765,7 @@ async function finishSession(
       const fg = fresh.groups.find((x) => x.id === gid);
       if (fg?.immich?.asset_id === asset) Object.assign(fg.immich, { meta: mk, pushed });
     });
+    tagAll(g, asset); // tags are part of the meta key: a new tag comes this way too
     synced++;
   }
 
@@ -1170,6 +1860,8 @@ async function finishSession(
     if (stackId && Object.keys(originals).length)
       Object.assign(rec, { originals, own_originals: own, stack_id: stackId });
     await update(sid, (fresh) => void (group(fresh, gid).immich = rec));
+    tagAll(g, assetId);
+    sent.push(gid);
     if (!cfg.keep_exports) await lib.remove(`${sessionDir(sid)}/export/${out.name}`); // it's in Immich now
     uploaded++;
     job.done++;
@@ -1215,6 +1907,19 @@ async function finishSession(
   });
   for (const x of stacksGone) await client!.deleteStack(x);
   await client!.trash(toTrash);
+  let tagNote = "";
+  if (Object.keys(tagged).length) {
+    job.message = "Tagging in Immich";
+    try {
+      await client!.tagEach(tagged);
+    } catch (e) {
+      // an older Immich or a key without tag permissions: the upload stands
+      console.warn("immich tags:", e);
+      tagNote = `; tags not sent (${e instanceof Error ? e.message : e})`;
+    }
+  }
+  // photos in Immich that look like what just went up
+  const lookNote = cfg.lookalike_enabled && sent.length ? await lookalikesQuietly(client!, sid, sent, job) : "";
   if (!cfg.keep_originals) await dropLocalOriginals(sid);
   job.message =
     `Done - ${uploaded} slides uploaded to '${d.album}'` +
@@ -1226,7 +1931,9 @@ async function finishSession(
     (wantOriginals && uploaded && stacks === false
       ? "; original scans not stacked: this Immich has no stacks, or the API key lacks stack.read / stack.create"
       : "") +
-    (lost.length ? `; ${lost.length} skipped: their original scans were deleted after the last upload` : "");
+    (lost.length ? `; ${lost.length} skipped: their original scans were deleted after the last upload` : "") +
+    tagNote +
+    lookNote;
 }
 
 function download(blob: Blob, name: string) {
@@ -1518,6 +2225,8 @@ export async function handle(method: string, url: string, body: Body = {}): Prom
       learning_enabled: cfg.learning_enabled,
       upload_originals_stacked: cfg.upload_originals_stacked,
       stats_target: cfg.stats_target,
+      insights_enabled: cfg.insights_enabled,
+      lookalike_enabled: cfg.lookalike_enabled,
     };
     return { config, sources: await sourceList(), sessions: await listSessions(), job: current } satisfies AppState;
   }
@@ -1531,6 +2240,8 @@ export async function handle(method: string, url: string, body: Body = {}): Prom
       "jpeg_quality",
       "learning_enabled",
       "upload_originals_stacked",
+      "insights_enabled",
+      "lookalike_enabled",
     ] as const)
       if (k in body && !(k === "immich_key" && body[k] === "")) (cfg as Record<string, unknown>)[k] = body[k];
     if ("stats_target" in body) {
@@ -1611,6 +2322,7 @@ export async function handle(method: string, url: string, body: Body = {}): Prom
   }
   if ((m = is("PATCH", /^\/api\/sessions\/([^/]+)\/groups\/([^/]+)$/))) {
     const [, sid, gid] = m;
+    const models = await activeModels();
     const { d } = await update(sid, async (d) => {
       const g = group(d, gid);
       if (Object.keys(body).some((k) => k !== "reviewed" && k !== "skip")) editable(g); // developed / left out are fine
@@ -1641,10 +2353,14 @@ export async function handle(method: string, url: string, body: Body = {}): Prom
       }
       for (const k of ["reviewed", "skip"] as const) if (k in body) g[k] = !!body[k];
       if ("date" in body) g.date = cleanDate(body.date);
-      if ("caption" in body) g.caption = String(body.caption).trim().slice(0, 2000);
+      if ("caption" in body) setCaption(g, String(body.caption).trim().slice(0, 2000), models);
+      if ("tags" in body) for (const t of setTags(g, cleanTags(body.tags))) record("tags", t, "dismiss");
       if ("stock" in body) setStock(g, checkedStock(body.stock));
       if ("stock" in body || "skip" in body) label(await labels(), d, g);
-      if ("place" in body) setPlace(g, placeOf(body.place));
+      if ("place" in body) {
+        setPlace(g, placeOf(body.place));
+        suggestBetween(d.groups);
+      }
       await learn(d, g);
       if ("excluded" in body) {
         g.excluded = (body.excluded as string[]).filter((x) => g.scans.includes(x));
@@ -1668,43 +2384,55 @@ export async function handle(method: string, url: string, body: Body = {}): Prom
     return { ...(await payload(d)), dated };
   }
   if ((m = is("POST", /^\/api\/sessions\/([^/]+)\/insights\/decide$/))) {
-    // film stock and date guesses only: the kinds that need no model (server.py insights_decide)
+    // accept or dismiss suggestions (server.py insights_decide): `kind`, `action`, optionally `value`
+    // (one tag) and `groups` (default: the whole tray, the review's "accept all"); look-alikes by id
+    const sid = m[1];
     const { kind, action } = body as { kind?: string; action?: string };
     const value = body.value == null ? null : String(body.value);
     if (
-      !["tags", "caption", "date", "place", "stock"].includes(kind ?? "") ||
+      ![...INSIGHT_KINDS, ...SIMILAR_KINDS, "lookalike"].includes(kind ?? "") ||
       !["accept", "dismiss"].includes(action ?? "")
     )
-      throw new HttpError(400, "kind must be tags, caption, date, place or stock; action accept or dismiss");
+      throw new HttpError(
+        400,
+        "kind must be tags, caption, date, place, stock, duplicates, split, merge or lookalike; action accept or dismiss",
+      );
+    if ((SIMILAR_KINDS as readonly string[]).includes(kind!))
+      return decideSimilar(sid, kind!, action!, value ?? "", body.keep == null ? null : String(body.keep));
+    if (kind === "lookalike")
+      return decideLookalike(sid, action!, value ?? "", Array.isArray(body.groups) ? body.groups.map(String) : []);
     const gids = Array.isArray(body.groups) ? (body.groups as string[]) : null;
+    const text = body.text == null ? null : String(body.text);
+    const models = await activeModels();
     let decided = 0;
-    const { d } = await update(m[1], async (d) => {
+    const { d } = await update(sid, async (d) => {
       const targets = d.groups.filter((g) => !gids || gids.includes(g.id));
       if (gids && targets.length === 1 && action === "accept") editable(targets[0]);
-      if (kind !== "stock" && kind !== "date") return; // nothing else is suggested in the browser
-      const live = views(d, slideDates(d), await labels());
+      // film stock and date guesses live in no file until decided: write down what is shown
+      const live = kind === "stock" || kind === "date" ? views(d, slideDates(d), await labels()) : null;
       for (const g of targets) {
         if (action === "accept" && g.locked) continue;
-        const e = live[groupIndex(d, g.id)][kind];
-        if (!e || e.state !== "suggested" || (value !== null && e.value !== value)) continue;
-        if (action === "accept") {
-          if (kind === "date") g.date = cleanDate(e.value);
-          else setStock(g, e.value);
+        if (live) {
+          const e = live[groupIndex(d, g.id)][kind as "stock" | "date"];
+          if (e?.state === "suggested" && (value === null || e.value === value))
+            (g.insights ??= {})[kind as "stock" | "date"] = { ...e };
         }
-        (g.insights ??= {})[kind] = { ...e, state: action === "accept" ? "accepted" : "dismissed" };
-        if (kind === "stock") await stockChanged(d, [g]);
-        decided++;
+        if (decideOne(g, kind!, action!, value, kind === "caption" && targets.length === 1 ? text : null, models)) {
+          decided++;
+          if (kind === "stock") await stockChanged(d, [g]);
+        }
       }
+      if (kind === "place") suggestBetween(d.groups);
     });
     return { ...(await payload(d)), decided };
   }
   if ((m = is("POST", /^\/api\/sessions\/([^/]+)\/insights\/propagate$/))) {
-    // tray-level propagation (server.py insights_propagate) for what the browser version edits: a
-    // film stock, place, caption or date; tags stay the desktop app's
+    // tray-level propagation (server.py insights_propagate): a tag is added to each slide's own tags;
+    // a caption, date, film stock or place replaces theirs. Locked slides are left as they are.
     const kind = String(body.kind);
-    if (!["caption", "date", "place", "stock"].includes(kind))
-      throw new HttpError(400, "kind must be caption, date, place or stock here");
-    const value =
+    if (!["tags", "caption", "date", "place", "stock"].includes(kind))
+      throw new HttpError(400, "kind must be tags, caption, date, stock or place");
+    let value =
       kind === "place"
         ? placeOf(body.value)
         : kind === "stock"
@@ -1712,57 +2440,122 @@ export async function handle(method: string, url: string, body: Body = {}): Prom
           : kind === "date"
             ? cleanDate(body.value ?? "")
             : String(body.value ?? "").trim();
+    if (kind === "tags") {
+      value = cleanTags([value])[0] ?? "";
+      if (!value) throw new HttpError(400, "No tag given");
+    }
+    const models = await activeModels();
     let applied = 0;
     const { d } = await update(m[1], async (d) => {
       const [a, b] = [groupIndex(d, String(body.from)), groupIndex(d, String(body.to))].sort((x, y) => x - y);
       if (a < 0) throw new HttpError(404, "Slide not found");
-      const live = kind === "stock" || kind === "date" ? views(d, slideDates(d), await labels()) : null;
+      const live = kind === "stock" ? views(d, slideDates(d), await labels()) : null;
       for (const [i, g] of d.groups.entries()) {
         if (i < a || i > b || g.locked) continue;
-        if (kind === "place") setPlace(g, value as Place | null);
-        else if (kind === "stock") setStock(g, value as string);
-        else if (kind === "date") g.date = value as string;
-        else g.caption = (value as string).slice(0, 2000);
-        if (live && (kind === "stock" || kind === "date")) {
-          const e = live[i][kind];
-          if (value && e?.value === value) (g.insights ??= {})[kind] = { ...e, state: "accepted" };
+        if (kind === "stock") {
+          setStock(g, value as string);
+          const e = live![i].stock;
+          if (value && e?.value === value) (g.insights ??= {}).stock = { ...e, state: "accepted" };
+          await stockChanged(d, [g]);
+        } else if (kind === "tags") {
+          if ((g.tags ?? []).includes(value as string)) continue;
+          setTags(g, [...(g.tags ?? []), value as string]);
+        } else if (kind === "place") setPlace(g, value as Place | null);
+        else {
+          const e = g.insights?.[kind as "caption" | "date"];
+          if (e && e.value === value) e.state = "accepted";
+          if (kind === "caption") setCaption(g, (value as string).slice(0, 2000), models);
+          else g.date = (value as string).slice(0, 2000);
         }
-        if (kind === "stock") await stockChanged(d, [g]);
         applied++;
       }
+      if (kind === "place") suggestBetween(d.groups);
     });
     return { ...(await payload(d)), applied };
   }
+  if (is("GET", /^\/api\/insights$/)) {
+    const cfg = loadConfig();
+    const src = clipSource();
+    return {
+      enabled: cfg.insights_enabled,
+      ready: await modelReady(),
+      downloading: current?.kind === "model" && !current.finished,
+      model_mb: megabytes(src),
+      labels: TAGS,
+      learned: (await learned()).labels ?? {},
+      // captions (a 276 MB model with a decoder loop) are made by the desktop app only
+      captions: { enabled: false, ready: false, model_mb: 276 },
+      // place suggestions from signs: the text reader + the place names
+      ocr_ready: await ocrOn(),
+      ocr_mb: megabytes(ocrSource()) + ((await gazetteerReady()) ? 0 : GAZETTEER_MB),
+      ocr_downloading: current?.kind === "ocr" && !current.finished,
+    };
+  }
+  if (is("POST", /^\/api\/insights\/model$/)) {
+    const want = Array.isArray(body.models) && body.models.length ? body.models.map(String) : ["tags"];
+    if (want.some((k) => k !== "tags"))
+      throw new HttpError(400, "Only the tag model runs in the browser; captions are made by the desktop app");
+    if (await modelReady()) return { ok: true, ready: true };
+    startJob("model", null, async (job) => {
+      const l = lib;
+      await fetchFiles(l, job, clipSource(), CLIP_DIR, "tag model");
+      clipReady = null;
+      job.message = "Tag model ready: slides are analysed in the background";
+    });
+    return { ok: true, ready: false };
+  }
+  if ((m = is("POST", /^\/api\/sessions\/([^/]+)\/insights\/run$/))) {
+    // analyse this tray in the background (the open tray is anyway); force: every slide again,
+    // decisions already made are kept
+    const sid = m[1];
+    const { d } = await update(sid, (d) => {
+      if (body.force) for (const g of d.groups) if (g.insights) g.insights.key = "";
+    });
+    if (!queuedTrays.includes(sid)) queuedTrays.push(sid);
+    kickInsights();
+    return payload(d);
+  }
+  if ((m = is("POST", /^\/api\/sessions\/([^/]+)\/lookalikes$/))) {
+    // look for this tray's uploaded slides among the photos in Immich (a job): the ones not checked
+    // yet or waiting for Immich to index them; all: every uploaded slide again
+    const sid = m[1];
+    await loadSession(sid);
+    if (!(await modelReady()))
+      throw new HttpError(400, "Download the tag model first (Settings → Suggest tags): it compares the photos.");
+    startJob("lookalike", sid, (job) => checkLookalikesJob(job, sid, !!body.all));
+    return { ok: true };
+  }
   if (is("GET", /^\/api\/places$/)) {
-    // no gazetteer here: download.geonames.org doesn't allow other origins (no CORS), so a place is
-    // typed as coordinates
+    // GeoNames' cities, from the snapshot the page can download (places.ts); typed coordinates always
     const q = u.searchParams.get("q") ?? "";
-    const ll = /^\s*(-?\d{1,2}(?:\.\d+)?)\s*[,; ]\s*(-?\d{1,3}(?:\.\d+)?)\s*$/.exec(q);
-    let results: Place[] = [];
-    if (ll) {
-      try {
-        const p = cleanPlace({ lat: ll[1], lon: ll[2] });
-        if (p) results = [p];
-      } catch {
-        results = [];
-      }
-    }
-    return { ready: false, downloading: false, mb: 4, results };
+    const limit = Math.max(1, Math.min(Math.trunc(Number(u.searchParams.get("limit"))) || 8, 20));
+    return {
+      ready: await gazetteerReady(),
+      downloading: (current?.kind === "places" || current?.kind === "ocr") && !current.finished,
+      mb: GAZETTEER_MB,
+      results: q.trim() ? searchPlaces(await gazetteer(), q, limit) : [],
+    };
+  }
+  if (is("POST", /^\/api\/places\/download$/)) {
+    // the place names (job "places"), or with ocr the text reader too (job "ocr")
+    const ocr = !!body.ocr;
+    if (ocr ? await ocrOn() : await gazetteerReady()) return { ok: true, ready: true };
+    startJob(ocr ? "ocr" : "places", null, async (job) => {
+      if (!(await gazetteerReady())) await downloadGazetteer(job);
+      if (!ocr) return;
+      job.done = 0;
+      await fetchFiles(lib, job, ocrSource(), OCR_DIR, "text reader");
+      ocrState = null;
+      job.message = "Text reader ready: signs are read for place suggestions in the background";
+    });
+    return { ok: true, ready: false };
   }
   if ((m = is("POST", /^\/api\/sessions\/([^/]+)\/groups\/([^/]+)\/split$/))) {
     const [, sid, gid] = m;
     const { d } = await update(sid, (d) => {
       const g = group(d, gid);
       editable(g);
-      const at = g.scans.indexOf(String(body.scan));
-      if (at <= 0) return;
-      const tail = newGroup(d, g.scans.slice(at), g.rotation, g.rot_reason);
-      tail.params = { ...g.params };
-      tail.excluded = (g.excluded ?? []).filter((x) => tail.scans.includes(x));
-      if (g.stock) tail.stock = g.stock; // one piece of film
-      g.scans = g.scans.slice(0, at);
-      g.excluded = (g.excluded ?? []).filter((x) => g.scans.includes(x));
-      d.groups.splice(groupIndex(d, gid) + 1, 0, tail);
+      splitAt(d, g, String(body.scan));
     });
     return payload(d);
   }
@@ -1773,11 +2566,7 @@ export async function handle(method: string, url: string, body: Body = {}): Prom
       if (i < 0 || i + 1 >= d.groups.length) throw new HttpError(400, "No next slide to merge with");
       editable(d.groups[i]);
       editable(d.groups[i + 1]);
-      const [nxt] = d.groups.splice(i + 1, 1);
-      d.groups[i].scans.push(...nxt.scans);
-      d.groups[i].excluded.push(...(nxt.excluded ?? []));
-      if (nxt.immich) (d.orphan_assets ??= []).push(nxt.immich.asset_id);
-      if (nxt.immich?.stack_id) (d.orphan_stacks ??= []).push(nxt.immich.stack_id); // restacked under the merged one
+      mergeNext(d, i);
     });
     return payload(d);
   }
@@ -2090,11 +2879,6 @@ function placeOf(v: unknown): Place | null {
   } catch (e) {
     throw new HttpError(400, (e as Error).message);
   }
-}
-
-function setPlace(g: GroupData, p: Place | null) {
-  if (p) g.place = p;
-  else delete g.place;
 }
 
 function cleanDate(v: unknown): string {

@@ -31,6 +31,13 @@ export type ImmichRecord = {
   own_originals?: string[];
   /** When it went up (seconds), for the stats. */
   at?: number;
+  /** Photos already in Immich that look like it (similar.ts). */
+  lookalike?: {
+    asset: string;
+    state: "checked" | "pending" | "unsupported";
+    via: "smart" | "date";
+    matches: { id: string; similarity: number; name: string; date: string; state: Suggestion["state"] }[];
+  };
 };
 
 export type Snapshot = {
@@ -66,15 +73,28 @@ export type GroupData = {
   tags?: string[];
   /** The slide's own film stock (filmstock.ts); none = the tray's. */
   stock?: string;
-  /** Stored suggestions (the desktop app's models write more; the browser version only decides film
-   *  stock and date guesses, which it computes itself). */
-  insights?: { stock?: Suggestion | null; date?: Suggestion | null; [k: string]: unknown };
+  /** Stored suggestions (insights.ts): the models' (scene tags, a place read in the photo), tray
+   *  neighbours' place, and decided film stock and date guesses. `key`: what they were computed from. */
+  insights?: StoredInsights;
   /** Where it was taken (places.clean_place): Immich latitude / longitude, EXIF GPS. */
   place?: Place;
   feat?: number[];
   history?: { undo: Snapshot[]; redo: Snapshot[] };
   /** The slide mount found on these (active) scans (imaging.detect_mount). */
   mount?: { angle: number; confidence: number; box: (number | null)[]; scans: string[] };
+};
+
+/** A slide's `g["insights"]` as insights.py stores it (ARCHITECTURE "Insights"). */
+export type StoredInsights = {
+  key?: string;
+  tags?: Suggestion[];
+  caption?: Suggestion | null;
+  date?: Suggestion | null;
+  place?: Suggestion | null;
+  stock?: Suggestion | null;
+  /** What the text reader read, a line each. */
+  text?: { text: string; confidence: number }[];
+  error?: string;
 };
 
 export type SessionData = {
@@ -94,6 +114,8 @@ export type SessionData = {
   date_key?: string;
   orphan_assets?: string[];
   orphan_stacks?: string[];
+  /** Look-alike decisions (similar.ts): duplicates dismissed as pairs, split / merge by id. */
+  similar?: { dismissed?: string[]; apart?: string[] };
 };
 
 // ------------------------------------------------------------------ Python-compatible JSON

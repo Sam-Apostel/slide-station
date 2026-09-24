@@ -16,6 +16,13 @@ SS_CANVAS_LIMIT=250000 pretends canvases stop at that many pixels, as Safari's d
 (about 16.7 MP): full-resolution scans are then decoded in strips and the JPEGs encoded in
 JavaScript (standalone/strips.ts), which the saved files are checked for.
 
+Scene tags and look-alikes run through the browser's own download of the tag model, from the test
+server instead of Hugging Face: by default a stand-in with CLIP's inputs and outputs (tests/fake_clip,
+made by tests/make_fake_clip.py), with SS_REAL_CLIP_DIR=<folder with vision.onnx, text.onnx, vocab.json,
+merges.txt> the real one (e.g. a library's models/clip-vit-b32). SS_REAL_OCR_DIR=<folder with det.onnx,
+rec.onnx, dict.txt> (a library's models/ppocr) also downloads the text reader and checks that a sign
+painted on the last slide ("WELCOME TO VENICE") comes back as a place suggestion.
+
 Env: SS_BROWSER_PATH (default /opt/pw-browsers/chromium if present), SS_SHOTS (screenshots,
 default /tmp/ss-web-shots), SS_SLIDES (default 6).
 """
@@ -23,6 +30,7 @@ from __future__ import annotations
 
 import base64
 import functools
+import hashlib
 import http.server
 import io
 import json
@@ -47,6 +55,9 @@ SHOTS = Path(os.environ.get("SS_SHOTS", "/tmp/ss-web-shots"))
 SLIDES = int(os.environ.get("SS_SLIDES", "6"))
 NO_FS = bool(os.environ.get("SS_NO_FS_ACCESS"))
 CANVAS_LIMIT = int(os.environ.get("SS_CANVAS_LIMIT") or 0)
+CLIP_DIR = Path(os.environ.get("SS_REAL_CLIP_DIR") or ROOT / "tests" / "fake_clip")
+CLIP_FILES = ["vision.onnx", "text.onnx", "vocab.json", "merges.txt"]
+OCR_DIR = Path(os.environ["SS_REAL_OCR_DIR"]) if os.environ.get("SS_REAL_OCR_DIR") else None
 sys.path.insert(0, str(ROOT / "tests"))
 from synthetic import make_scans  # noqa: E402
 
@@ -114,6 +125,27 @@ async () => {
 }
 """
 
+# What the background analysis left in the library: the models folder and each tray's embeddings
+ANALYSED = """
+async () => {
+  const root = await navigator.storage.getDirectory();
+  const names = async (d) => { const out = []; for await (const [n] of d) out.push(n); return out.sort(); };
+  let models = [];
+  try { models = await names(await (await root.getDirectoryHandle("models")).getDirectoryHandle("clip-vit-b32")); } catch {}
+  const trays = {};
+  try {
+    for await (const [id, s] of await root.getDirectoryHandle("sessions")) {
+      if (s.kind !== "directory") continue;
+      try {
+        const e = JSON.parse(await (await (await s.getFileHandle("embeddings.json")).getFile()).text());
+        trays[id] = { slides: Object.keys(e.slides).length, scans: Object.keys(e.scans).length };
+      } catch {}
+    }
+  } catch {}
+  return { models, trays };
+}
+"""
+
 # How light the shown photo is: mean of the top fifth, and of a box around the middle (0..1)
 PHOTO_LIGHT = """
 () => {
@@ -161,8 +193,57 @@ def main() -> None:
     # slide 4 sits turned 1.5° in its mount: the import straightens it by itself
     made = make_scans(site / "card", SLIDES, (1200, 800), mounts=[None, None, None, 1.5])
     names = [n for slide in made for n in slide]
+    if OCR_DIR:  # a sign on the last slide (a single scan), for the text reader
+        from PIL import ImageDraw, ImageFont
+
+        last = site / "card" / made[-1][0]
+        im = Image.open(last)
+        exif = im.info.get("exif", b"")
+        im = im.convert("RGB")
+        board = Image.new("RGB", (im.width // 2, im.height // 4), (235, 235, 225))
+        try:
+            font = ImageFont.truetype("DejaVuSans-Bold.ttf", im.height // 14)
+        except OSError:
+            font = ImageFont.load_default(im.height // 14)
+        for k, t in enumerate(["WELCOME TO", "VENICE"]):
+            ImageDraw.Draw(board).text((20, 15 + k * im.height // 10), t, font=font, fill=(20, 40, 120))
+        im.paste(board, (im.width // 4, im.height // 3))
+        im.save(last, quality=92, exif=exif)
     (site / "start.html").write_text("<!doctype html><title>start</title><link rel=icon href=favicon.svg>")
+    # the tag model, served next to the page: its files, sizes and checksums stand in for Hugging Face's
+    (site / "clip").mkdir()
+    clip_files = []
+    for name in CLIP_FILES:
+        data = (CLIP_DIR / name).read_bytes()
+        (site / "clip" / name).write_bytes(data)
+        clip_files.append([name, name, len(data), "sha256:" + hashlib.sha256(data).hexdigest()])
+    # place names: a few GeoNames rows in the three files the page downloads (a mirror of GeoNames, in life)
+    (site / "geonames").mkdir()
+    z = io.BytesIO()
+    with zipfile.ZipFile(z, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("cities15000.txt", "".join(
+            f"{i}\t{n}\t{n}\t{alt}\t{lat}\t{lon}\tP\tPPL\t{cc}\t\t{adm}\t\t\t\t{pop}\t\t0\tEurope/Rome\t2026-01-01\n"
+            for i, n, alt, lat, lon, cc, adm, pop in [
+                (3164603, "Venice", "Venezia,Venedig", 45.43713, 12.33265, "IT", "20", 51298),
+                (4176380, "Venice", "", 27.09978, -82.45426, "US", "FL", 22211),
+                (3176959, "Florence", "Firenze", 43.77925, 11.24626, "IT", "16", 349296)]))
+    geonames = {"cities15000.zip": z.getvalue(), "countryInfo.txt": b"IT\tITA\t380\tIT\tItaly\nUS\tUSA\t840\tUS\tUnited States\n",
+                "admin1CodesASCII.txt": b"IT.20\tVeneto\tVeneto\t1\nUS.FL\tFlorida\tFlorida\t1\nIT.16\tTuscany\tTuscany\t1\n"}
+    geo_files = []
+    for name, data in geonames.items():
+        (site / "geonames" / name).write_bytes(data)
+        geo_files.append([name, name, len(data), "sha256:" + hashlib.sha256(data).hexdigest()])
+    ocr_files = []
+    if OCR_DIR:
+        (site / "ppocr").mkdir()
+        for name in ["det.onnx", "rec.onnx", "dict.txt"]:
+            data = (OCR_DIR / name).read_bytes()
+            (site / "ppocr" / name).write_bytes(data)
+            ocr_files.append([name, name, len(data), "sha256:" + hashlib.sha256(data).hexdigest()])
     port = serve(site)
+    models = {"clip-vit-b32": {"repo": f"http://127.0.0.1:{port}/clip/", "files": clip_files},
+              "geonames": {"repo": f"http://127.0.0.1:{port}/geonames/", "files": geo_files},
+              "ppocr-v5-latin": {"repo": f"http://127.0.0.1:{port}/ppocr/", "files": ocr_files}}
 
     immich_port = free_port()
     immich = subprocess.Popen(
@@ -186,6 +267,7 @@ def main() -> None:
             ctx.add_init_script("delete window.showDirectoryPicker;" if NO_FS else PICKERS)
             if CANVAS_LIMIT:
                 ctx.add_init_script(f"localStorage.setItem('slide-station-canvas-limit', '{CANVAS_LIMIT}')")
+            ctx.add_init_script(f"localStorage.setItem('slide-station-models', {json.dumps(json.dumps(models))})")
             pg = ctx.new_page()
             pg.on("console", lambda m: m.type == "error" and errors.append(m.text))
             pg.on("pageerror", lambda e: errors.append(str(e)))
@@ -382,8 +464,14 @@ def main() -> None:
             expect(pg.get_by_text(re.compile(r"Film stock Ektachrome: \d+ slides")).first).to_be_visible()
             expect(pg.get_by_label("Film stock", exact=True).first).to_have_value("ektachrome")
             print("film stock: Ektachrome suggested, accepted and applied to the tray")
-            # ---- a place, typed as coordinates (no gazetteer in the browser), given to slides 1-2 too
+            # ---- place names: downloaded into the library, searched by any of their names
+            pg.locator("div", has_text=re.compile(r"^Search by name needs the place names")).get_by_role(
+                "button", name="Download").click()
+            expect(pg.get_by_text("Place names ready").first).to_be_visible(timeout=60_000)
             place = pg.get_by_role("combobox", name="Place")
+            place.fill("venez")
+            expect(pg.get_by_role("option", name=re.compile("Venice.*Veneto"))).to_be_visible()
+            # ---- a place typed as coordinates (with a name), given to slides 1-2 too
             place.fill("Venice 45.43713, 12.33265")
             expect(pg.get_by_role("option", name=re.compile("Venice"))).to_be_visible()
             place.press("Enter")
@@ -394,6 +482,57 @@ def main() -> None:
             pr.get_by_role("button", name=re.compile(r"Apply to \d+ slides")).click()
             expect(pg.get_by_role("dialog")).to_have_count(0)
             expect(pg.get_by_text(re.compile(r"Placed in Venice: \d+ slides")).first).to_be_visible()
+
+            # ---- scene tags and look-alikes: turned on, the tag model downloads (checked against its
+            # checksums) into the library, the tray is analysed in the background, a tag is accepted
+            t0 = time.time()
+            pg.get_by_role("button", name="Settings", exact=True).click()
+            s = pg.get_by_role("dialog")
+            s.get_by_label(re.compile(r"^Suggest tags")).check()
+            s.get_by_label(re.compile(r"^After uploading, look for photos in Immich")).check()
+            s.get_by_role("button", name="Save").click()
+            expect(pg.get_by_role("dialog")).to_have_count(0)
+            expect(pg.get_by_text("Tag model ready").first).to_be_visible(timeout=600_000)
+            print(f"tag model: {CLIP_DIR.name} downloaded, {time.time() - t0:.1f}s")
+            suggestions = pg.get_by_role("list", name="Suggestions")
+            expect(suggestions).to_be_visible(timeout=300_000)
+            accept = suggestions.get_by_role("button", name=re.compile(r"^Accept ")).first
+            tag = accept.get_attribute("aria-label").removeprefix("Accept ")
+            accept.click()
+            expect(pg.locator(".ss-tag", has_text=tag).first).to_be_visible()
+            done = None
+            while time.time() - t0 < 600:  # every slide and scan embedded for the look-alikes
+                done = pg.evaluate(ANALYSED)
+                if any(t["slides"] >= SLIDES - 1 and t["scans"] >= len(names) - 2 for t in done["trays"].values()):
+                    break
+                pg.wait_for_timeout(1000)
+            assert any(n.startswith("labels-") and n.endswith(".npy") for n in done["models"]), done
+            assert not any(n.endswith(".part") for n in done["models"]), done
+            pg.screenshot(path=str(SHOTS / "02d-insights.png"))
+            pg.keyboard.press("Control+k")
+            pg.get_by_placeholder("Type an action or a tray name…").fill("Review suggestions")
+            pg.keyboard.press("Enter")
+            review = pg.get_by_role("dialog")
+            expect(review.get_by_role("button", name="Analyse again")).to_be_visible()
+            same = review.get_by_role("button", name="Not the same")
+            alike = same.count()
+            if alike:  # the synthetic slides are much alike: dismissing one says they aren't
+                same.first.click()
+                expect(same).to_have_count(alike - 1)
+            pg.screenshot(path=str(SHOTS / "02e-review.png"))
+            pg.keyboard.press("Escape")
+            if OCR_DIR:  # the text reader: the sign on the last slide names a place
+                t1 = time.time()
+                pg.locator("div", has_text=re.compile(r"^Suggest places from signs")).get_by_role(
+                    "button", name="Download").click()
+                expect(pg.get_by_text("Text reader ready").first).to_be_visible(timeout=120_000)
+                for _ in range(SLIDES):
+                    pg.keyboard.press("ArrowRight")
+                expect(pg.get_by_text(re.compile(r"Suggested:\s*Venice, Italy"))).to_be_visible(timeout=120_000)
+                pg.screenshot(path=str(SHOTS / "02f-sign.png"))
+                print(f"text reader: the sign on slide {SLIDES} suggests Venice, {time.time() - t1:.1f}s")
+            print(f"insights: accepted “{tag}”, {done['trays']} embedded, {alike} look-alike cards, "
+                  f"{time.time() - t0:.1f}s")
 
             # ---- connect the mock Immich and upload everything
             pg.get_by_role("button", name="Settings", exact=True).click()
@@ -417,6 +556,8 @@ def main() -> None:
             # the placed slides' JPEGs carried EXIF GPS (the mock reads it like Immich does)
             placed = [a for a in assets if a.get("lat") is not None]
             assert len(placed) >= 2 and all((a["lat"], a["lon"]) == (45.43713, 12.33265) for a in placed), placed
+            # the accepted scene tag went along as an Immich tag
+            assert db.get("tags", {}).get(tag, {}).get("assets"), db.get("tags")
             print(f"upload: {len(assets)} slides, {time.time() - t0:.1f}s")
             pg.screenshot(path=str(SHOTS / "03-uploaded.png"))
 
@@ -440,6 +581,8 @@ def main() -> None:
             assert sizes & {(1200, 800), (800, 1200)}, sizes  # the slides left uncropped: the scan's size
             if CANVAS_LIMIT:  # encoded by jpeg-js (4:4:4), not the browser's encoder (4:2:0)
                 assert all(all(c[1:3] == (1, 1) for c in j.layer) for j in jpegs), [j.layer for j in jpegs]
+            # the tag is in the JPEG as an XMP keyword too (dc:subject, like the desktop app's export)
+            assert any(f"<rdf:li>{tag}</rdf:li>".encode() in f for f in files), tag
             jpeg = jpegs[0]
             exif = jpeg.getexif()
             when = exif.get_ifd(0x8769).get(36867, "")

@@ -44,7 +44,6 @@ import {
   MOUNT_SUGGEST,
   needsReview,
   plural,
-  standalone,
   STOCK_NAMES,
   STOCKS,
   type EraHint,
@@ -193,7 +192,7 @@ export function Inspector({
   onAccepted: (kind: InsightKind, value: string, groups: Group[], index: number) => void;
   /** Give a film stock to a run of slides (the propagate dialog, from this slide). */
   onStockRange: (stock: string) => void;
-  /** The Insights section (desktop app only; the browser version has no models yet). */
+  /** The Insights section (scene tags and look-alikes; captions and signs in the desktop app). */
   insights?: {
     downloading: boolean;
     ocrDownloading?: boolean;
@@ -611,7 +610,7 @@ function SlideDetails({
         </p>
       )}
       {/* the browser version keeps a library's tags but can't send them yet: shown, not edited */}
-      <TagsField key={`${g.id}-tags`} tags={g.tags ?? []} onChange={app.setTags} readOnly={standalone} />
+      <TagsField key={`${g.id}-tags`} tags={g.tags ?? []} onChange={app.setTags} />
     </div>
   );
 }

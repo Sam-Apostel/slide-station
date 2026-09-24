@@ -111,7 +111,7 @@ export function SettingsDialog({
     setSuggestTags(config.insights_enabled ?? false);
     setLookalikes(!!config.lookalike_enabled);
     setSuggestCaptions(config.captions_enabled ?? false);
-    if (!standalone) api<InsightsState>("GET", "/api/insights").then(setInsights, () => setInsights(null));
+    api<InsightsState>("GET", "/api/insights").then(setInsights, () => setInsights(null));
     setTest(null);
     // only when the dialog opens; config is a new object on every poll
   }, [open]);
@@ -136,9 +136,9 @@ export function SettingsDialog({
         keep_exports: keepExports,
         upload_originals_stacked: stackOriginals,
         learning_enabled: learning,
-        ...(standalone
-          ? {}
-          : { insights_enabled: suggestTags, captions_enabled: suggestCaptions, lookalike_enabled: lookalikes }),
+        insights_enabled: suggestTags,
+        lookalike_enabled: lookalikes,
+        ...(standalone ? {} : { captions_enabled: suggestCaptions }), // captions: the desktop app only
         ...(standalone ? {} : { people_enabled: people }),
       });
       // turning tags / captions on fetches their models (one job in the activity pill); while another
@@ -217,7 +217,9 @@ export function SettingsDialog({
                 album.create, albumAsset.create. For the round trip also asset.read, asset.update (dates and captions in
                 place), asset.view and asset.download (pulling photos back in), albumAsset.delete and stack.read /
                 create / delete.
-                {!standalone && " To send the names of the people on the slides: tag.create and tag.asset."}
+                {standalone
+                  ? " To send tags: tag.create and tag.asset."
+                  : " To send the names of the people on the slides: tag.create and tag.asset."}
                 {standalone && (
                   <>
                     {" "}
@@ -306,27 +308,26 @@ export function SettingsDialog({
                 )}
               </FieldDescription>
             </Field>
-            {!standalone && (
-              // the browser version has no models yet (they'd run through onnxruntime-web)
-              <Field>
-                <CheckRow id="cfg-insights" checked={suggestTags} onChange={setSuggestTags}>
-                  Suggest tags (downloads a ~{insights?.model_mb ?? 155} MB model)
-                </CheckRow>
-                <FieldDescription>
-                  Recognises scenes (beach, snow, wedding, dog…) on this computer, in the background, and shows them as
-                  suggestions under Insights; nothing changes until you accept. Accepted tags go to Immich as tags (the
-                  API key then also needs tag.create and tag.asset).
-                  {insights?.ready
-                    ? " The model is downloaded."
-                    : insights?.downloading
-                      ? " Downloading the model…"
-                      : ""}{" "}
-                  The same model points out slides that look like the same shot, brackets that may be two slides, and
-                  the scenes of a tray.
-                </FieldDescription>
-              </Field>
-            )}
-            {!standalone && suggestTags && (
+            <Field>
+              <CheckRow id="cfg-insights" checked={suggestTags} onChange={setSuggestTags}>
+                Suggest tags (downloads a ~{insights?.model_mb ?? 155} MB model)
+              </CheckRow>
+              <FieldDescription>
+                Recognises scenes (beach, snow, wedding, dog…) {standalone ? "in this browser" : "on this computer"}, in
+                the background, and shows them as suggestions under Insights; nothing changes until you accept. Accepted
+                tags go to Immich as tags (the API key then also needs tag.create and tag.asset).
+                {insights?.ready
+                  ? " The model is downloaded."
+                  : insights?.downloading
+                    ? " Downloading the model…"
+                    : ""}{" "}
+                The same model points out slides that look like the same shot, brackets that may be two slides, and the
+                scenes of a tray.
+                {standalone &&
+                  " The model is kept in the library, so a library folder on disk shares it with the desktop app."}
+              </FieldDescription>
+            </Field>
+            {suggestTags && (
               <Field>
                 <CheckRow id="cfg-lookalike" checked={lookalikes} onChange={setLookalikes}>
                   After uploading, look for photos in Immich that look like the new slides
@@ -334,7 +335,7 @@ export function SettingsDialog({
                 <FieldDescription>
                   Finds a slide you scanned before (say with another tool, years ago) and offers to replace it. Uses
                   Immich's search by image where it has one (asset.read), else the photos taken around the slide's date;
-                  the thumbnails are compared on this computer (asset.view).
+                  the thumbnails are compared {standalone ? "in this browser" : "on this computer"} (asset.view).
                 </FieldDescription>
               </Field>
             )}

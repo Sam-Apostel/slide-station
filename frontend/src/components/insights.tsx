@@ -19,6 +19,7 @@ import { Field, FieldDescription, FieldGroup, FieldLabel } from "@/components/ui
 import { Input } from "@/components/ui/input";
 import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select";
 import { Tip } from "@/components/tip";
+import { PreviewImg } from "@/components/filmstrip";
 import { rangeEnd } from "@/components/dialogs";
 import {
   plural,
@@ -110,8 +111,9 @@ export function InsightsPanel({
     return (
       <div className="flex flex-col items-start gap-2 px-3 pt-2.5 pb-3">
         <p className={note}>
-          Suggest tags (beach, snow, wedding…) and a one-line caption for each slide from what's in the photo. Runs on
-          this computer.
+          {standalone
+            ? "Suggest tags (beach, snow, wedding…) for each slide from what's in the photo, and point out slides that look like the same shot. Runs in this browser."
+            : "Suggest tags (beach, snow, wedding…) and a one-line caption for each slide from what's in the photo. Runs on this computer."}
         </p>
         <ProButton onClick={onSettings}>
           <Settings /> Turn on in Settings
@@ -186,7 +188,10 @@ export function InsightsPanel({
           )}
         </ul>
       ) : (
-        <p className={note}>No open suggestions for this slide{decided ? ` (${decided} decided)` : ""}.</p>
+        <p className={note}>
+          No open suggestions for this slide
+          {decided ? ` (${decided} decided)` : ""}.
+        </p>
       )}
       <SimilarPanel app={app} session={session} sessionId={sessionId} />
       {!!st.missing?.length && (
@@ -573,7 +578,7 @@ export function ReviewDialog({
                         onOpenChange(false);
                       }}
                     >
-                      <img src={previewUrl(sessionId, g, 320)} alt="" loading="lazy" draggable={false} />
+                      <PreviewImg url={previewUrl(sessionId, g, 320)} alt="" draggable={false} />
                       <span>
                         {g.index + 1} · {pct(e.confidence)}
                       </span>
@@ -594,8 +599,8 @@ export function ReviewDialog({
           ))}
         </div>
         <DialogFooter className="sm:justify-between">
-          {standalone ? (
-            <span /> // the browser version has no models to run again: film stock and dates only
+          {standalone && !session.insights?.ready ? (
+            <span /> // the browser version without the tag model: film stock and dates only, nothing to run again
           ) : (
             <Tip label="Analyse every slide again (what you accepted or dismissed stays)">
               <Button variant="outline" onClick={() => app.analyseTray(true)}>
