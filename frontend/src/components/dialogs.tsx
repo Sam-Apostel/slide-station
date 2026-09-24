@@ -31,6 +31,7 @@ import {
   type Source,
 } from "@/lib/api";
 import type { Stats } from "@/lib/stats";
+import { WatchedFolders } from "@/components/watch";
 import { cn } from "@/lib/utils";
 
 const primary = "bg-primary text-primary-foreground";
@@ -272,6 +273,8 @@ export function SettingsDialog({
                 </FieldDescription>
               </Field>
             )}
+            {/* the browser version reads a folder itself (its picker); a server watches paths */}
+            {!standalone && <WatchedFolders />}
             <CheckRow id="cfg-keep" checked={keepOriginals} onChange={setKeepOriginals}>
               Keep original scans after upload (safest, ~5 MB per slide)
             </CheckRow>

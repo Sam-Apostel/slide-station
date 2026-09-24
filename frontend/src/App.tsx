@@ -372,6 +372,7 @@ function SlideStationApp() {
               onChooseFolder={() => importFolder()}
               onCapture={canCapture && session ? app.capture : undefined}
               onResume={app.resumeJob}
+              onSettings={() => setSettingsOpen(true)}
             />
           }
           right={

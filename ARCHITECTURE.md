@@ -45,6 +45,7 @@ slidestation/
   people.py               faces -> people: SFace embeddings, clustering, names (§5c)
   places.py               places: GeoNames gazetteer, sign OCR, tray neighbours (§5f)
   uploads.py, accounts.py folders uploaded from the browser; Immich-user accounts (§4e)
+  watch.py                watched folders: sub-folders dropped into a share become trays (§4e)
   raw.py, tether.py       camera RAW files via rawpy; tethered capture via gphoto2 (§4f)
   store.py                config + session persistence (JSON on disk)
   immich.py               minimal Immich client (v1/v2/v3 compatible)
@@ -950,6 +951,81 @@ restart are reported and resumed (no slide sent twice), other kinds not resumabl
 exports take turns with the default semaphore and overlap with 2. Checked in the real UI too (vite
 against a server in accounts mode): the 429 message, the quota toast and Settings line, the
 sign-in screen after revoking the key, and Resume after a restart with a job left behind.
+
+### Watched folders: an "external library" in a share (ROADMAP §4, `watch.py`)
+
+Every sub-folder that appears in a watched folder becomes a tray of its own. Desktop app and server
+alike (the same Python); not in the browser version (below).
+
+- **Where folders may be.** Config `watch: [{"id", "path", "auto_upload", "require_done",
+  "settle"?}]` per user (config.json, so per account). `check_path` resolves the path (symlinks and
+  `..` included) and refuses the library itself (or a folder containing it). With
+  `SLIDESTATION_WATCH_ROOT` set, only folders under that root (a relative path is taken relative
+  to it; `{user}` in the root becomes the account's Immich user id, so each person can have their
+  own); in accounts mode without a root the feature is off (`server.watch: false`, adding one 403):
+  an account never names a path of the server's. The root is checked again at every poll, and a
+  scan that is a symlink out of it makes that sub-folder an error instead of an import (it could
+  point at another user's share). Without a root (desktop), any folder.
+- **Polling, no new dependency.** `watch.start()` (from `server.main`, so also before anyone signs
+  in) runs `tick()` every `SLIDESTATION_WATCH_INTERVAL` s (10): for each library with watched folders
+  (the single user, or every `users/*/config.json` that has some) it lists the sub-folders (not
+  hidden, not `@eaDir` / `#recycle`) and fingerprints each one's scans (`list_scans`: relative path,
+  size, mtime → SHA-1). inotify would miss changes made on an SMB / NFS server, so this is a poll
+  on purpose. **Debounce:** a sub-folder is ready when its fingerprint hasn't changed for `settle`
+  seconds (`SLIDESTATION_WATCH_SETTLE`, 30; per folder via the API) and has at least one scan, and,
+  with `require_done`, once a `.done` file is in it. A handled sub-folder is only re-fingerprinted
+  every `RECHECK` (5 min).
+- **Import.** A ready sub-folder starts the user's one job, kind `watch` (`start_job`; while any
+  job of theirs runs it just stays "queued" and the next poll tries again: one import per poll, in
+  name order). `import_watched` creates the tray (name = album = folder name, date from
+  `date_from_name`: `1978-08 Lake Garda` → `1978-08`, `1978 Summer` → `1978`, `1978-08-14 …`; a
+  year 1800–2099 at the start, then a month that exists), then runs `import_scans(label="watch:<name>")`
+  — the normal folder import, so never removable, verified copies, grouping and dedupe as always.
+  With `auto_upload` it runs `finish_session` (everything, not just developed slides: nobody has
+  looked at them) in the same job.
+- **Handled = recorded in the library**, `watched.json` `{<sub-folder path>: {"state", "tray", "fp",
+  "slides", "scans", "folder", "name", "error"?, "upload_error"?, "note"?, "at"}}`, never a file in
+  the share (which may be read-only; nothing there is written, moved or deleted — the tests compare
+  the share's bytes and mtimes before and after). Keyed by path, so removing and re-adding a watched
+  folder doesn't import it again.
+- **Crash-safe marking.** The record says `importing` with its tray before the first copy and
+  `imported` only when the import (and the upload) finished. A restart in between leaves
+  `importing`: the sub-folder counts as not handled, settles again and is imported into the *same*
+  tray, where the dedupe index skips every scan already copied (a leftover job.json of kind `watch`
+  is reported as interrupted, not resumable by hand: the watcher resumes it). If the record is lost
+  altogether the import finds nothing new and the tray it just created is removed again (`note:
+  already in the library`). A handled sub-folder whose fingerprint changes (scans added later) is
+  imported again into its tray; a failed one stays `error` until its scans change or **Retry**
+  (`POST /api/watch/{id}/retry`). Same caveat as any import: a crash between copying and grouping
+  leaves those scans in the tray without slides (`import_scans`' order, not this module's).
+- **API.** `GET /api/watch` → `{available, root, settle, interval, folders: [{…, error, subfolders:
+  [{name, state: waiting|importing|imported|error, tray?, slides?, scans?, note?, error?}]}]}`
+  (states from `watched.json` and the in-memory fingerprints); `POST /api/watch {path, auto_upload?,
+  require_done?, settle?}` (polls that user's folders once at once), `PATCH` / `DELETE
+  /api/watch/{id}`, `POST …/retry {name}`. `/api/state` has `server.watch` and `watch`: counts from
+  the last poll (`folders, waiting, queued, importing, imported, errors`), no disk access, since it
+  is asked every second.
+- **UI.** `components/watch.tsx` in Settings (under the library; changes apply at once, not on
+  Save): the folders with "Only once a .done file is in it" and "Upload to Immich once imported",
+  each sub-folder's state, Stop watching, Retry; in the desktop app a native Choose… picker. The
+  activity well shows "Watched folders · N waiting · N queued · N errors" with **Show** (opens
+  Settings) while nothing else is going on; a running watched import shows as any job.
+- **Browser version: hidden.** `server` is absent from its `/api/state`, and Settings leaves the
+  section out when `standalone`. A persisted `FileSystemDirectoryHandle` could be polled while the
+  tab is open (Chrome), but it only works with that tab open and a permission re-granted after each
+  reload, which is what the folder picker already does by hand: not worth a second path.
+
+Tests: `tests/test_watch.py` (a hand-driven clock; the thread stays off): a sub-folder settles and
+becomes a named, dated, never-removable tray while the share stays byte-for-byte the same; polled
+again, forgotten in memory, or the folder removed and re-added: no second tray; changes restart the
+clock and `.done` is waited for; empty folders wait; queued behind the user's job, one per poll; an
+interrupted import resumes into its tray without duplicates, later scans join it, a lost record
+leaves no empty tray; a failed import shows and retries; auto upload into the mock Immich; path
+checks (missing, relative, the library, outside the root, `..`, a symlink out); accounts without a
+root get 403; two accounts under `share/{user}` each watch only their own folder, both imported by
+one poll with nobody signed in, each into their own library, a symlink to the other's scan refused.
+`tests/watch_flow.py` (Playwright, docstring): add a folder in Settings, drop a sub-folder, the
+well's "1 waiting", `.done`, the tray named and dated after it, the share unchanged, Stop watching.
 
 ## 4f. Camera rig mode: RAW files, tethered capture (ROADMAP §5)
 

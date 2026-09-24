@@ -96,6 +96,8 @@ def _job_file() -> Path:
 INTERRUPTED = {
     "import": "The import was interrupted by a server restart: import again (scans already imported are skipped).",
     "upload": "The upload was interrupted by a server restart: upload again (slides already in Immich are skipped).",
+    # watched folders (watch.py) pick up an interrupted import by themselves: nothing to resume by hand
+    "watch": "A watched folder's import was interrupted by a server restart: it starts again by itself.",
 }
 
 

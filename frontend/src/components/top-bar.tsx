@@ -3,6 +3,7 @@ import {
   Camera,
   ChartNoAxesColumn,
   CircleHelp,
+  Eye,
   FolderInput,
   HardDriveDownload,
   Plus,
@@ -89,12 +90,17 @@ export function ActivityWell({
   onChooseFolder,
   onCapture,
   onResume,
+  onSettings,
   className,
-}: Pick<TopBarProps, "state" | "onImport" | "onEject" | "onChooseFolder" | "onCapture" | "onResume"> & {
-  className?: string;
-}) {
+}: Pick<TopBarProps, "state" | "onImport" | "onEject" | "onChooseFolder" | "onCapture" | "onResume"> &
+  Partial<Pick<TopBarProps, "onSettings">> & {
+    className?: string;
+  }) {
   const src = state?.sources.find((x) => x.new > 0) ?? state?.sources[0];
   const job = visibleJob(state);
+  // watched folders (Settings): shown while something in them waits or failed, unless a card has news
+  const w = state?.watch;
+  const watching = w && (w.waiting || w.queued || w.errors) && !src?.new ? w : null;
   // a hosted server has no scanner of yours to wait for: folders are uploaded from the browser
   const pickOnly = standalone || !!state?.server?.accounts;
   const camera = onCapture ? state?.camera?.cameras[0] : undefined;
@@ -149,6 +155,24 @@ export function ActivityWell({
               </ProButton>
             </Tip>
           )}
+        </>
+      ) : watching ? (
+        <>
+          <Eye
+            aria-hidden
+            className={cn("size-3.5 shrink-0", watching.errors ? "text-destructive" : "text-[var(--pro-green)]")}
+          />
+          <span role="status" className="min-w-0 truncate">
+            Watched folders ·{" "}
+            {[
+              watching.waiting && `${watching.waiting} waiting`,
+              watching.queued && `${watching.queued} queued`,
+              watching.errors && `${plural(watching.errors, "error")}`,
+            ]
+              .filter(Boolean)
+              .join(" · ")}
+          </span>
+          {onSettings && <ProButton onClick={onSettings}>Show</ProButton>}
         </>
       ) : src ? (
         <>

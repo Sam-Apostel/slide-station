@@ -16,8 +16,12 @@ services:
       # models (tag suggestions, people) downloaded once for everyone instead of per user
       SLIDESTATION_MODELS: /data/models
       # SLIDESTATION_MAX_UPLOAD_MB: 300   # largest single file accepted from the browser
+      # watched folders (Settings): only under this root; {user} = each person's Immich user id
+      # SLIDESTATION_WATCH_ROOT: /share/{user}
     volumes:
       - slide-station-data:/data
+      # a share whose sub-folders become trays (read-only: Slide Station never writes there)
+      # - /mnt/scans:/share:ro
       # Single user without accounts (leave SLIDESTATION_AUTH out): a folder or card reader under
       # /import/<name>/DCIM shows up like the scanner does on a Mac.
       # - /mnt/card:/import/card:ro

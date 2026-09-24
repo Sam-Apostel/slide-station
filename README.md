@@ -135,6 +135,15 @@ Limits for a server shared by several people (environment variables of the conta
 | `SLIDESTATION_KEY_RECHECK_MINUTES` | 10 | How often a signed-in person's API key is asked about again: a key deleted in Immich signs them out everywhere. |
 | `SLIDESTATION_TRUST_PROXY` | off | Set to 1 behind a reverse proxy, so failed sign-ins are counted per visitor (`X-Forwarded-For`) rather than for the proxy. |
 
+**Watched folders.** Mount a share into the container read-only and set `SLIDESTATION_WATCH_ROOT`
+to it (e.g. `-v /mnt/scans:/share:ro -e SLIDESTATION_WATCH_ROOT=/share`, or `/share/{user}` to give
+each person a folder of their own: `{user}` becomes their Immich user id). Then Settings → Watched
+folders takes a folder in there, and every folder dropped into it becomes a tray (see "Watched
+folders" below). Nobody can watch anything outside the root; without the variable a server with
+accounts doesn't offer it at all. `SLIDESTATION_WATCH_INTERVAL` (10 s) is how often the folders are
+looked at, `SLIDESTATION_WATCH_SETTLE` (30 s) how long a folder must stay unchanged before it is
+imported.
+
 Failed sign-ins slow down (a few free tries, then a wait that doubles, up to 15 minutes) per address
 and per key. An import or upload cut off by a restart of the server is reported with a **Resume**
 button that runs it again (what already arrived is skipped).
@@ -173,6 +182,24 @@ before). Test connection, Save. Works with Immich v1.118 and later, including v2
 Pick a library folder with room to spare: about 6 MB per slide with the defaults
 (the original scans are kept; the finished JPEGs are deleted once they are in Immich because they
 can be re-rendered from the originals at any time).
+
+### Watched folders (the desktop app, or a server)
+
+Settings → **Watched folders**: name a folder (a share on the NAS, a Dropbox folder, where the
+scanner software saves) and every folder that appears in it becomes a tray of its own, named and
+Immich album after the folder, and dated when the name starts with one: "1978-08 Lake Garda" is
+August 1978, "1978 Summer" is 1978. A folder is imported once its scans have stopped changing for
+30 seconds; tick "Only once a .done file is in it" when whatever copies the folders can leave an
+empty `.done` file at the end. "Upload to Immich once imported" sends each new tray straight on,
+as it is (auto restore, learned settings).
+
+Slide Station only reads the watched folder: nothing in it is ever changed, moved or deleted, and
+the card cleanup never touches it. What was imported is remembered in the library, so a folder is
+imported once (more scans put into it later join its tray); scans the library already has are
+skipped as always. Settings shows each folder's state (waiting, importing, imported N slides, or
+the error with Retry), and the top bar says when something is waiting. One job at a time: a folder
+that is ready while you import or upload waits its turn. Not in the browser version: there, pick
+or drop the folder.
 
 ## Workflow per tray
 

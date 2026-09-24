@@ -15,7 +15,7 @@ from fastapi.staticfiles import StaticFiles
 
 from . import accounts, captions, filmstock, insights, learning
 from . import people, places
-from . import raw, similar, tether, uploads
+from . import raw, similar, tether, uploads, watch
 from . import store
 from . import workflow as wf
 from . import imaging as im
@@ -89,8 +89,9 @@ def state():
         "sessions": Session.list_all(),
         "job": wf.current_job.as_dict() if wf.current_job else None,
         # what this server can do: accounts (hosted), RAW files, tethered capture (camera rig)
-        "server": {"accounts": accounts.enabled(), "raw": raw.available()},
+        "server": {"accounts": accounts.enabled(), "raw": raw.available(), "watch": watch.available()},
         "camera": _camera(),
+        "watch": watch.summary(),  # watched folders, as the last poll saw them (watch.py)
         "quota": uploads.usage(),  # bytes used / allowed, when the server sets quotas
     }
 
@@ -491,6 +492,58 @@ def upload_delete(uid: str):
     except uploads.UploadError as e:
         return _upload_err(e)
     uploads.delete(uid)
+    return {"ok": True}
+
+
+# --------------------------------------------------------------------------- watched folders
+
+
+def _watch_err(e: watch.WatchError):
+    return JSONResponse({"error": str(e)}, status_code=e.status)
+
+
+@app.get("/api/watch")
+def watch_state():
+    """Watched folders (watch.py) and what became of every sub-folder in them."""
+    return watch.status()
+
+
+@app.post("/api/watch")
+def watch_add(body: dict = Body(...)):
+    """Watch a folder: each sub-folder dropped into it becomes a tray. On a server only under
+    SLIDESTATION_WATCH_ROOT (403 elsewhere, and for accounts when it isn't set)."""
+    try:
+        f = watch.add(str(body.get("path") or ""), bool(body.get("auto_upload")), bool(body.get("require_done")),
+                      body.get("settle"))
+    except watch.WatchError as e:
+        return _watch_err(e)
+    watch.poll_mine()  # see what's in it now, rather than at the next poll
+    return f
+
+
+@app.patch("/api/watch/{fid}")
+def watch_change(fid: str, body: dict = Body(...)):
+    try:
+        return watch.change(fid, body)
+    except watch.WatchError as e:
+        return _watch_err(e)
+
+
+@app.delete("/api/watch/{fid}")
+def watch_remove(fid: str):
+    try:
+        watch.remove(fid)
+    except watch.WatchError as e:
+        return _watch_err(e)
+    return {"ok": True}
+
+
+@app.post("/api/watch/{fid}/retry")
+def watch_retry(fid: str, body: dict = Body(...)):
+    try:
+        watch.retry(fid, str(body.get("name") or ""))
+    except watch.WatchError as e:
+        return _watch_err(e)
     return {"ok": True}
 
 
@@ -1618,6 +1671,7 @@ def main():
         threading.Timer(1.2, lambda: webbrowser.open(f"http://localhost:{port}")).start()
     if accounts.enabled() and not store.USER_IMMICH_URL:
         raise SystemExit("SLIDESTATION_AUTH=immich needs SLIDESTATION_IMMICH_URL (the Immich accounts belong to)")
+    watch.start()  # watched folders: polls every library's, also before anyone signs in
     uvicorn.run(app, host=host, port=port, log_level="warning")
 
 

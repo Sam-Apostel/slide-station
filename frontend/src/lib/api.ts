@@ -347,11 +347,59 @@ export type AppState = {
   job: Job | null;
   /** What the Python server can do (absent in the browser version): accounts (a hosted server,
    *  each Immich user their own library), camera RAW files. */
-  server?: { accounts: boolean; raw: boolean };
+  server?: { accounts: boolean; raw: boolean; watch?: boolean };
   /** Tethered capture: null without gphoto2 (or on a hosted server). */
   camera?: { cameras: Camera[] } | null;
   /** Room used and allowed in bytes, when the server sets quotas (a hosted server, per account). */
   quota?: { library?: Quota; uploads?: Quota } | null;
+  /** Watched folders as the server's last poll saw them (null: none watched). */
+  watch?: WatchSummary | null;
+};
+
+/** Watched folders at a glance, for the activity well: sub-folders by state. */
+export type WatchSummary = {
+  folders: number;
+  waiting: number;
+  queued: number;
+  /** The sub-folder being imported now ("" = none). */
+  importing: string;
+  imported: number;
+  errors: number;
+};
+
+/** A sub-folder of a watched folder: each becomes a tray of its own. */
+export type WatchedSub = {
+  name: string;
+  state: "waiting" | "importing" | "imported" | "error";
+  tray?: string | null;
+  slides?: number;
+  scans?: number;
+  /** Why it waits ("waiting for .done", "queued behind the current job"…), or what happened. */
+  note?: string;
+  error?: string;
+};
+
+export type WatchedFolder = {
+  id: string;
+  path: string;
+  auto_upload: boolean;
+  require_done: boolean;
+  settle?: number;
+  /** The folder itself can't be read (gone, unmounted, outside the allowed root). */
+  error: string;
+  subfolders: WatchedSub[];
+};
+
+/** GET /api/watch: the server app only (the browser version has no folders to watch). */
+export type WatchState = {
+  /** False on a hosted server without SLIDESTATION_WATCH_ROOT. */
+  available: boolean;
+  /** Folders must be in here (a server), or null (anywhere: the desktop app). */
+  root: string | null;
+  /** Seconds a sub-folder must stay unchanged before it is imported. */
+  settle: number;
+  interval: number;
+  folders: WatchedFolder[];
 };
 
 export type Quota = { used: number; limit: number };
