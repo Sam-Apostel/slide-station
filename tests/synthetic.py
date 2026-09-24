@@ -35,6 +35,20 @@ def scene(seed: int, w: int = 240, h: int = 160) -> np.ndarray:
     return np.clip(lo + np.clip(a, 0, 1) * (hi - lo), 0.15, 0.85)
 
 
+def in_mount(a: np.ndarray, angle: float, inner: tuple[float, float] = (0.86, 0.84), level: float = 0.03,
+             seed: int = 0) -> np.ndarray:
+    """The picture seen through a slide mount turned `angle` degrees clockwise in the scanner: a
+    dark, slightly noisy frame whose window (inner × the scan's size) has an anti-aliased edge."""
+    h, w = a.shape[:2]
+    y, x = np.mgrid[0:h, 0:w].astype(np.float64) + 0.5
+    t = np.deg2rad(angle)
+    dx, dy = x - w / 2, y - h / 2
+    xr, yr = np.cos(t) * dx + np.sin(t) * dy, -np.sin(t) * dx + np.cos(t) * dy  # back into the mount's frame
+    alpha = np.clip(0.5 + np.minimum(inner[0] * w / 2 - np.abs(xr), inner[1] * h / 2 - np.abs(yr)), 0, 1)[..., None]
+    mount = level + np.random.default_rng(seed).normal(0, 0.01, a.shape)
+    return np.clip(a * alpha + mount * (1 - alpha), 0, 1).astype(np.float32)
+
+
 def save_scan(a: np.ndarray, path: Path, taken: datetime, salt: int = 0) -> None:
     """Write a scan as the scanner would: JPEG with make/model/time in EXIF. `salt` changes the bytes
     (not the picture) so the same scene can be imported again as a new scan."""
@@ -48,14 +62,17 @@ def save_scan(a: np.ndarray, path: Path, taken: datetime, salt: int = 0) -> None
 
 
 def make_scans(folder: Path, slides: int = 4, size: tuple[int, int] = (240, 160), salt: int = 0,
-               first: int = 1) -> list[list[str]]:
+               first: int = 1, mounts: list[float | None] | None = None) -> list[list[str]]:
     """Write `slides` slides as scans IMG_0001.JPG… into folder; even-numbered slides (0, 2, …) are
-    bracketed pairs (bright + dark). Returns the file names per slide, in import order."""
+    bracketed pairs (bright + dark). `mounts`: per slide, the angle its mount is turned by (None:
+    no mount, as without the list). Returns the file names per slide, in import order."""
     folder.mkdir(parents=True, exist_ok=True)
     t = datetime(2024, 1, 1, 12, 0, 0) + timedelta(minutes=first)
     n, out = first, []
     for k in range(slides):
         base = scene(1000 + k * 7919, *size)
+        if mounts and k < len(mounts) and mounts[k] is not None:
+            base = in_mount(base, mounts[k], seed=k)
         exposures = (1.0, 0.6) if k % 2 == 0 else (1.0,)
         names = []
         for e in exposures:

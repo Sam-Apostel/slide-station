@@ -8,6 +8,7 @@ import {
   Copy,
   Crop,
   Eraser,
+  Frame,
   Layers,
   Sparkles,
   FolderOpen,
@@ -16,6 +17,7 @@ import {
   Merge,
   RotateCcw,
   RotateCw,
+  Ruler,
   SkipForward,
   Undo2,
   Upload,
@@ -30,7 +32,7 @@ import { Kbd } from "@/components/ui/kbd";
 import { Tip } from "@/components/tip";
 import { ToneCurve } from "@/components/tone-curve";
 import { AdjustPanel, adjustSummary } from "@/components/adjust";
-import { needsReview, plural, type Group, type SessionPayload } from "@/lib/api";
+import { MOUNT_SUGGEST, needsReview, plural, type Group, type SessionPayload } from "@/lib/api";
 import { CHANNELS, isStraight } from "@/lib/curves";
 import type { SlideStation } from "@/hooks/use-slide-station";
 
@@ -71,9 +73,44 @@ function useSections() {
 }
 
 function frameNote(g: { rotation: number; rot_reason: string; params: { crop: unknown; angle: number } }) {
-  return [rotationNote(g.rotation, g.rot_reason) || "upright", g.params.crop && "cropped", g.params.angle && "straightened"]
+  return [
+    rotationNote(g.rotation, g.rot_reason) || "upright",
+    g.params.crop && "cropped",
+    g.params.angle && "straightened",
+  ]
     .filter(Boolean)
     .join(" · ");
+}
+
+/**
+ * The slide sits turned in its mount (or the mount in the scanner): offer to straighten to the
+ * mount's edge, and to crop to its window. Shown only when the mount was found with confidence;
+ * an import straightens by itself only when it is very sure (imaging.MOUNT_AUTO).
+ */
+function MountSuggestion({ app, g }: { app: SlideStation; g: Group }) {
+  const m = g.mount;
+  if (!m || m.confidence < MOUNT_SUGGEST || Math.abs(m.angle) < 0.1) return null;
+  const done = Math.abs(g.params.angle + m.angle) < 0.05;
+  const turn = `${Math.abs(m.angle).toFixed(1)}° ${m.angle > 0 ? "clockwise" : "anticlockwise"}`;
+  return (
+    <div className="flex items-center gap-1.5 px-3 pb-2.5" role="status">
+      <Ruler className="size-3.5 shrink-0 text-muted-foreground" aria-hidden />
+      <span className="min-w-0 flex-1 truncate text-[12px] text-muted-foreground">
+        {done ? "Level with the mount" : `Mount turned ${turn}`}
+        <span className="opacity-70"> · {Math.round(m.confidence * 100)}% sure</span>
+      </span>
+      {!done && (
+        <Tip label={`Turn the photo ${m.angle > 0 ? "anticlockwise" : "clockwise"} so the mount's edges are level`}>
+          <ProButton onClick={() => app.straightenToMount()}>Straighten to mount</ProButton>
+        </Tip>
+      )}
+      <Tip label="Straighten and crop to the inside of the mount: a tighter trim">
+        <ProButton plain aria-label="Straighten and trim to the mount" onClick={() => app.straightenToMount(true)}>
+          <Frame />
+        </ProButton>
+      </Tip>
+    </div>
+  );
 }
 
 function curveNote(curves: Record<string, unknown> | undefined) {
@@ -143,11 +180,7 @@ export function Inspector({
         {g && (
           // a locked slide shows its settings but can't change them (the server refuses too)
           <div aria-disabled={g.locked || undefined} className={g.locked ? "ss-readonly" : undefined}>
-            <ProDisclosureGroup
-              title="Frame"
-              summary={frameNote(g)}
-              {...section("rotation")}
-            >
+            <ProDisclosureGroup title="Frame" summary={frameNote(g)} {...section("rotation")}>
               <div className="flex items-center gap-1.5 px-3 py-2.5">
                 <ProButtonGroup>
                   <Tip label="Rotate left" keys="⇧R">
@@ -187,6 +220,7 @@ export function Inspector({
                   </Tip>
                 )}
               </div>
+              <MountSuggestion app={app} g={g} />
             </ProDisclosureGroup>
 
             <ProDisclosureGroup title="Tone curve" summary={curveNote(g.params.curves)} {...section("curve")}>
@@ -216,12 +250,7 @@ export function Inspector({
           </div>
         )}
 
-        <ProDisclosureGroup
-          title="Tray"
-          summary={sm.name}
-          showsBottomSeparator={false}
-          {...section("tray")}
-        >
+        <ProDisclosureGroup title="Tray" summary={sm.name} showsBottomSeparator={false} {...section("tray")}>
           <div className="flex flex-col gap-2 px-3 pt-2.5 pb-3">
             <TrayField label="Name" value={sm.name} onCommit={(v) => app.patchSession({ name: v })} />
             <TrayField label="Immich album" value={sm.album} onCommit={(v) => app.patchSession({ album: v })} />
@@ -370,7 +399,9 @@ function SlideDetails({ app, onDateRange }: { app: SlideStation; onDateRange: ()
         label="Date"
         value={g.date}
         placeholder={
-          est.source === "own" || !est.value ? "e.g. 1978-06" : `≈ ${est.value} (${DATE_FROM[est.source]} ${from ?? ""})`.replace(" )", ")")
+          est.source === "own" || !est.value
+            ? "e.g. 1978-06"
+            : `≈ ${est.value} (${DATE_FROM[est.source]} ${from ?? ""})`.replace(" )", ")")
         }
         onCommit={(v) => app.patchGroup({ date: v })}
       />

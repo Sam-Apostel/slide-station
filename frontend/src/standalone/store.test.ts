@@ -39,6 +39,11 @@ describe("keys match the Python app", () => {
     expect(renderKey(group({ scans: ["a"] }))).toBe("d4ec29362fa2");
     expect(toneKey(group({ scans: ["a"] }))).toBe("2d865f31c02a");
   });
+  it("dust counts only when on", () => {
+    const dusty = { ...g, params: { ...g.params, dust: 0.25 } };
+    expect(renderKey(dusty)).toBe("c6fde1de427f");
+    expect(toneKey(dusty)).toBe("c23f13e25b53");
+  });
   it("meta key", () => expect(metaKey(g, { value: "1978-08", source: "own" })).toBe("468575a4ce75"));
   it("sha1", () => expect(sha1Hex("abc")).toBe("a9993e364706816aba3e25717850c26c9cd0d89d"));
   it("dates between, near", () => {
@@ -56,7 +61,7 @@ describe("keys match the Python app", () => {
   });
   it("session.json writes params as floats, like json.dumps(indent=1)", () => {
     expect(dumpSession({ params: cleanParams({ tint: 0.00001 }), n: 3, f: 1.5 })).toBe(
-      '{\n "params": {\n  "strength": 0.6,\n  "brightness": 0.0,\n  "contrast": 0.0,\n  "warmth": 0.0,\n  "tint": 1e-05,\n  "saturation": 0.0,\n  "trim": true,\n  "curves": {},\n  "angle": 0.0,\n  "crop": null\n },\n "n": 3,\n "f": 1.5\n}',
+      '{\n "params": {\n  "strength": 0.6,\n  "brightness": 0.0,\n  "contrast": 0.0,\n  "warmth": 0.0,\n  "tint": 1e-05,\n  "saturation": 0.0,\n  "trim": true,\n  "curves": {},\n  "angle": 0.0,\n  "crop": null,\n  "dust": 0.0\n },\n "n": 3,\n "f": 1.5\n}',
     );
   });
 });

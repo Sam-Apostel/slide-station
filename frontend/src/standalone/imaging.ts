@@ -35,6 +35,7 @@ export const DEFAULT_PARAMS: Params = {
   curves: {},
   angle: 0,
   crop: null,
+  dust: 0,
 };
 
 const NUMERIC = ["strength", "brightness", "contrast", "warmth", "tint", "saturation", "angle"] as const;
@@ -47,6 +48,7 @@ export function cleanParams(d: Partial<Params> | Record<string, unknown> | null 
   if ("trim" in src) p.trim = !!src.trim;
   if ("curves" in src) p.curves = cleanCurves(src.curves);
   if ("crop" in src) p.crop = cleanCrop(src.crop);
+  if ("dust" in src) p.dust = clamp01(Number(src.dust) || 0);
   return p;
 }
 
@@ -323,11 +325,337 @@ export function geometry(a: RGB, p: Params, crop = true): RGB {
   return out;
 }
 
-/** The image the tone curve works on: auto-restored, trimmed, straightened and cropped. */
+/** The image the tone curve works on: auto-restored, trimmed, dust repaired, straightened and cropped. */
 export function toneBase(a: RGB, p: Params, crop = true, inPlace = false): RGB {
   let out = autoRestore(a, p.strength, inPlace);
   if (p.trim) out = cropped(out, ...trimBounds(out));
+  if ((p.dust ?? 0) > 0) out = repairDust(out, p.dust, inPlace || out !== a);
   return geometry(out, p, crop);
+}
+
+// ------------------------------------------------------------------ mount detection
+
+export const MOUNT_EDGE = 800; // the mount is found on the scan shrunk to this (longer edge)
+const MOUNT_BAND = 0.2; // its inner edge is looked for this far in from each side of the scan
+export const MOUNT_SUGGEST = 0.5; // confidence from which "Straighten to mount" is offered
+export const MOUNT_AUTO = 0.8; // ... and from which an import straightens a new slide by itself
+const MOUNT_INSET = 0.005; // a tighter trim cuts this much (of the frame) inside the mount's edge
+
+/** The slide mount's tilt (degrees clockwise), confidence 0..1 and sides [l, t, r, b] in 0..1. */
+export type Mount = { angle: number; confidence: number; box: (number | null)[] };
+
+/** Area-average down so the longer edge is at most `edge` (imaging.shrink). */
+export function shrink(a: RGB, edge: number): RGB {
+  const { width: w, height: h } = a;
+  if (Math.max(w, h) <= edge) return a;
+  const s = edge / Math.max(w, h);
+  return resized(a, Math.max(1, Math.trunc(w * s + 0.5)), Math.max(1, Math.trunc(h * s + 0.5)));
+}
+
+/** Where a profile (sample k in from the border) first rises through thr for good, sub-pixel; NaN if never. */
+function edgeCrossing(at: (k: number) => number, band: number, thr: number): number {
+  if (at(0) >= thr) return NaN; // doesn't start on the mount
+  for (let i = 1; i + 2 < band; i++)
+    if (at(i) >= thr && at(i + 1) >= thr && at(i + 2) >= thr) {
+      const lo = at(i - 1);
+      const hi = at(i);
+      return i - 1 + (thr - lo) / Math.max(hi - lo, 1e-6) + 0.5;
+    }
+  return NaN;
+}
+
+/** v = a + b u through the points, refitted four times without the ones far off it: (a, b, kept). */
+function robustLine(u0: number[], v0: number[]): [number, number, number] | null {
+  const u: number[] = [];
+  const v: number[] = [];
+  v0.forEach((x, i) => {
+    if (Number.isFinite(x)) (u.push(u0[i]), v.push(x));
+  });
+  let inl = u.map(() => true);
+  let a0 = 0;
+  let b = 0;
+  for (let it = 0; it < 4; it++) {
+    let n = 0;
+    let su = 0;
+    let sv = 0;
+    u.forEach((x, i) => {
+      if (inl[i]) (n++, (su += x), (sv += v[i]));
+    });
+    if (n < 10) return null;
+    const um = su / n;
+    const vm = sv / n;
+    let num = 0;
+    let den = 0;
+    u.forEach((x, i) => {
+      if (inl[i]) ((num += (x - um) * (v[i] - vm)), (den += (x - um) ** 2));
+    });
+    b = num / Math.max(den, 1e-9);
+    a0 = vm - b * um;
+    const r = u.map((x, i) => Math.abs(v[i] - (a0 + b * x)));
+    const med = percentile(Float64Array.from(r.filter((_, i) => inl[i])).sort(), 50);
+    const tol = Math.max(0.5, 3 * 1.4826 * med);
+    inl = r.map((x) => x <= tol);
+  }
+  return [a0, b, inl.filter(Boolean).length];
+}
+
+/**
+ * The slide mount's inner edge: how far the picture is turned and where the window's sides are
+ * (imaging.detect_mount). Straighten by -angle; confidence needs two sides that agree.
+ */
+export function detectMount(a: RGB): Mount {
+  const s = shrink(a, MOUNT_EDGE);
+  const { width: w, height: h } = s;
+  const lum = new Float32Array(w * h);
+  for (let i = 0; i < w * h; i++) lum[i] = (s.data[i * 3] + s.data[i * 3 + 1] + s.data[i * 3 + 2]) / 3;
+  const none: Mount = { angle: 0, confidence: 0, box: [null, null, null, null] };
+  const m = Math.max(1, Math.trunc(Math.min(h, w) * 0.01));
+  const ring: number[] = [];
+  for (let y = 0; y < h; y++)
+    for (let x = 0; x < w; x++) if (y < m || y >= h - m || x < m || x >= w - m) ring.push(lum[y * w + x]);
+  const mount = percentile(Float32Array.from(ring).sort(), 50);
+  const centre: number[] = [];
+  const qh = Math.trunc(h / 4);
+  const qw = Math.trunc(w / 4);
+  for (let y = qh; y < h - qh; y++) for (let x = qw; x < w - qw; x++) centre.push(lum[y * w + x]);
+  const ref = percentile(Float32Array.from(centre).sort(), 50);
+  if (mount > 0.25 || ref - mount < 0.08) return none; // no dark frame around a brighter picture
+  const thr = mount + Math.min(0.1, Math.max(0.03, 0.3 * (ref - mount)));
+  const bh = Math.max(4, Math.trunc(h * MOUNT_BAND));
+  const bw = Math.max(4, Math.trunc(w * MOUNT_BAND));
+  const x0 = Math.trunc(w * 0.1);
+  const y0 = Math.trunc(h * 0.1);
+  const ux: number[] = [];
+  const uy: number[] = [];
+  for (let x = x0; x < w - x0; x++) ux.push(x + 0.5);
+  for (let y = y0; y < h - y0; y++) uy.push(y + 0.5);
+  const L = (x: number, y: number) => lum[y * w + x];
+  const sides: Record<string, [number[], number[]]> = {
+    top: [ux, ux.map((_, j) => edgeCrossing((k) => L(x0 + j, k), bh, thr))],
+    bottom: [ux, ux.map((_, j) => h - edgeCrossing((k) => L(x0 + j, h - 1 - k), bh, thr))],
+    left: [uy, uy.map((_, j) => edgeCrossing((k) => L(k, y0 + j), bw, thr))],
+    right: [uy, uy.map((_, j) => w - edgeCrossing((k) => L(w - 1 - k, y0 + j), bw, thr))],
+  };
+  const found: Record<string, [number, number, number]> = {};
+  let total = 0;
+  for (const [name, [u, v]] of Object.entries(sides)) {
+    total += u.length;
+    const fit = robustLine(u, v);
+    if (fit && fit[2] >= Math.max(20, 0.35 * u.length)) found[name] = fit;
+  }
+  const names = Object.keys(found);
+  if (names.length < 2) return none;
+  const ang = (k: string) => ((Math.atan(found[k][1]) * 180) / Math.PI) * (k === "top" || k === "bottom" ? 1 : -1);
+  const kept = names.reduce((acc, k) => acc + found[k][2], 0);
+  const angle = names.reduce((acc, k) => acc + ang(k) * found[k][2], 0) / kept;
+  const spread = Math.max(...names.map((k) => Math.abs(ang(k) - angle)));
+  let conf = Math.max(0, 1 - spread / 0.5) * Math.min(1, kept / total / 0.6) * (names.length >= 3 ? 1 : 0.8);
+  if (Math.abs(angle) > 10) conf = 0;
+  const mid = (k: string, c: number, size: number) =>
+    found[k] ? round((found[k][0] + found[k][1] * c) / size, 4) : null;
+  return {
+    angle: round(angle, 2),
+    confidence: round(conf, 2),
+    box: [mid("left", h / 2, w), mid("top", w / 2, h), mid("right", h / 2, w), mid("bottom", w / 2, h)],
+  };
+}
+
+/** A mount box [l, t, r, b] of a scan turned clockwise by `rot` (imaging.rotate_box). */
+export function rotateBox(box: (number | null)[], rot: number): (number | null)[] {
+  let [l, t, r, b] = box;
+  const turns = Math.trunc((((rot % 360) + 360) % 360) / 90);
+  for (let i = 0; i < turns; i++)
+    [l, t, r, b] = [b === null ? null : round(1 - b, 4), l, t === null ? null : round(1 - t, 4), r];
+  return [l, t, r, b];
+}
+
+/** The crop that trims to the mount's window once straightened by p.angle (imaging.mount_crop). */
+export function mountCrop(a: RGB, p: Params, box: (number | null)[]): [number, number, number, number] | null {
+  const { width: w, height: h } = a;
+  const [t0, b0, l0, r0] = p.trim ? trimBounds(autoRestore(a, p.strength)) : [0, h, 0, w];
+  const fw = r0 - l0;
+  const fh = b0 - t0;
+  const th = Math.abs(p.angle) >= 0.01 ? (p.angle * Math.PI) / 180 : 0; // straighten() leaves tiny angles alone
+  const scale = Math.cos(Math.abs(th)) + (Math.sin(Math.abs(th)) * Math.max(fw, fh)) / Math.min(fw, fh);
+  const cs = Math.cos(th);
+  const sn = Math.sin(th);
+  const place = (x: number, y: number) => {
+    const dx = x - 0.5 - l0 - fw / 2; // pixel-index coordinates, as the straighten
+    const dy = y - 0.5 - t0 - fh / 2;
+    return [(fw / 2 + scale * (cs * dx - sn * dy) + 0.5) / fw, (fh / 2 + scale * (sn * dx + cs * dy) + 0.5) / fh];
+  };
+  const [l, t, r, b] = box;
+  const out = [0, 0, 1, 1];
+  if (l !== null) out[0] = place(l * w, h / 2)[0] + MOUNT_INSET;
+  if (t !== null) out[1] = place(w / 2, t * h)[1] + MOUNT_INSET;
+  if (r !== null) out[2] = place(r * w, h / 2)[0] - MOUNT_INSET;
+  if (b !== null) out[3] = place(w / 2, b * h)[1] - MOUNT_INSET;
+  return cleanCrop(out);
+}
+
+// ------------------------------------------------------------------ dust & scratches
+
+export const DUST_EDGE = 1600; // specks are found at proxy scale: full resolution is shrunk to this first
+const DUST_PASSES = 8;
+
+/**
+ * Min (erode) or max (dilate) over the (2r + 1)² window, clipped to the image: cv2.erode / dilate.
+ * Along rows, then down columns a whole row at a time (memory in order). Min and max don't round,
+ * so this is exactly OpenCV's result.
+ */
+function morph(src: Float32Array, w: number, h: number, r: number, max: boolean): Float32Array {
+  const tmp = new Float32Array(w * h);
+  for (let y = 0; y < h; y++) {
+    const row = y * w;
+    for (let x = 0; x < w; x++) {
+      const b = Math.min(w - 1, x + r);
+      let v = src[row + Math.max(0, x - r)];
+      if (max) for (let k = row + Math.max(0, x - r) + 1; k <= row + b; k++) v = src[k] > v ? src[k] : v;
+      else for (let k = row + Math.max(0, x - r) + 1; k <= row + b; k++) v = src[k] < v ? src[k] : v;
+      tmp[row + x] = v;
+    }
+  }
+  const out = new Float32Array(w * h);
+  for (let y = 0; y < h; y++) {
+    const d = y * w;
+    const a = Math.max(0, y - r);
+    out.set(tmp.subarray(a * w, a * w + w), d);
+    for (let k = a + 1; k <= Math.min(h - 1, y + r); k++) {
+      const s = k * w;
+      if (max) for (let x = 0; x < w; x++) out[d + x] = tmp[s + x] > out[d + x] ? tmp[s + x] : out[d + x];
+      else for (let x = 0; x < w; x++) out[d + x] = tmp[s + x] < out[d + x] ? tmp[s + x] : out[d + x];
+    }
+  }
+  return out;
+}
+
+/**
+ * Dust specks and thin scratches (imaging.dust_mask): small marks a morphological opening /
+ * closing takes away, with more contrast than `amount` asks for, not part of texture, grown by a
+ * pixel. The arithmetic is float32 like numpy's, so the mask is the same pixel for pixel.
+ */
+export function dustMask(a: RGB, amount: number): { mask: Uint8Array; r: number } {
+  const { width: w, height: h } = a;
+  const f = Math.fround;
+  const [c0, c1, c2] = [f(0.299), f(0.587), f(0.114)];
+  const lum = new Float32Array(w * h);
+  for (let i = 0; i < w * h; i++)
+    lum[i] = f(f(f(a.data[i * 3] * c0) + f(a.data[i * 3 + 1] * c1)) + f(a.data[i * 3 + 2] * c2));
+  const r = Math.max(1, Math.trunc((3 * Math.max(w, h)) / DUST_EDGE + 0.5));
+  const opened = morph(morph(lum, w, h, r, false), w, h, r, true);
+  const closed = morph(morph(lum, w, h, r, true), w, h, r, false);
+  const thr = f(0.25 - 0.19 * amount);
+  const m = new Uint8Array(w * h);
+  for (let i = 0; i < w * h; i++) m[i] = Math.max(f(lum[i] - opened[i]), f(closed[i] - lum[i])) > thr ? 1 : 0;
+  // texture, not dust: more than a fifth of the (8r + 1)² neighbourhood responds
+  const ii = new Int32Array((w + 1) * (h + 1));
+  for (let y = 0; y < h; y++) {
+    let row = 0;
+    for (let x = 0; x < w; x++) {
+      row += m[y * w + x];
+      ii[(y + 1) * (w + 1) + x + 1] = ii[y * (w + 1) + x + 1] + row;
+    }
+  }
+  const rad = 4 * r;
+  const kept = new Uint8Array(w * h);
+  for (let y = 0; y < h; y++) {
+    const ya = Math.max(0, y - rad);
+    const yb = Math.min(h, y + rad + 1);
+    for (let x = 0; x < w; x++) {
+      if (!m[y * w + x]) continue;
+      const xa = Math.max(0, x - rad);
+      const xb = Math.min(w, x + rad + 1);
+      const cnt = ii[yb * (w + 1) + xb] - ii[ya * (w + 1) + xb] - ii[yb * (w + 1) + xa] + ii[ya * (w + 1) + xa];
+      if (cnt * 5 <= (yb - ya) * (xb - xa)) kept[y * w + x] = 1;
+    }
+  }
+  // grown by a pixel: a 3×3 max, along rows then down columns
+  const across = new Uint8Array(w * h);
+  for (let y = 0; y < h; y++)
+    for (let x = 0; x < w; x++) {
+      const i = y * w + x;
+      across[i] = kept[i] | (x > 0 ? kept[i - 1] : 0) | (x < w - 1 ? kept[i + 1] : 0);
+    }
+  const mask = new Uint8Array(w * h);
+  for (let y = 0; y < h; y++)
+    for (let x = 0; x < w; x++) {
+      const i = y * w + x;
+      mask[i] = across[i] | (y > 0 ? across[i - w] : 0) | (y < h - 1 ? across[i + w] : 0);
+    }
+  return { mask, r };
+}
+
+/** Median of the first n values (numpy's: the two middle ones averaged, in float32). */
+function medianOf(v: Float32Array, n: number): number {
+  const s = v.subarray(0, n).sort();
+  return n % 2 ? s[n >> 1] : Math.fround((s[n / 2 - 1] + s[n / 2]) / 2);
+}
+
+/**
+ * Find dust and scratches (at proxy scale) and fill each marked pixel with the per-channel median
+ * of the unmarked ones around it, pass by pass (imaging.repair_dust). inPlace: the caller's pixels
+ * may be overwritten.
+ */
+export function repairDust(a: RGB, amount: number, inPlace = false): RGB {
+  if (amount <= 0) return a;
+  const { width: w, height: h } = a;
+  const small = shrink(a, DUST_EDGE);
+  const { mask: m0, r } = dustMask(small, amount);
+  if (!m0.includes(1)) return a;
+  const out = inPlace ? a : rgb(w, h, Float32Array.from(a.data));
+  const [mw, mh] = [small.width, small.height];
+  let known: Uint8Array;
+  if (mw === w && mh === h) known = Uint8Array.from(m0, (v) => 1 - v);
+  else {
+    // full resolution: every pixel takes its proxy pixel's verdict
+    const xs = Int32Array.from({ length: w }, (_, x) => Math.min(Math.trunc(((x + 0.5) * mw) / w), mw - 1));
+    known = new Uint8Array(w * h);
+    for (let y = 0; y < h; y++) {
+      const my = Math.min(Math.trunc(((y + 0.5) * mh) / h), mh - 1) * mw;
+      for (let x = 0; x < w; x++) known[y * w + x] = 1 - m0[my + xs[x]];
+    }
+  }
+  // the window: (2r + 3)² samples, spread out as far as the proxy's pixels are
+  const f = Math.max(h, w) / Math.max(mh, mw);
+  const off: number[] = [];
+  for (let k = -r - 1; k <= r + 1; k++) off.push((k >= 0 ? 1 : -1) * Math.trunc(Math.abs(k) * f + 0.5));
+  let todo: number[] = [];
+  for (let i = 0; i < w * h; i++) if (!known[i]) todo.push(i);
+  const o = out.data;
+  const buf = [0, 1, 2].map(() => new Float32Array(off.length * off.length));
+  for (let pass = 0; pass < DUST_PASSES && todo.length; pass++) {
+    const vals = new Float32Array(todo.length * 3);
+    const done = new Uint8Array(todo.length);
+    todo.forEach((i, j) => {
+      const y = Math.trunc(i / w);
+      const x = i - y * w;
+      let n = 0;
+      for (const dy of off) {
+        const yy = y + dy;
+        if (yy < 0 || yy >= h) continue;
+        for (const dx of off) {
+          const xx = x + dx;
+          if (xx < 0 || xx >= w || !known[yy * w + xx]) continue;
+          const s = (yy * w + xx) * 3;
+          buf[0][n] = o[s];
+          buf[1][n] = o[s + 1];
+          buf[2][n] = o[s + 2];
+          n++;
+        }
+      }
+      if (!n) return; // the middle of a larger mark: next pass
+      for (let c = 0; c < 3; c++) vals[j * 3 + c] = medianOf(buf[c], n);
+      done[j] = 1;
+    });
+    // a pass reads only pixels known before it
+    todo.forEach((i, j) => {
+      if (!done[j]) return;
+      o.set(vals.subarray(j * 3, j * 3 + 3), i * 3);
+      known[i] = 1;
+    });
+    todo = todo.filter((_, j) => !done[j]);
+  }
+  return out;
 }
 
 /**

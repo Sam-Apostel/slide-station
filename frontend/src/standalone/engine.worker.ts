@@ -140,11 +140,32 @@ const ops = {
     return encode(fuseSources(sources), 95);
   },
 
-  /** Rotation guess from the active scans' proxies, and learning features of the blended slide. */
+  /** Rotation guess from the active scans' proxies; learning features and mount of the blended slide. */
   async analyse({ proxies, fused, scans }: { proxies: Src[]; fused: Src; scans: number }) {
     const imgs = await Promise.all(proxies.map((p) => decode(p.blob)));
     const [deg, why] = im.suggestRotation(imgs);
-    return { rotation: deg, reason: why, features: features(await load(fused), scans) };
+    const blend = await load(fused);
+    return { rotation: deg, reason: why, features: features(blend, scans), mount: im.detectMount(blend) };
+  },
+
+  /** The slide mount's tilt and sides on the blended (unturned) slide. */
+  async mount({ src }: { src: Src }) {
+    return im.detectMount(await load(src));
+  },
+
+  /** The crop that trims to the mount's window (box already turned like the slide). */
+  async mountCrop({
+    src,
+    rotation,
+    params,
+    box,
+  }: {
+    src: Src;
+    rotation: number;
+    params: Params;
+    box: (number | null)[];
+  }) {
+    return im.mountCrop(rotated(await load(src), rotation), params, box);
   },
 
   async render(a: { src: Src; rotation: number; params: Params; size: number; before: boolean; uncropped: boolean }) {

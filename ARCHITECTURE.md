@@ -184,6 +184,57 @@ app's keyboard map ignores keys while `.ss-crop` exists): arrows move the frame 
 ⌥ / Alt + arrows resize it from the bottom-right corner (ratio and bounds respected), Enter / Esc.
 A focused straighten slider keeps its own arrow keys.
 
+### Mount detection & dust repair
+
+Both are pixel features, so they exist three times — `imaging.py`, `standalone/imaging.ts`,
+`SlideKit/MountAndDust.swift` — pinned by the golden fixtures (`mount.png`, `dusty.png`,
+`dust.f32` and the `mount*` / `dust_*` keys of `golden.json`). Python tests:
+`tests/test_mount_dust.py`.
+
+**Mount** (`imaging.detect_mount`, on the blended proxy shrunk to 800 px, before rotation — the
+tilt is the same at every quarter turn). The mount's darkness is the median of the outer 1 %
+ring, the picture's the median of the middle half; no dark ring around a brighter picture = no
+mount. Every column / row in the middle 80 % of each side is followed in from the border (up to
+20 %) to where it rises through a threshold between the two for three samples in a row, with a
+sub-pixel crossing; a robust least-squares line (four refits dropping points beyond 3 × 1.4826 ×
+median residual) through those points is that side. A side counts with ≥ 20 points and ≥ 35 % of
+its columns. The angle is the kept-points-weighted mean of the sides' angles; `confidence` =
+agreement (1 − the worst side's deviation / 0.5°) × coverage (kept points / 60 % of all) × 0.8
+with only two sides, and 0 below two sides or beyond ±10°. Synthetic scans turned ±0.5–5° come
+out within 0.01–0.02°.
+
+- Stored as `g["mount"] = {"angle", "confidence", "box": [l, t, r, b], "scans"}` at import. `box`
+  is each found side's middle in 0..1 of the unturned scan (`None` if not found); `scans` are the
+  active scans it was found on. The payload's `mount` is `None` when it is missing (trays from
+  before) or stale (scans excluded / split since); the UI then calls `POST …/mount` once when the
+  slide is shown, which finds and stores it (`workflow.mount_of`).
+- An import applies `params.angle = -angle` by itself only to a **new** slide with confidence ≥
+  `MOUNT_AUTO` (0.8), |angle| ≥ 0.1°, no framing, not developed (`workflow.straighten_to_mount`).
+  Otherwise the Frame section offers "Straighten to mount" from `MOUNT_SUGGEST` (0.5).
+- `POST …/mount {"apply": true}` sets the angle (undoable, `what: "mount"`); `"trim": true` also sets
+  `crop` from `imaging.mount_crop`: each side's middle, turned with the slide (`rotate_box`), is sent
+  through the same trim and straighten transform as `develop()` and the crop sits 0.5 % inside it.
+  The dark-edge trim stays as it was; this is the tighter trim on top.
+
+**Dust** (`Params.dust`, 0..1, default 0; `repair_dust` in `tone_base` after the trim and before
+the geometry, so the mount's edge is never taken for a scratch and `before_view`'s trim is
+unchanged). Found at proxy scale — larger images are shrunk to 1600 px first, so preview and
+full-resolution export mark the same specks:
+
+- luminance in float32 (exactly numpy's arithmetic, so the mask is identical in all three ports);
+  white and black top-hats with a (2r + 1)² square, r = round(3 × long edge / 1600) (3 at proxy
+  size); a pixel is a mark if a top-hat exceeds `0.25 − 0.19 × dust`; marks where more than a fifth
+  of the (8r + 1)² neighbourhood is marked are texture and dropped (integer box counts); grown by a
+  3×3 dilation.
+- Fill: each marked pixel becomes the per-channel median (numpy's, even counts averaged in float32)
+  of the unmarked pixels among (2r + 3)² samples around it; pixels with none wait for the next pass
+  (8 passes, each reading only pixels known before it). At full resolution each pixel takes its
+  proxy pixel's verdict and the samples are spaced a proxy pixel apart, so the cost stays ~1 s for
+  15 MP. No `cv2.inpaint`: this is simple enough to be bit-exact in TypeScript and Swift.
+- Keys: `store.NEUTRAL_EXTRAS` has `"dust": 0.0`, so `render_key` of existing slides doesn't change;
+  `tone_key` appends dust only when it is on. Not learned (the colour features say nothing about
+  dust); "Apply to rest" and "Copy previous" carry it like the colour settings.
+
 ### Tactile details
 
 Filmstrip tiles are slide mounts (`.ss-mount`), the filmstrip header shows the tray from above
@@ -311,7 +362,8 @@ standalone/
 - **Keep the three pipelines in step:** `imaging.py`, SlideKit and `imaging.ts`.
   `parity.test.ts` (`npm test`) runs the TypeScript pipeline on SlideKit's golden fixtures with the
   same tolerances as `ParityTests.swift`: restore, trim, develop, crop, curves, fit, eyedropper,
-  grouping, best of bracket, fusion, alignment, straighten, learning (incl. learned curves).
+  grouping, best of bracket, fusion, alignment, straighten, learning (incl. learned curves), mount
+  detection and dust repair.
 - **Images.** Preview URLs stay the same; `imageSrc()` / `useImageSrc()` in `lib/api.ts` render them
   in the worker and hand out object URLs, cached only when the render matches the URL's key (the
   server's cache rule). The stage asks with high priority, filmstrip tiles only once scrolled into

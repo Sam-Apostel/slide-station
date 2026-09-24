@@ -7,6 +7,7 @@ locally in your browser, keyboard-first, built for working through thousands of 
 - Groups repeated scans of one slide automatically and exposure-fuses them
 - Guesses rotation from faces and skies, and leaves slides alone when it isn't sure
 - Restores faded film, and **learns your corrections** to pre-set the next slides
+- Straightens slides that sit crooked in their mount, and takes out dust and scratches
 - Uploads to a per-tray Immich album (works with Immich v1.118 → v3)
 - Deletes scans from the card only after they are verified and uploaded
 
@@ -106,6 +107,12 @@ can be re-rendered from the originals at any time).
    hold **B** for before, **C** copy colour from the previous slide, **X** skip (never uploaded),
    **M** merge with next, **1–9** leave a scan out of the stack, ✂ between stack scans splits a
    slide. Reviewed slides are rendered at full resolution in the background.
+
+   A slide that sat crooked in the scanner is straightened to its mount's edge on import when the
+   app is sure; otherwise the Frame section says how far the mount is turned and offers
+   **Straighten to mount** (the frame button next to it also crops to the inside of the mount).
+   **Dust** in Adjust → Restore takes out specks and thin scratches (off by default; turn it up
+   until they're gone — it leaves texture and fine detail alone).
 4. **Upload to Immich**. Editing a slide after uploading marks it "edited"; the next upload
    replaces the old copy in Immich (the old one goes to the Immich trash).
 5. **Clean scanner card** unlocks once every slide is uploaded or skipped. It only deletes files

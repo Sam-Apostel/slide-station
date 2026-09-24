@@ -148,4 +148,41 @@ final class ParityTests: XCTestCase {
         // clockwise: the top-left pixel ends up top-right
         XCTAssertEqual(Array(r.data[((r.width - 1)) * 3..<(r.width * 3)]), Array(a.data[0..<3]))
     }
+
+    // MARK: mount detection, dust & scratch repair
+
+    struct Repair: Decodable {
+        struct Found: Decodable { var angle: Double, confidence: Double, box: [Double?] }
+        var mount: Found, mount_none: Found
+        var mount_box_rot90: [Double?], mount_params: Params, mount_crop_rot90: [Double]
+        var dust_amount: Double, dust_marked: Int, dust_r: Int
+    }
+
+    lazy var repair: Repair = try! JSONDecoder().decode(Repair.self, from: Data(contentsOf: Self.dir.appendingPathComponent("golden.json")))
+
+    func testMountDetection() throws {
+        let mnt = try image("mount.png")
+        let m = Develop.detectMount(mnt)
+        XCTAssertEqual(m.angle, repair.mount.angle, accuracy: 0.02)
+        XCTAssertEqual(m.confidence, repair.mount.confidence, accuracy: 0.03)
+        for (a, b) in zip(m.box, repair.mount.box) { XCTAssertEqual(a!, b!, accuracy: 0.002) }
+        XCTAssertEqual(Develop.rotateBox(repair.mount.box, 90), repair.mount_box_rot90)
+        XCTAssertEqual(Develop.rotateBox(Develop.rotateBox(repair.mount.box, 180), 180), repair.mount.box)
+        let crop = try XCTUnwrap(Develop.mountCrop(mnt.rotated(90), repair.mount_params, box: repair.mount_box_rot90))
+        for (a, b) in zip(crop, repair.mount_crop_rot90) { XCTAssertEqual(a, b, accuracy: 0.002) }
+        let scene = try image("scene.png")
+        let inside = Develop.detectMount(scene.cropped(top: 8, bottom: scene.height - 8, left: 8, right: scene.width - 8))
+        XCTAssertEqual(inside.confidence, 0)
+    }
+
+    func testDustRepair() throws {
+        let dusty = try image("dusty.png")
+        let (mask, r) = Develop.dustMask(dusty, amount: repair.dust_amount)
+        XCTAssertEqual(r, repair.dust_r)
+        XCTAssertEqual(mask.reduce(0) { $0 + Int($1) }, repair.dust_marked)
+        let (mean, worst) = diff(Develop.repairDust(dusty, amount: repair.dust_amount).data, try floats("dust.f32"))
+        XCTAssertLessThan(mean, 1e-5)
+        XCTAssertLessThan(worst, 1e-3)
+        XCTAssertEqual(Develop.repairDust(dusty, amount: 0).data, dusty.data)
+    }
 }

@@ -357,7 +357,36 @@ export function useSlideStation() {
     }
   };
 
+  /** Straighten to the slide mount's edge; with trim, also crop to the mount's window. */
+  const straightenToMount = async (trim = false) => {
+    if (!editable()) return;
+    const url = groupUrl();
+    const g = ref.current.session?.groups[ref.current.sel];
+    if (!url || !g) return;
+    if (unsaved.current.has(g.id)) await flushParams(g.id);
+    try {
+      applyPayload(await api<SessionPayload>("POST", `${url}/mount`, { apply: true, trim }));
+    } catch (e) {
+      fail(e);
+    }
+  };
+
+  // Slides imported before mount detection existed (or whose scans changed since) have no mount
+  // yet: look for it once when the slide is shown.
+  const lookedForMount = React.useRef(new Set<string>());
+  React.useEffect(() => {
+    if (!current || current.mount !== null || current.locked) return;
+    const key = `${sessionId}:${current.id}:${current.active.join()}`;
+    if (lookedForMount.current.has(key)) return;
+    lookedForMount.current.add(key);
+    api<SessionPayload>("POST", `/api/sessions/${sessionId}/groups/${current.id}/mount`, {}).then(
+      (p) => ref.current.sessionId === sessionId && applyPayload(p),
+      () => undefined, // a suggestion: nothing to tell if it fails
+    );
+  }, [current, sessionId, applyPayload]);
+
   const STEP_LABEL: Record<string, string> = {
+    mount: "straighten to mount",
     rotation: "rotation",
     fit: "curve fit",
     neutral: "white balance pick",
@@ -535,6 +564,7 @@ export function useSlideStation() {
     resuggest,
     fitCurves,
     pickNeutral,
+    straightenToMount,
     patchGroup,
     dateRange,
     undo,

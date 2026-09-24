@@ -116,7 +116,8 @@ def main() -> None:
     tmp = Path(tempfile.mkdtemp(prefix="ss-web-"))
     site = tmp / "site"
     subprocess.run(["cp", "-r", str(SITE), str(site)], check=True)
-    made = make_scans(site / "card", SLIDES, (1200, 800))
+    # slide 4 sits turned 1.5° in its mount: the import straightens it by itself
+    made = make_scans(site / "card", SLIDES, (1200, 800), mounts=[None, None, None, 1.5])
     names = [n for slide in made for n in slide]
     port = serve(site)
 
@@ -190,6 +191,23 @@ def main() -> None:
                 pg.wait_for_timeout(200)
             print(f"develop: {time.time() - t0:.1f}s")
             pg.screenshot(path=str(SHOTS / "02-developed.png"))
+
+            # ---- slide 4: straightened to its mount at import; trim to it, then dust repair
+            expect(pg.get_by_text("Level with the mount")).to_be_visible(timeout=10_000)
+            pg.get_by_role("button", name="Straighten and trim to the mount").click()
+            pg.wait_for_timeout(500)
+            expect(pg.get_by_text("Level with the mount")).to_be_visible()
+            expect(pg.get_by_role("button", name="Uncrop")).to_be_visible()
+            dust = pg.get_by_label("Dust value")
+            dust.fill("40")
+            dust.press("Enter")
+            expect(dust).to_have_value("40")
+            pg.wait_for_function(
+                "() => [...document.querySelectorAll(\"main img[src^='blob:']\")].some(i => i.naturalWidth > 0)",
+                timeout=30_000,
+            )
+            print("mount and dust: straightened, trimmed, dust 40")
+            pg.screenshot(path=str(SHOTS / "02b-mount-dust.png"))
 
             # ---- date a range of slides
             pg.keyboard.press("Control+k")

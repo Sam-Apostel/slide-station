@@ -129,5 +129,46 @@ meta["learning_curve_examples"] = model.examples
 sugg, _ = model.suggest(meta["learning_query"])
 meta["learning_curve_suggestion"] = sugg["curves"]
 
+# mount detection: the scene turned 2.5° clockwise inside a dark mount window
+def mounted(a: np.ndarray, angle: float, inner=(0.84, 0.8)) -> np.ndarray:
+    h, w = a.shape[:2]
+    y, x = np.mgrid[0:h, 0:w].astype(np.float64) + 0.5
+    t = np.deg2rad(angle)
+    dx, dy = x - w / 2, y - h / 2
+    xr, yr = np.cos(t) * dx + np.sin(t) * dy, -np.sin(t) * dx + np.cos(t) * dy
+    alpha = np.clip(0.5 + np.minimum(inner[0] * w / 2 - np.abs(xr), inner[1] * h / 2 - np.abs(yr)), 0, 1)[..., None]
+    return a * alpha + 0.03 * (1 - alpha)
+
+
+big = np.asarray(Image.fromarray((scene(3) * 255 + 0.5).astype(np.uint8)).resize((360, 240), Image.BICUBIC),
+                 np.float32) / 255
+mnt = save_png(mounted(big, 2.5), "mount.png")
+meta["mount"] = im.detect_mount(mnt)
+meta["mount_box_rot90"] = im.rotate_box(meta["mount"]["box"], 90)
+mp = im.Params(angle=-meta["mount"]["angle"])
+meta["mount_params"] = mp.to_dict()
+meta["mount_crop_rot90"] = im.mount_crop(im.rotate_arr(mnt, 90), mp, meta["mount_box_rot90"])
+meta["mount_none"] = im.detect_mount(base[8:-8, 8:-8])  # no mount left around the picture
+
+# dust & scratches: specks and a scratch on a smooth picture with a patch of fine texture
+rng = np.random.default_rng(11)
+DW, DH = 256, 176
+y, x = np.mgrid[0:DH, 0:DW].astype(np.float32)
+clean = np.stack([0.5 + 0.3 * np.sin(x / DW * 3 + 1), 0.45 + 0.25 * np.cos(y / DH * 4),
+                  0.4 + 0.2 * np.sin((x + y) / (DW + DH) * 5)], -1) + rng.normal(0, 0.008, (DH, DW, 3))
+clean[120:170, 10:90] += (0.12 * np.sin(x[120:170, 10:90] * 2.1) * np.sin(y[120:170, 10:90] * 1.7))[..., None]
+dusty = clean.copy()
+for _ in range(40):
+    cx, cy, r = rng.random() * DW, rng.random() * DH, 0.6 + rng.random() * 0.8
+    al = np.clip(r + 0.5 - np.hypot(x - cx, y - cy), 0, 1)[..., None]
+    dusty = dusty * (1 - al) + (0.03 if rng.random() < 0.7 else 0.97) * al
+al = np.clip(1.0 - np.abs((y - 30) - 0.4 * (x - 100)), 0, 1)[..., None] * ((x > 100) & (x < 220))[..., None]
+dusty = dusty * (1 - 0.9 * al) + 0.95 * 0.9 * al
+dusty = save_png(dusty, "dusty.png")
+meta["dust_amount"] = 0.7
+dm, dr = im.dust_mask(dusty, 0.7)
+meta["dust_marked"], meta["dust_r"] = int(dm.sum()), dr
+save_f32(im.repair_dust(dusty, 0.7), "dust.f32")
+
 (OUT / "golden.json").write_text(json.dumps(meta, indent=1))
 print("wrote", OUT)

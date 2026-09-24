@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import io
+import warnings
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
@@ -220,6 +221,7 @@ class Params:
     curves: dict = field(default_factory=dict)
     angle: float = 0.0  # straighten, degrees clockwise (-15..15), zoomed in so no corners show
     crop: list | None = None  # [left, top, right, bottom] in 0..1 of the straightened frame
+    dust: float = 0.0  # dust & scratch repair 0..1 (0 = off)
 
     @classmethod
     def from_dict(cls, d: dict | None) -> "Params":
@@ -229,6 +231,8 @@ class Params:
                 p.curves = clean_curves(v)
             elif k == "crop":
                 p.crop = clean_crop(v)
+            elif k == "dust":
+                p.dust = min(1.0, max(0.0, float(v)))
             elif hasattr(p, k):
                 setattr(p, k, type(getattr(p, k))(v))
         return p
@@ -289,6 +293,226 @@ def trim_bounds(a: np.ndarray, max_frac: float = 0.05) -> tuple[int, int, int, i
     l = cut(cols, int(w * max_frac))
     r = cut(cols[::-1], int(w * max_frac))
     return t, h - b, l, w - r
+
+
+# --------------------------------------------------------------------------- mount detection
+
+MOUNT_EDGE = 800  # the mount is found on the scan shrunk to this (longer edge)
+MOUNT_BAND = 0.2  # its inner edge is looked for this far in from each side of the scan
+MOUNT_SUGGEST = 0.5  # confidence from which "Straighten to mount" is offered
+MOUNT_AUTO = 0.8  # confidence from which an import straightens a new slide by itself
+MOUNT_INSET = 0.005  # a tighter trim cuts this much (of the frame) inside the mount's edge
+
+
+def shrink(a: np.ndarray, edge: int) -> np.ndarray:
+    """Area-average down so the longer edge is at most `edge` (rounding half up, like the ports)."""
+    h, w = a.shape[:2]
+    if max(h, w) <= edge:
+        return a
+    s = edge / max(h, w)
+    return cv2.resize(a, (max(1, int(w * s + 0.5)), max(1, int(h * s + 0.5))), interpolation=cv2.INTER_AREA)
+
+
+def _edge_crossings(prof: np.ndarray, thr: float) -> np.ndarray:
+    """Per column of `prof` (rows run from the scan's border inwards): where it first rises through
+    `thr` for good (three samples in a row), sub-pixel, in pixels from the border. NaN where the
+    column doesn't start on the mount or never leaves it."""
+    above = prof >= thr
+    ok = above[:-2] & above[1:-1] & above[2:]
+    found = ok.any(0) & ~above[0]
+    i = np.maximum(np.argmax(ok, 0), 1)
+    cols = np.arange(prof.shape[1])
+    lo, hi = prof[i - 1, cols].astype(np.float64), prof[i, cols].astype(np.float64)
+    pos = i - 1 + (thr - lo) / np.maximum(hi - lo, 1e-6) + 0.5
+    return np.where(found, pos, np.nan)
+
+
+def _robust_line(u: np.ndarray, v: np.ndarray) -> tuple[float, float, int] | None:
+    """v = a + b u through the points, refitted four times without the ones far off the line (a
+    corner of the picture, a dark patch touching the mount). Returns (a, b, points kept)."""
+    keep = np.isfinite(v)
+    u, v = u[keep].astype(np.float64), v[keep].astype(np.float64)
+    inl = np.ones(len(u), bool)
+    a0 = b = 0.0
+    for _ in range(4):
+        if inl.sum() < 10:
+            return None
+        uu, vv = u[inl], v[inl]
+        um, vm = uu.mean(), vv.mean()
+        b = float(((uu - um) * (vv - vm)).sum() / max(((uu - um) ** 2).sum(), 1e-9))
+        a0 = float(vm - b * um)
+        r = np.abs(v - (a0 + b * u))
+        inl = r <= max(0.5, 3 * 1.4826 * float(np.median(r[inl])))
+    return a0, b, int(inl.sum())
+
+
+def detect_mount(a: np.ndarray) -> dict:
+    """The slide mount's inner edge: how far it is turned, and where its four sides are.
+
+    The mount is the dark frame around the picture. Every column (row) in the middle 80 % of each
+    side is followed inwards from the scan's border to where it leaves the mount's darkness; a
+    straight line through those points (robust to the picture's own dark bits) is that side of the
+    window. Returns {"angle": degrees clockwise the picture is turned (straighten by -angle),
+    "confidence": 0..1, "box": [l, t, r, b]} with each side's middle in 0..1 of the scan (None
+    where that side wasn't found). Confidence needs at least two sides that agree on the angle."""
+    s = shrink(a, MOUNT_EDGE)
+    lum = s.mean(2, dtype=np.float32) if s.ndim == 3 else s
+    h, w = lum.shape
+    none = {"angle": 0.0, "confidence": 0.0, "box": [None, None, None, None]}
+    m = max(1, int(min(h, w) * 0.01))
+    ring = np.concatenate([lum[:m].ravel(), lum[h - m :].ravel(), lum[m : h - m, :m].ravel(),
+                           lum[m : h - m, w - m :].ravel()])
+    mount = float(np.median(ring))
+    ref = float(np.median(lum[h // 4 : h - h // 4, w // 4 : w - w // 4]))
+    if mount > 0.25 or ref - mount < 0.08:
+        return none  # no dark frame around a brighter picture
+    thr = mount + min(0.1, max(0.03, 0.3 * (ref - mount)))
+    bh, bw = max(4, int(h * MOUNT_BAND)), max(4, int(w * MOUNT_BAND))
+    x0, y0 = int(w * 0.1), int(h * 0.1)
+    ux = np.arange(x0, w - x0) + 0.5
+    uy = np.arange(y0, h - y0) + 0.5
+    sides = {  # (positions along the side, edge positions across it, samples)
+        "top": (ux, _edge_crossings(lum[:bh, x0 : w - x0], thr)),
+        "bottom": (ux, h - _edge_crossings(lum[::-1][:bh, x0 : w - x0], thr)),
+        "left": (uy, _edge_crossings(lum[y0 : h - y0, :bw].T, thr)),
+        "right": (uy, w - _edge_crossings(lum[y0 : h - y0, ::-1][:, :bw].T, thr)),
+    }
+    found, total = {}, 0
+    for name, (u, v) in sides.items():
+        total += len(u)
+        fit = _robust_line(u, v)
+        if fit and fit[2] >= max(20, 0.35 * len(u)):
+            found[name] = fit
+    if len(found) < 2:
+        return none
+    ang = {k: float(np.degrees(np.arctan(b))) * (1 if k in ("top", "bottom") else -1) for k, (_, b, _) in found.items()}
+    n = {k: f[2] for k, f in found.items()}
+    angle = sum(ang[k] * n[k] for k in found) / sum(n.values())
+    spread = max(abs(ang[k] - angle) for k in found)
+    conf = max(0.0, 1 - spread / 0.5) * min(1.0, sum(n.values()) / total / 0.6) * (1.0 if len(found) >= 3 else 0.8)
+    if abs(angle) > 10:
+        conf = 0.0
+    mid = lambda k, c, size: round((found[k][0] + found[k][1] * c) / size, 4) if k in found else None  # noqa: E731
+    box = [mid("left", h / 2, w), mid("top", w / 2, h), mid("right", h / 2, w), mid("bottom", w / 2, h)]
+    return {"angle": round(angle, 2), "confidence": round(conf, 2), "box": box}
+
+
+def rotate_box(box: list, rot: int) -> list:
+    """A mount box [l, t, r, b] (0..1, None = not found) of a scan turned clockwise by `rot`."""
+    for _ in range((rot % 360) // 90):
+        l, t, r, b = box
+        box = [None if b is None else round(1 - b, 4), l, None if t is None else round(1 - t, 4), r]
+    return box
+
+
+def mount_crop(a: np.ndarray, p: Params, box: list) -> list | None:
+    """The crop that trims to the mount's window once the photo is straightened by p.angle.
+
+    `a` is the (turned) scan the slide develops from and `box` its mount sides (rotate_box). Each
+    side's middle goes through the same trim and straighten as develop(), and the crop sits
+    MOUNT_INSET inside it; sides not found stay at the frame's edge."""
+    h, w = a.shape[:2]
+    t0, b0, l0, r0 = trim_bounds(auto_restore(a, p.strength)) if p.trim else (0, h, 0, w)
+    fw, fh = r0 - l0, b0 - t0
+    th = np.deg2rad(p.angle) if abs(p.angle) >= 0.01 else 0.0  # straighten() leaves tiny angles alone
+    scale = np.cos(abs(th)) + np.sin(abs(th)) * max(fw, fh) / min(fw, fh)
+    cs, sn = np.cos(th), np.sin(th)
+
+    def place(x: float, y: float) -> tuple[float, float]:
+        """A point (continuous coordinates of `a`) in 0..1 of the straightened frame."""
+        dx, dy = x - 0.5 - l0 - fw / 2, y - 0.5 - t0 - fh / 2  # pixel-index coordinates, as warpAffine
+        return (fw / 2 + scale * (cs * dx - sn * dy) + 0.5) / fw, (fh / 2 + scale * (sn * dx + cs * dy) + 0.5) / fh
+
+    l, t, r, b = box
+    out = [0.0, 0.0, 1.0, 1.0]
+    if l is not None:
+        out[0] = place(l * w, h / 2)[0] + MOUNT_INSET
+    if t is not None:
+        out[1] = place(w / 2, t * h)[1] + MOUNT_INSET
+    if r is not None:
+        out[2] = place(r * w, h / 2)[0] - MOUNT_INSET
+    if b is not None:
+        out[3] = place(w / 2, b * h)[1] - MOUNT_INSET
+    return clean_crop(out)
+
+
+# --------------------------------------------------------------------------- dust & scratches
+
+DUST_EDGE = 1600  # specks are found at proxy scale: a full-resolution scan is shrunk to this first
+DUST_PASSES = 8
+
+
+def _box_count(m: np.ndarray, rad: int) -> tuple[np.ndarray, np.ndarray]:
+    """Per pixel: set pixels of `m` in the (2 rad + 1)² window around it, and that window's area
+    (both clipped to the image). Exact integers, so every port agrees."""
+    h, w = m.shape
+    ii = np.zeros((h + 1, w + 1), np.int64)
+    ii[1:, 1:] = m.astype(np.int64).cumsum(0).cumsum(1)
+    y, x = np.arange(h), np.arange(w)
+    y0, y1 = np.clip(y - rad, 0, h), np.clip(y + rad + 1, 0, h)
+    x0, x1 = np.clip(x - rad, 0, w), np.clip(x + rad + 1, 0, w)
+    cnt = ii[y1][:, x1] - ii[y0][:, x1] - ii[y1][:, x0] + ii[y0][:, x0]
+    return cnt, (y1 - y0)[:, None] * (x1 - x0)[None, :]
+
+
+def dust_mask(a: np.ndarray, amount: float) -> tuple[np.ndarray, int]:
+    """Dust specks and thin scratches: small bright or dark marks a morphological opening / closing
+    (a (2r + 1)² square, r scaled with the image) takes away — the top-hats — with more contrast
+    than `amount` asks for. Marks where more than a fifth of the neighbourhood responds are texture
+    (grass, grain, water), not dust, and stay. Grown by a pixel to catch each speck's soft rim.
+    Returns (mask, r)."""
+    lum = a[..., 0] * np.float32(0.299) + a[..., 1] * np.float32(0.587) + a[..., 2] * np.float32(0.114)
+    r = max(1, int(3 * max(lum.shape) / DUST_EDGE + 0.5))
+    k = np.ones((2 * r + 1, 2 * r + 1), np.uint8)
+    hat = np.maximum(lum - cv2.dilate(cv2.erode(lum, k), k), cv2.erode(cv2.dilate(lum, k), k) - lum)
+    m = hat > np.float32(0.25 - 0.19 * amount)
+    cnt, area = _box_count(m, 4 * r)
+    m &= cnt * 5 <= area
+    return cv2.dilate(m.astype(np.uint8), np.ones((3, 3), np.uint8)).astype(bool), r
+
+
+def repair_dust(a: np.ndarray, amount: float, inplace: bool = False) -> np.ndarray:
+    """Find dust and scratches (dust_mask, at proxy scale) and fill them in from around them.
+
+    Each marked pixel becomes the per-channel median of the unmarked pixels in the window around
+    it; pixels with none (the middle of a larger mark) wait for the next pass, which can use the
+    ones filled before it. Simple on purpose: the three pipelines give the same result. At full
+    resolution the window keeps the proxy's number of samples, spaced a proxy pixel apart."""
+    if amount <= 0:
+        return a
+    h, w = a.shape[:2]
+    m, r = dust_mask(shrink(a, DUST_EDGE), amount)
+    if not m.any():
+        return a
+    out = a if inplace else a.copy()
+    mh, mw = m.shape
+    if (mh, mw) != (h, w):  # full resolution: every pixel takes its proxy pixel's verdict
+        ys = np.minimum(((np.arange(h) + 0.5) * mh / h).astype(np.int64), mh - 1)
+        xs = np.minimum(((np.arange(w) + 0.5) * mw / w).astype(np.int64), mw - 1)
+        m = m[ys][:, xs]
+    # the window: (2r + 3)² samples around the pixel, spread out as far as the proxy's pixels are
+    f = max(h, w) / max(mh, mw)
+    off = np.array([(1 if k >= 0 else -1) * int(abs(k) * f + 0.5) for k in range(-r - 1, r + 2)])
+    known = ~m
+    ys, xs = np.nonzero(m)
+    dy, dx = (g.ravel() for g in np.meshgrid(off, off, indexing="ij"))
+    for _ in range(DUST_PASSES):
+        if not len(ys):
+            break
+        vals = np.empty((len(ys), 3), np.float32)
+        for s in range(0, len(ys), 2048):
+            yy, xx = ys[s : s + 2048, None] + dy, xs[s : s + 2048, None] + dx
+            inside = (yy >= 0) & (yy < h) & (xx >= 0) & (xx < w)
+            yy, xx = np.clip(yy, 0, h - 1), np.clip(xx, 0, w - 1)
+            win = np.where((inside & known[yy, xx])[..., None], out[yy, xx], np.float32(np.nan))
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", RuntimeWarning)  # all-NaN windows: next pass
+                vals[s : s + 2048] = np.nanmedian(win, 1)
+        done = ~np.isnan(vals[:, 0])
+        out[ys[done], xs[done]] = vals[done]  # a pass reads only pixels known before it
+        known[ys[done], xs[done]] = True
+        ys, xs = ys[~done], xs[~done]
+    return out
 
 
 # --------------------------------------------------------------------------- tone curves
@@ -396,10 +620,14 @@ def geometry(a: np.ndarray, p: Params, crop: bool = True) -> np.ndarray:
 
 
 def tone_base(a: np.ndarray, p: Params, crop: bool = True) -> np.ndarray:
-    """The image the tone curve works on: auto-restored, trimmed, straightened and cropped."""
+    """The image the tone curve works on: auto-restored, trimmed, dust repaired, straightened and
+    cropped. Dust comes after the trim so the mount's edge is never taken for a scratch, and the
+    trim (decided on the restored pixels) stays the one before_view uses."""
     out = auto_restore(a, p.strength)
     if p.trim:
         out = trim_borders(out)
+    if p.dust > 0:
+        out = repair_dust(out, p.dust, inplace=True)  # out is ours: auto_restore copied
     return geometry(out, p, crop)
 
 

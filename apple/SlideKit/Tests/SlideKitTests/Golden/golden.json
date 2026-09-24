@@ -1172,5 +1172,53 @@
     1.0
    ]
   ]
- }
+ },
+ "mount": {
+  "angle": 2.5,
+  "confidence": 0.87,
+  "box": [
+   0.0784,
+   0.0977,
+   0.9215,
+   0.9015
+  ]
+ },
+ "mount_box_rot90": [
+  0.0985,
+  0.0784,
+  0.9023,
+  0.9215
+ ],
+ "mount_params": {
+  "strength": 0.6,
+  "brightness": 0.0,
+  "contrast": 0.0,
+  "warmth": 0.0,
+  "tint": 0.0,
+  "saturation": 0.0,
+  "trim": true,
+  "curves": {},
+  "angle": -2.5,
+  "crop": null,
+  "dust": 0.0
+ },
+ "mount_crop_rot90": [
+  0.0212,
+  0.0004,
+  0.9793,
+  0.9994
+ ],
+ "mount_none": {
+  "angle": 0.0,
+  "confidence": 0.0,
+  "box": [
+   null,
+   null,
+   null,
+   null
+  ]
+ },
+ "dust_amount": 0.7,
+ "dust_marked": 1169,
+ "dust_r": 1
 }

@@ -19,8 +19,16 @@ export type Params = {
   angle: number;
   /** [left, top, right, bottom], 0..1 of the straightened frame; null = whole frame. */
   crop: [number, number, number, number] | null;
+  /** Dust & scratch repair 0..1 (0 = off). */
+  dust: number;
 };
 export type ParamKey = Exclude<keyof Params, "trim" | "curves" | "crop" | "angle">;
+
+/** The slide mount's inner edge: how far the picture is turned in it (degrees clockwise; straighten
+ *  by -angle), how sure that is (0..1), and its sides [l, t, r, b] in 0..1 of the unturned scan. */
+export type Mount = { angle: number; confidence: number; box: (number | null)[] };
+/** From this confidence the Frame section offers "Straighten to mount" (imaging.MOUNT_SUGGEST). */
+export const MOUNT_SUGGEST = 0.5;
 
 export type GroupStatus = "new" | "reviewed" | "uploaded" | "changed" | "skipped";
 
@@ -36,6 +44,8 @@ export type Group = {
   tone_key: string;
   can_undo: boolean;
   can_redo: boolean;
+  /** null: not looked for yet (a tray from before mount detection, or the scans changed). */
+  mount: Mount | null;
   rotation: number;
   rot_reason: string;
   params: Params;
@@ -144,8 +154,7 @@ export const previewUrl = (sid: string, g: Group, size: number, before = false, 
     uncropped ? "&uncropped=1" : ""
   }`;
 
-export const histogramUrl = (sid: string, g: Group) =>
-  `/api/sessions/${sid}/groups/${g.id}/histogram?v=${g.tone_key}`;
+export const histogramUrl = (sid: string, g: Group) => `/api/sessions/${sid}/groups/${g.id}/histogram?v=${g.tone_key}`;
 
 export const scanThumbUrl = (sid: string, scan: string) => `/api/sessions/${sid}/scans/${scan}/thumb.jpg`;
 
@@ -189,7 +198,7 @@ export function imageSrc(url: string, priority = 0): Promise<string> {
 
 /** imageSrc as a hook: null until the image is ready. */
 export function useImageSrc(url: string | null, priority = 0): string | null {
-  const [src, setSrc] = React.useState<string | null>(standalone ? (url && (images.get(url) ?? null)) : url);
+  const [src, setSrc] = React.useState<string | null>(standalone ? url && (images.get(url) ?? null) : url);
   React.useEffect(() => {
     if (!standalone || !url) return setSrc(url);
     let live = true;

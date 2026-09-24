@@ -127,6 +127,8 @@ public struct Importer: Sendable {
             }
             let fused = try renderer.fusedProxy(tray, g)   // pre-blend the bracket so browsing is instant
             let feats = Learning.features(fused, scans: g.activeScans.count)
+            let found = Develop.detectMount(fused)
+            let mount = MountEdge(angle: found.angle, confidence: found.confidence, box: found.box, scans: g.activeScans)
             let suggestion = learning?.suggest(feats)
             let slide = g
             tray = try await library.update(trayID) { fresh in
@@ -141,6 +143,9 @@ public struct Importer: Sendable {
                 }
                 if let rot, rot.1 != "", target.rotReason != "manual" { target.rotation = rot.0; target.rotReason = rot.1 }
                 target.feat = feats
+                target.mount = mount
+                // straighten to the mount by itself only when very sure (otherwise the Frame section offers it)
+                if !extend && target.straightensToMount { target.params.angle = -mount.angle }
                 if let suggestion, !target.reviewed, target.paramsSource != "manual" {
                     target.params = suggestion.apply(to: target.params)
                     target.paramsSource = "learned:\(suggestion.neighbours)"

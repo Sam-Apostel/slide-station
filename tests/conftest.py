@@ -84,12 +84,13 @@ def wait_job(api: TestClient, timeout: float = 60) -> dict:
     raise TimeoutError("job did not finish")
 
 
-def new_tray(api: TestClient, folder: Path, slides: int = 4, name: str = "Test tray") -> tuple[str, dict]:
-    """Create a tray and import `slides` fresh synthetic slides (bracketed every other one)."""
+def new_tray(api: TestClient, folder: Path, slides: int = 4, name: str = "Test tray", **scans) -> tuple[str, dict]:
+    """Create a tray and import `slides` fresh synthetic slides (bracketed every other one);
+    `scans` go to make_scans (size, mounts)."""
     # new bytes and names each time: the dedupe index skips repeats (by content, and by a quick
     # name + size + mtime fingerprint, which two same-named synthetic scans can share)
     salt = next(_salts)
-    make_scans(folder, slides, salt=salt, first=salt * 10)
+    make_scans(folder, slides, salt=salt, first=salt * 10, **scans)
     sid = api.post("/api/sessions", json={"name": name}).json()["id"]
     assert api.post(f"/api/sessions/{sid}/import", json={"source": str(folder)}).json() == {"ok": True}
     wait_job(api)
