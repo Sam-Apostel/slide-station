@@ -548,6 +548,7 @@ def main() -> None:
             t0 = time.time()
             pg.get_by_role("button", name="Settings", exact=True).click()
             s = pg.get_by_role("dialog")
+            s.get_by_role("tab", name="Smart features").click()
             s.get_by_label(re.compile(r"^Suggest tags")).check()
             s.get_by_label(re.compile(r"^After uploading, look for photos in Immich")).check()
             s.get_by_label(re.compile(r"^Prefer the shot with open eyes")).check()
@@ -587,6 +588,7 @@ def main() -> None:
             # scans have no faces)
             pg.get_by_role("button", name="Settings", exact=True).click()
             s = pg.get_by_role("dialog")
+            s.get_by_role("tab", name="Smart features").click()
             s.get_by_label("Recognise people across my slides").check()
             s.get_by_role("button", name="Save").click()
             expect(pg.get_by_text(re.compile(r"Looked for faces on \d+ slides: 0 people")).first).to_be_visible(
@@ -611,6 +613,7 @@ def main() -> None:
             # ---- connect the mock Immich and upload everything
             pg.get_by_role("button", name="Settings", exact=True).click()
             s = pg.get_by_role("dialog")
+            s.get_by_role("tab", name="Immich").click()
             s.get_by_label("Immich server URL").fill(immich_url)
             s.get_by_label("Immich API key").fill("testkey")
             s.get_by_role("button", name="Test connection").click()

@@ -266,6 +266,20 @@ body {
   color: var(--ss-ink);
   box-shadow: none;
 }
+[data-slot="switch"] {
+  background: var(--ss-field);
+  box-shadow: inset 0 0 0 1px #45454f;
+}
+[data-slot="switch"][data-state="checked"] {
+  background: var(--ss-accent);
+  box-shadow: none;
+}
+[data-slot="switch-thumb"] {
+  background: #d9d6cf;
+}
+[data-slot="switch"][data-state="checked"] [data-slot="switch-thumb"] {
+  background: #fffaf0;
+}
 [data-slot="kbd"] {
   background: #2a2a31;
   border: 1px solid #3a3a42;
