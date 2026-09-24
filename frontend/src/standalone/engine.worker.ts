@@ -7,6 +7,10 @@ import * as im from "./imaging";
 import { fuseSources, materialise, rgba8Source, type RowSource } from "./fusion";
 import { features } from "./learning";
 import { fitting, rgb, rotated, type RGB } from "./pixels";
+import { faceVotes, freeInputSize, type Run } from "./yunet";
+// served with the static site (web build only), fetched on the first import
+import yunetUrl from "../../../slidestation/models/face_detection_yunet_2023mar.onnx?url";
+import ortWasmUrl from "onnxruntime-web/ort-wasm-simd-threaded.wasm?url";
 
 /** An image to work on: `key` names its decoded pixels in the cache, `blob` decodes them on a miss. */
 export type Src = { key: string; blob: Blob };
@@ -112,6 +116,34 @@ function rotateRGBA(width: number, height: number, bytes: Uint8ClampedArray, deg
   return { width: ow, height: oh, bytes: new Uint8ClampedArray(out.buffer) };
 }
 
+let yunet: Promise<Run | null> | null = null;
+
+/**
+ * YuNet through onnxruntime-web, loaded the first time a slide's rotation is guessed. Null when it
+ * can't run here (no WebAssembly, the model didn't load): the sky rule then guesses alone.
+ */
+function faceDetector(): Promise<Run | null> {
+  yunet ??= (async () => {
+    try {
+      const ort = await import("onnxruntime-web/wasm");
+      ort.env.wasm.wasmPaths = { wasm: ortWasmUrl };
+      ort.env.wasm.numThreads = 1; // the model is small, and threads need a cross-origin isolated page
+      const model = freeInputSize(new Uint8Array(await (await fetch(yunetUrl)).arrayBuffer()));
+      const session = await ort.InferenceSession.create(model, { executionProviders: ["wasm"] });
+      const run: Run = async (blob, width, height) => {
+        const input = new ort.Tensor("float32", blob, [1, 3, height, width]);
+        const out = await session.run({ [session.inputNames[0]]: input });
+        return Object.fromEntries(Object.entries(out).map(([k, t]) => [k, t.data as Float32Array]));
+      };
+      return run;
+    } catch (e) {
+      console.warn("Face detection is unavailable, rotation guesses use the sky only:", e);
+      return null;
+    }
+  })();
+  return yunet;
+}
+
 const ops = {
   /** A new scan: its 1600 px proxy and 240 px thumbnail (JPEG), grouping signature and quality. */
   async proxy({ blob }: { blob: Blob }) {
@@ -143,7 +175,10 @@ const ops = {
   /** Rotation guess from the active scans' proxies, and learning features of the blended slide. */
   async analyse({ proxies, fused, scans }: { proxies: Src[]; fused: Src; scans: number }) {
     const imgs = await Promise.all(proxies.map((p) => decode(p.blob)));
-    const [deg, why] = im.suggestRotation(imgs);
+    const run = await faceDetector();
+    const votes = [];
+    if (run) for (const a of imgs) votes.push(await faceVotes(a, run));
+    const [deg, why] = im.suggestRotation(imgs, run ? votes : undefined);
     return { rotation: deg, reason: why, features: features(await load(fused), scans) };
   },
 

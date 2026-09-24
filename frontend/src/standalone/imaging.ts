@@ -600,15 +600,15 @@ export function skyVotes(a: RGB): Record<number, number> {
 
 /**
  * Clockwise rotation that makes a slide upright, and why ("faces", "sky", or "" = no confident
- * guess). Faces are optional: the browser has no YuNet, so `faceVotes` is whatever detector the
- * caller has (none yet); the sky rule is the Python one.
+ * guess). `faceVotes` holds each image's face votes (yunet.faceVotes, asynchronous, so the caller
+ * runs it first); without them only the sky rule guesses. Both rules are the Python ones.
  */
-export function suggestRotation(images: RGB[], faceVotes?: (a: RGB) => Record<number, number>): [number, string] {
+export function suggestRotation(images: RGB[], faceVotes?: Record<number, number>[]): [number, string] {
   const n = images.length;
   if (!n) return [0, ""];
   if (faceVotes) {
     const fv: Record<number, number> = { 0: 0, 90: 0, 180: 0, 270: 0 };
-    for (const im of images) for (const [r, v] of Object.entries(faceVotes(im))) fv[+r] += v;
+    for (const votes of faceVotes) for (const [r, v] of Object.entries(votes)) fv[+r] += v;
     const ranked = Object.entries(fv).sort((a, b) => b[1] - a[1]);
     const [best, bestV] = [+ranked[0][0], ranked[0][1]];
     if (bestV / n >= 0.7 && bestV >= ranked[1][1] * 2 + 0.3 * n) return [best, "faces"];

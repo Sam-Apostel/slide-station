@@ -1,4 +1,4 @@
-import { defineConfig } from "vite";
+import { defineConfig, searchForWorkspaceRoot } from "vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 import path from "node:path";
@@ -21,6 +21,9 @@ export default defineConfig(({ mode }) => {
     define: { "import.meta.env.VITE_STANDALONE": JSON.stringify(web ? "1" : "") },
     worker: { format: "es" },
     build: { outDir: web ? "dist-web" : "../slidestation/web", emptyOutDir: true },
-    server: { proxy: web ? undefined : { "/api": `http://localhost:${process.env.SLIDESTATION_PORT || 8765}` } },
+    server: web
+      ? // the browser version's face detector is the Python app's model file (engine.worker.ts)
+        { fs: { allow: [searchForWorkspaceRoot(process.cwd()), path.resolve(import.meta.dirname, "../slidestation/models")] } }
+      : { proxy: { "/api": `http://localhost:${process.env.SLIDESTATION_PORT || 8765}` } },
   };
 });
