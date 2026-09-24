@@ -1,17 +1,20 @@
 import * as React from "react";
-import { Columns2, Lock, Redo2, Scissors, Undo2 } from "lucide-react";
+import { Columns2, LayoutGrid, Lock, Redo2, Scissors, Search, Undo2, ZoomIn } from "lucide-react";
 import { isMac } from "@/lib/desktop";
 import { Tip } from "@/components/tip";
-import { CropBar, CropOverlay, FULL, fitAspect, maxAspect, type Rect } from "@/components/crop";
+import { CropBar, CropOverlay, FULL, fitAspect, maxAspect, moveRect, resizeRect, type Rect } from "@/components/crop";
 import { ProButton } from "@/components/ui/pro-button";
 import { Spinner } from "@/components/ui/spinner";
-import { previewUrl, scanThumbUrl, type Group, type SessionPayload } from "@/lib/api";
+import { imageSrc, previewUrl, scanThumbUrl, useImageSrc, type Group, type SessionPayload } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { STATUS_DOT, STATUS_LABEL, STATUS_TEXT } from "@/components/filmstrip";
+import { Loupe, ZoomView } from "@/components/zoom";
 
 /** Loads the wanted preview off-screen and only swaps it in once decoded, so browsing never flashes. */
 function usePreloadedImage(url: string | null, warm: string | null) {
-  const [shown, setShown] = React.useState<string | null>(null);
+  // `for` is the API URL the shown image answers; `src` what the <img> loads (the same URL, or in
+  // the browser version an object URL of the render)
+  const [shown, setShown] = React.useState<{ for: string; src: string } | null>(null);
   const [loading, setLoading] = React.useState(false);
   React.useEffect(() => {
     if (!url) {
@@ -21,21 +24,33 @@ function usePreloadedImage(url: string | null, warm: string | null) {
     }
     let live = true;
     setLoading(true);
-    const img = new Image();
-    img.onload = () => {
-      if (!live) return;
-      setShown(url);
-      setLoading(false);
-    };
-    img.onerror = () => live && setLoading(false);
-    img.src = url;
+    imageSrc(url, 10).then(
+      (src) => {
+        if (!live) return;
+        const img = new Image();
+        img.onload = () => {
+          if (!live) return;
+          setShown({ for: url, src });
+          setLoading(false);
+        };
+        img.onerror = () => live && setLoading(false);
+        img.src = src;
+      },
+      () => live && setLoading(false),
+    );
     // warm the next slide so arrow-key browsing feels instant
-    if (warm) new Image().src = warm;
+    if (warm) imageSrc(warm, 5).then((src) => void (new Image().src = src), () => undefined);
     return () => {
       live = false;
     };
   }, [url, warm]);
-  return { shown, loading: loading && shown !== url };
+  return { shown: shown?.src ?? null, loading: loading && shown?.for !== url };
+}
+
+/** A scan thumbnail from the API. */
+function ScanThumb({ url, ...props }: { url: string } & Omit<React.ComponentProps<"img">, "src">) {
+  const src = useImageSrc(url, 3);
+  return src ? <img src={src} {...props} /> : <span className={props.className} />;
 }
 
 /** Where a click lands on an object-fit: contain image, as 0..1 of the picture (null: on the letterbox). */
@@ -48,6 +63,16 @@ function photoPoint(img: HTMLImageElement, clientX: number, clientY: number): [n
   const y = (clientY - r.top - (r.height - h) / 2) / h;
   return x < 0 || x > 1 || y < 0 || y > 1 ? null : [x, y];
 }
+
+/** Arrow-key steps of the crop frame, in 0..1 of the photo (Shift: the big one). */
+const NUDGE = 0.005;
+const NUDGE_BIG = 0.05;
+const ARROWS: Record<string, [number, number]> = {
+  ArrowLeft: [-1, 0],
+  ArrowRight: [1, 0],
+  ArrowUp: [0, -1],
+  ArrowDown: [0, 1],
+};
 
 export function Stage({
   session,
@@ -62,11 +87,17 @@ export function Stage({
   onPicked,
   cropping,
   onCropEnd,
+  localOverlay,
   onAngle,
   onUndo,
   onRedo,
   compare,
   onCompare,
+  zoom,
+  onZoom,
+  loupe,
+  onLoupe,
+  onGrid,
 }: {
   session: SessionPayload;
   sessionId: string;
@@ -84,12 +115,22 @@ export function Stage({
   cropping: boolean;
   /** rect: the new crop (null = whole photo), or undefined when cancelled. */
   onCropEnd: (rect: Rect | null | undefined, restoreAngle?: number) => void;
+  /** The Local tool open: draws its overlay over the photo (null = closed). */
+  localOverlay: ((img: HTMLImageElement | null) => React.ReactNode) | null;
   onAngle: (a: number) => void;
   onUndo: () => void;
   onRedo: () => void;
   /** Split view: before on the left, after on the right, with a draggable divider. */
   compare: boolean;
   onCompare: () => void;
+  /** 1:1 zoom on the full-resolution render, opened at this spot (0..1 of the photo); null = off. */
+  zoom: [number, number] | null;
+  onZoom: (at: [number, number] | null) => void;
+  /** The loupe follows the pointer over the photo. */
+  loupe: boolean;
+  onLoupe: (on: boolean) => void;
+  /** Switch to the batch review grid. */
+  onGrid: () => void;
 }) {
   const g: Group | undefined = session.groups[sel];
   const next = session.groups[sel + 1];
@@ -99,12 +140,24 @@ export function Stage({
   );
 
   // ---- split compare: the "before" render is framed like the developed one, so they line up
-  const comparing = compare && !cropping && !before && !picking;
+  const localOn = !!localOverlay && !cropping && !zoom;
+  const comparing = compare && !cropping && !before && !picking && !localOn;
   const beforeView = usePreloadedImage(g && comparing ? previewUrl(sessionId, g, 1600, true) : null, null);
   const [divider, setDivider] = React.useState(50);
   const moveDivider = (e: React.PointerEvent) => {
     const r = imgEl?.getBoundingClientRect();
     if (r) setDivider(Math.min(100, Math.max(0, ((e.clientX - r.left) / r.width) * 100)));
+  };
+
+  // ---- loupe: where the pointer is, in the stage (px) and on the photo (0..1)
+  const [loupeAt, setLoupeAt] = React.useState<{ x: number; y: number; fx: number; fy: number } | null>(null);
+  const zooming = !!zoom && !cropping;
+  const looking = loupe && !zooming && !cropping && !picking && !localOn;
+  const track = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (!looking || !imgEl) return;
+    const pt = photoPoint(imgEl, e.clientX, e.clientY);
+    const r = e.currentTarget.getBoundingClientRect();
+    setLoupeAt(pt && { x: e.clientX - r.left, y: e.clientY - r.top, fx: pt[0], fy: pt[1] });
   };
 
   // ---- crop tool state: a draft until Done
@@ -125,11 +178,22 @@ export function Stage({
     if (ok) onCropEnd(rect[0] <= 0.001 && rect[1] <= 0.001 && rect[2] >= 0.999 && rect[3] >= 0.999 ? null : rect);
     else onCropEnd(undefined, startAngle.current);
   };
+  // arrow keys nudge the frame; Alt / ⌥ + arrows resize it from the bottom-right corner
+  const nudge = React.useRef<(dx: number, dy: number, resize: boolean) => void>(() => {});
+  nudge.current = (dx, dy, resize) =>
+    setRect((r) => (resize ? resizeRect(r, "se", dx, dy, aspect.ratio, frame) : moveRect(r, dx, dy)));
   React.useEffect(() => {
     if (!cropping) return;
     const key = (e: KeyboardEvent) => {
-      if (e.target instanceof HTMLInputElement && e.target.type !== "range") return;
-      if (e.key === "Enter") finish.current(true);
+      if (e.target instanceof HTMLInputElement) {
+        if (e.target.type !== "range") return;
+        if (e.key.startsWith("Arrow")) return; // the focused straighten slider takes its arrows
+      }
+      const arrow = ARROWS[e.key];
+      if (arrow && !e.metaKey && !e.ctrlKey) {
+        const step = e.shiftKey ? NUDGE_BIG : NUDGE;
+        nudge.current(arrow[0] * step, arrow[1] * step, e.altKey);
+      } else if (e.key === "Enter") finish.current(true);
       else if (e.key === "Escape") finish.current(false);
       else return;
       e.preventDefault();
@@ -184,6 +248,32 @@ export function Stage({
                 </ProButton>
               </Tip>
             </div>
+            <Tip label="Review grid: every slide at once" keys="G">
+              <ProButton aria-label="Review grid" onClick={onGrid}>
+                <LayoutGrid />
+              </ProButton>
+            </Tip>
+            <Tip label="1:1 zoom on the full-resolution render (or double-click the photo)" keys="Z">
+              <ProButton
+                aria-label="Zoom to 100 %"
+                aria-pressed={zooming || undefined}
+                data-on={zooming || undefined}
+                disabled={cropping}
+                onClick={() => onZoom(zoom ? null : [0.5, 0.5])}
+              >
+                <ZoomIn />
+              </ProButton>
+            </Tip>
+            <Tip label="Loupe: 100 % under the pointer" keys="L">
+              <ProButton
+                aria-label="Loupe"
+                aria-pressed={loupe || undefined}
+                data-on={loupe || undefined}
+                onClick={() => onLoupe(!loupe)}
+              >
+                <Search />
+              </ProButton>
+            </Tip>
             <Tip label="Split view: before | after" keys="Y">
               <ProButton
                 aria-label="Split before and after"
@@ -208,7 +298,11 @@ export function Stage({
         )}
       </div>
 
-      <div className="relative min-h-0 flex-1 overflow-hidden">
+      <div
+        className={cn("relative min-h-0 flex-1 overflow-hidden", looking && "cursor-crosshair")}
+        onPointerMove={track}
+        onPointerLeave={() => setLoupeAt(null)}
+      >
         {g &&
           shown &&
           comparing &&
@@ -242,6 +336,10 @@ export function Stage({
                 const pt = photoPoint(e.currentTarget, e.clientX, e.clientY);
                 onPicked(pt?.[0] ?? null, pt?.[1] ?? null);
               }}
+              onDoubleClick={(e) => {
+                if (picking || cropping) return;
+                onZoom(photoPoint(e.currentTarget, e.clientX, e.clientY) ?? [0.5, 0.5]);
+              }}
             />,
           )}
         {comparing && beforeView.shown && (
@@ -264,6 +362,11 @@ export function Stage({
         {cropping && shown && (
           <CropOverlay img={imgEl} rect={rect} ratio={aspect.ratio} onChange={setRect} />
         )}
+        {localOn && shown && g && (
+          <React.Fragment key={g.id}>{localOverlay!(imgEl)}</React.Fragment>
+        )}
+        {g && zooming && <ZoomView key={g.id} sid={sessionId} g={g} start={zoom!} onClose={() => onZoom(null)} />}
+        {g && looking && <Loupe sid={sessionId} g={g} at={loupeAt} onFail={() => onLoupe(false)} />}
         {picking && !cropping && (
           <div className="ss-pick-hint" role="status">
             Click a spot that should be neutral grey or white · <kbd>Esc</kbd>
@@ -341,11 +444,11 @@ export function Stage({
                     off && "border-dashed",
                   )}
                 >
-                  <img
-                    src={scanThumbUrl(sessionId, sc)}
+                  <ScanThumb
+                    url={scanThumbUrl(sessionId, sc)}
                     alt=""
                     draggable={false}
-                    className={cn("block h-[52px]", off && "opacity-35")}
+                    className={cn("block h-[52px] min-w-[52px]", off && "opacity-35")}
                   />
                   <span className="absolute top-px left-[3px] text-[10px] [text-shadow:0_1px_2px_#000]">{k + 1}</span>
                   {off && g.auto_excluded?.[sc] && (

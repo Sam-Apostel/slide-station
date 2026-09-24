@@ -1,6 +1,16 @@
 import * as React from "react";
 import {
   Aperture,
+  Bookmark,
+  CalendarRange,
+  Camera,
+  ChartNoAxesColumn,
+  CloudDownload,
+  Images,
+  LayoutGrid,
+  Search,
+  SunDim,
+  ZoomIn,
   Wand2,
   ArrowLeft,
   ArrowRight,
@@ -12,6 +22,7 @@ import {
   HardDriveDownload,
   Keyboard,
   Layers,
+  ListChecks,
   Merge,
   PanelLeft,
   PanelRight,
@@ -24,6 +35,7 @@ import {
   Sparkles,
   Undo2,
   Upload,
+  Users,
 } from "lucide-react";
 import {
   CommandDialog,
@@ -34,6 +46,7 @@ import {
   CommandList,
   CommandShortcut,
 } from "@/components/ui/command";
+import { suggestionPiles } from "@/components/insights";
 import type { DesktopHandlers } from "@/hooks/use-desktop";
 import type { SlideStation } from "@/hooks/use-slide-station";
 import { plural, sourceLabel } from "@/lib/api";
@@ -61,6 +74,12 @@ export function CommandPalette({
   app,
   handlers,
   onClean,
+  onDateRange,
+  onFromImmich,
+  views,
+  grid,
+  onReview,
+  onPeople,
   busy,
 }: {
   open: boolean;
@@ -68,6 +87,26 @@ export function CommandPalette({
   app: SlideStation;
   handlers: DesktopHandlers;
   onClean: () => void;
+  /** Opens the "date a range of slides" dialog. */
+  onDateRange: () => void;
+  /** Opens "pull photos back in from Immich". */
+  onFromImmich: () => void;
+  /** The review grid, zoom, loupe, and the stats / presets / develop-like dialogs. */
+  views: {
+    toggleGrid: () => void;
+    toggleZoom: () => void;
+    toggleLoupe: () => void;
+    /** The Local tool (local adjustments on the photo). */
+    toggleLocal: () => void;
+    stats: () => void;
+    presets: () => void;
+    developLike: () => void;
+  };
+  grid: boolean;
+  /** Opens the tray's "review suggestions". */
+  onReview?: () => void;
+  /** Opens the People dialog (when recognising people is on). */
+  onPeople?: () => void;
   busy: boolean;
 }) {
   const { state, session, sessionId, sel } = app;
@@ -111,6 +150,8 @@ export function CommandPalette({
               run: () => app.resuggest(true),
             },
             { id: "rest", label: "Apply colour to the rest", icon: <Layers />, run: app.applyRest },
+            { id: "presets", label: "Presets: save or apply a colour…", icon: <Bookmark />, run: views.presets },
+            { id: "like", label: "Develop like another slide…", icon: <Images />, run: views.developLike },
             {
               id: "skip",
               label: g.skip ? "Unskip slide" : "Skip slide",
@@ -118,8 +159,29 @@ export function CommandPalette({
               keys: "X",
               run: app.toggleSkip,
             },
+            { id: "date-range", label: "Date a range of slides…", icon: <CalendarRange />, run: onDateRange },
             { id: "merge", label: "Merge with next", icon: <Merge />, keys: "M", hidden: sel >= count - 1, run: app.mergeNext },
           ]
+        : [],
+    ],
+    [
+      "Presets",
+      g
+        ? app.presets.flatMap((p) => [
+            {
+              id: `preset-${p.name}`,
+              label: `Apply preset “${p.name}”`,
+              icon: <Bookmark />,
+              hidden: g.locked,
+              run: () => void app.applyLook({ preset: p.name }),
+            },
+            {
+              id: `preset-rest-${p.name}`,
+              label: `Apply preset “${p.name}” to this and the rest`,
+              icon: <Bookmark />,
+              run: () => void app.applyLook({ preset: p.name }, "rest"),
+            },
+          ])
         : [],
     ],
     [
@@ -136,6 +198,21 @@ export function CommandPalette({
         },
         { id: "folder", label: "Import a folder…", icon: <FolderInput />, keys: `${mod}⇧O`, run: () => handlers.importFolder() },
         {
+          id: "capture",
+          label: `Capture with ${state?.camera?.cameras[0]?.model ?? "the camera"}`,
+          icon: <Camera />,
+          keys: "P",
+          hidden: !state?.camera?.cameras.length || !session || busy,
+          run: app.capture,
+        },
+        {
+          id: "from-immich",
+          label: "Pull photos back in from Immich…",
+          icon: <Images />,
+          hidden: busy,
+          run: onFromImmich,
+        },
+        {
           id: "upload",
           label: `Upload ${plural(sm?.ready_upload ?? 0, "developed slide")} to Immich`,
           icon: <Upload />,
@@ -150,6 +227,41 @@ export function CommandPalette({
           keys: sm?.ready_upload ? undefined : `${mod}U`,
           hidden: !sm?.pending_upload || sm.pending_upload === sm.ready_upload || busy,
           run: handlers.uploadAll,
+        },
+        {
+          id: "pull-meta",
+          label: "Pull captions and dates from Immich",
+          icon: <CloudDownload />,
+          hidden: !session?.groups.some((x) => x.status === "uploaded" || x.status === "changed"),
+          run: app.pullFromImmich,
+        },
+        {
+          id: "review-insights",
+          label: "Review suggestions (tags, film stock, dates, look-alikes)…",
+          icon: <ListChecks />,
+          // film stock and date guesses need no model: reviewable with the tag model off (and in the browser)
+          hidden: !session || !onReview || !(session.insights?.enabled || suggestionPiles(session.groups).length),
+          run: () => onReview?.(),
+        },
+        {
+          id: "analyse",
+          label: "Analyse the tray again",
+          icon: <ListChecks />,
+          hidden: !session || !onReview || !session.insights?.ready || !session.insights.enabled,
+          run: () => app.analyseTray(true),
+        },
+        {
+          id: "lookalikes",
+          label: "Look for this tray's slides among the photos already in Immich",
+          icon: <ListChecks />,
+          // the look-alike check (needs the tag model); runs by itself after uploads when turned on
+          hidden:
+            !session ||
+            !onReview ||
+            !session.insights?.ready ||
+            busy ||
+            !session.groups.some((x) => x.status === "uploaded" || x.status === "changed"),
+          run: () => app.checkLookalikes(true),
         },
         { id: "reveal", label: "Show files", icon: <FolderOpen />, hidden: !session, run: app.reveal },
         {
@@ -178,11 +290,36 @@ export function CommandPalette({
         { id: "filmstrip", label: "Show or hide filmstrip", icon: <PanelLeft />, keys: `${alt}1`, run: handlers.toggleFilmstrip },
         { id: "inspector", label: "Show or hide inspector", icon: <PanelRight />, keys: `${alt}2`, run: handlers.toggleInspector },
         { id: "focus", label: "Focus on the photo", icon: <ScanEye />, keys: `${alt}F`, run: handlers.focusMode },
+        {
+          id: "grid",
+          label: grid ? "Back to the single slide" : "Review grid",
+          icon: <LayoutGrid />,
+          keys: "G",
+          hidden: !count,
+          run: views.toggleGrid,
+        },
+        { id: "zoom", label: "Zoom to 100 %", icon: <ZoomIn />, keys: "Z", hidden: !g || grid, run: views.toggleZoom },
+        { id: "loupe", label: "Loupe", icon: <Search />, keys: "L", hidden: !g || grid, run: views.toggleLoupe },
+        {
+          id: "local",
+          label: "Local adjustments (graduated, radial, brush)",
+          icon: <SunDim />,
+          keys: "A",
+          hidden: !g || grid || !!g.locked,
+          run: views.toggleLocal,
+        },
       ],
     ],
     [
       "Slide Station",
       [
+        {
+          id: "stats",
+          label: "Stats: slides per hour, projected finish…",
+          icon: <ChartNoAxesColumn />,
+          run: views.stats,
+        },
+        { id: "people", label: "People…", icon: <Users />, hidden: !onPeople, run: () => onPeople?.() },
         { id: "settings", label: "Settings…", icon: <Settings />, keys: `${mod},`, run: handlers.settings },
         { id: "help", label: "Keyboard shortcuts", icon: <Keyboard />, keys: "?", run: handlers.help },
       ],

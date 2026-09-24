@@ -118,6 +118,171 @@ meta["learning_query"] = (np.array(meta["features"]) + 0.01).tolist()
 sugg, n = model.suggest(meta["learning_query"])
 meta["learning_suggestion"] = sugg
 meta["learning_neighbours"] = n
+# learned tone curves: most neighbours curved red, a few blue (under half the weight: dropped)
+model.examples = [dict(e) for e in model.examples]  # learning_examples above stay without curves
+for i, e in enumerate(model.examples):
+    e["c"] = {"r": [[0.08 + 0.01 * i, 0.0], [0.5, 0.55], [0.9 - 0.01 * i, 1.0]]} if i % 4 else {}
+    if i % 5 == 0:
+        e["c"]["b"] = [[0.0, 0.05], [1.0, 0.95]]
+model._fit()
+meta["learning_curve_examples"] = model.examples
+sugg, _ = model.suggest(meta["learning_query"])
+meta["learning_curve_suggestion"] = sugg["curves"]
+
+
+# mount detection: the scene turned 2.5° clockwise inside a dark mount window
+def mounted(a: np.ndarray, angle: float, inner=(0.84, 0.8)) -> np.ndarray:
+    h, w = a.shape[:2]
+    y, x = np.mgrid[0:h, 0:w].astype(np.float64) + 0.5
+    t = np.deg2rad(angle)
+    dx, dy = x - w / 2, y - h / 2
+    xr, yr = np.cos(t) * dx + np.sin(t) * dy, -np.sin(t) * dx + np.cos(t) * dy
+    alpha = np.clip(0.5 + np.minimum(inner[0] * w / 2 - np.abs(xr), inner[1] * h / 2 - np.abs(yr)), 0, 1)[..., None]
+    return a * alpha + 0.03 * (1 - alpha)
+
+
+big = np.asarray(Image.fromarray((scene(3) * 255 + 0.5).astype(np.uint8)).resize((360, 240), Image.BICUBIC),
+                 np.float32) / 255
+mnt = save_png(mounted(big, 2.5), "mount.png")
+meta["mount"] = im.detect_mount(mnt)
+meta["mount_box_rot90"] = im.rotate_box(meta["mount"]["box"], 90)
+mp = im.Params(angle=-meta["mount"]["angle"])
+meta["mount_params"] = mp.to_dict()
+meta["mount_crop_rot90"] = im.mount_crop(im.rotate_arr(mnt, 90), mp, meta["mount_box_rot90"])
+meta["mount_none"] = im.detect_mount(base[8:-8, 8:-8])  # no mount left around the picture
+
+# dust & scratches: specks and a scratch on a smooth picture with a patch of fine texture
+rng = np.random.default_rng(11)
+DW, DH = 256, 176
+y, x = np.mgrid[0:DH, 0:DW].astype(np.float32)
+clean = np.stack([0.5 + 0.3 * np.sin(x / DW * 3 + 1), 0.45 + 0.25 * np.cos(y / DH * 4),
+                  0.4 + 0.2 * np.sin((x + y) / (DW + DH) * 5)], -1) + rng.normal(0, 0.008, (DH, DW, 3))
+clean[120:170, 10:90] += (0.12 * np.sin(x[120:170, 10:90] * 2.1) * np.sin(y[120:170, 10:90] * 1.7))[..., None]
+dusty = clean.copy()
+for _ in range(40):
+    cx, cy, r = rng.random() * DW, rng.random() * DH, 0.6 + rng.random() * 0.8
+    al = np.clip(r + 0.5 - np.hypot(x - cx, y - cy), 0, 1)[..., None]
+    dusty = dusty * (1 - al) + (0.03 if rng.random() < 0.7 else 0.97) * al
+al = np.clip(1.0 - np.abs((y - 30) - 0.4 * (x - 100)), 0, 1)[..., None] * ((x > 100) & (x < 220))[..., None]
+dusty = dusty * (1 - 0.9 * al) + 0.95 * 0.9 * al
+dusty = save_png(dusty, "dusty.png")
+meta["dust_amount"] = 0.7
+dm, dr = im.dust_mask(dusty, 0.7)
+meta["dust_marked"], meta["dust_r"] = int(dm.sum()), dr
+save_f32(im.repair_dust(dusty, 0.7), "dust.f32")
+
+# learning per film stock (added later: computed from the keys above only, so the rest of this file
+# didn't have to be regenerated). Even examples are Kodachrome (6: learns from those only), two
+# are Ektachrome (too few: the others count OTHER_STOCK_WEIGHT), the rest have no stock.
+# --- stock fixture start
+stock_ex = [dict(e) for e in meta["learning_examples"]]
+for i, e in enumerate(stock_ex):
+    if i % 2 == 0:
+        e["s"] = "kodachrome"
+    elif i in (1, 3):
+        e["s"] = "ektachrome"
+stock_model = learning.Model(path=OUT / "_learning_unused.json")
+stock_model.examples = stock_ex
+stock_model._fit()
+stock_cases = {}
+for st in ("kodachrome", "ektachrome", "fujichrome", ""):
+    sugg, n = stock_model.suggest(meta["learning_query"], st)
+    stock_cases[st or "none"] = {"suggestion": sugg, "neighbours": n}
+meta["learning_stock"] = {"examples": stock_ex, "cases": stock_cases}
+# --- stock fixture end
+
+# local adjustments: a graduated filter burning the sky, a turned radial lifting the hill, a brush
+# desaturating a stripe (with an erase stroke through it), on a straightened and cropped slide
+local = [
+    {"kind": "graduated", "exposure": -0.6, "warmth": 0.3, "start": [0.5, 0.05], "end": [0.45, 0.5]},
+    {"kind": "radial", "exposure": 0.7, "contrast": 0.3, "tint": -0.2, "center": [0.4, 0.7], "rx": 0.3, "ry": 0.12,
+     "angle": 20, "feather": 0.6},
+    {"kind": "radial", "saturation": 0.5, "contrast": -0.4, "center": [0.75, 0.25], "rx": 0.1, "ry": 0.1,
+     "feather": 0.2, "invert": True},
+    {"kind": "brush", "saturation": -0.8, "exposure": -0.2, "strokes": [
+        {"points": [[0.1, 0.9], [0.3, 0.6], [0.55, 0.62], [0.9, 0.3]], "radius": 0.06, "hardness": 0.3, "flow": 0.9},
+        {"points": [[0.4, 0.5], [0.45, 0.8]], "radius": 0.03, "hardness": 0.8, "flow": 0.7, "erase": True},
+        {"points": [[0.2, 0.2]], "radius": 0.08, "hardness": 0.0, "flow": 0.5}]},
+]
+# its own picture without noise (so it comes out the same on any numpy), kept apart from scene.png
+LW, LH = 210, 140
+y, x = np.mgrid[0:LH, 0:LW].astype(np.float32)
+hill = np.clip((y - 80 - 14 * np.sin(x / 19)) / 3, 0, 1)[..., None]
+sky = np.stack([0.55 + 0.35 * y / LH, 0.6 + 0.3 * y / LH, 0.95 - 0.1 * y / LH], -1)
+ground = np.stack([0.12 + 0.08 * np.sin(x / 11), 0.15 + 0.06 * np.cos(y / 6), 0.08 + 0.05 * np.sin((x + y) / 7)], -1)
+lscene = sky * (1 - hill) + ground * hill
+lscene[:4] = lscene[-4:] = lscene[:, :5] = lscene[:, -4:] = 0.03  # mount
+lscene = save_png(lscene, "local.png")
+lp = im.Params(strength=0.6, brightness=0.1, angle=-2.5, crop=[0.05, 0.1, 0.9, 0.95], local=im.clean_local(local))
+dl = im.develop(lscene, lp)
+save_f32(dl, "developed_local.f32")
+meta["developed_local_shape"] = list(dl.shape[:2])
+meta["params_local"] = lp.to_dict()
+masks = []
+cells = ((0, 0), (300, 400), (500, 200), (100, 900), (600, 1000), (437, 409), (437, 609), (156, 859), (156, 767))
+for adj in lp.local:
+    m = im.local_mask(adj, 180, 110)
+    masks.append({"shape": list(m.shape), "sum": float(m.sum(dtype=np.float64)),
+                  "samples": [float(m[j, i]) for j, i in cells]})
+meta["local_masks"] = masks
+meta["local_mask_size"] = [180, 110]
+meta["local_turned"] = im.turn_local(lp.local, 90)
+
+# over-exposed scans (added later, from scene.png only): at x1.5 blue's median is at white, at x2
+# red's too, at x3 every channel's (auto_restore used to give NaN / inf there). The three restores
+# one after another in one file.
+# --- blown fixture start
+blown_scales = [1.5, 2.0, 3.0]
+save_f32(np.concatenate([im.auto_restore(np.clip(base * k, 0, 1), 0.6).ravel() for k in blown_scales]),
+         "restored_blown.f32")
+meta["restore_blown"] = {"scales": blown_scales, "strength": 0.6}
+# --- blown fixture end
+
+# mould and Newton rings (added later, on their own pictures, so nothing above had to change)
+MW, MH = 320, 224
+rng = np.random.default_rng(13)
+y, x = np.mgrid[0:MH, 0:MW].astype(np.float32)
+mclean = np.stack([0.55 + 0.25 * np.sin(x / MW * 3 + 0.5), 0.5 + 0.2 * np.cos(y / MH * 3),
+                   0.45 + 0.15 * np.sin((x + y) / (MW + MH) * 4)], -1) + rng.normal(0, 0.01, (MH, MW, 3))
+# a branch reaching in from the right edge, twigs and all: picture, which must stay
+al = np.zeros((MH, MW), np.float32)
+for x0, y0, x1, y1, rad in [(320, 150, 250, 120, 3.0), (250, 120, 215, 80, 1.6), (250, 120, 205, 135, 1.2),
+                            (215, 80, 200, 60, 0.8), (215, 80, 190, 88, 0.7), (205, 135, 185, 150, 0.6)]:
+    for t in np.linspace(0, 1, 120):
+        cx, cy = x0 + (x1 - x0) * t, y0 + (y1 - y0) * t
+        al = np.maximum(al, np.clip(rad + 0.5 - np.hypot(x - cx, y - cy), 0, 1))
+mclean = mclean * (1 - al[..., None]) + np.array([0.15, 0.12, 0.08]) * al[..., None]
+mouldy = mclean.copy()
+for i in range(6):  # colonies: a ragged blotch and wandering, forking filaments, lighter or darker
+    cx, cy = 20 + rng.random() * 160, 20 + rng.random() * 180
+    al = np.zeros((MH, MW), np.float32)
+    for _ in range(4):
+        px, py, th = cx, cy, rng.random() * 2 * np.pi
+        for _ in range(int(24 + 30 * rng.random())):
+            th += rng.normal(0, 0.25)
+            px, py = px + 0.5 * np.cos(th), py + 0.5 * np.sin(th)
+            al = np.maximum(al, np.clip(1.1 - np.hypot(x - px, y - py), 0, 1))
+    al = np.maximum(al, np.clip(1.5 + rng.random() - np.hypot(x - cx, y - cy), 0, 1))
+    col = np.array([0.9, 0.88, 0.75] if i % 2 else [0.2, 0.22, 0.15])
+    mouldy = mouldy * (1 - 0.6 * al[..., None]) + col * 0.6 * al[..., None]
+mouldy = save_png(mouldy, "mouldy.png")
+meta["mould_amount"] = 0.7
+mm, mr = im.mould_mask(mouldy, 0.7)
+meta["mould_marked"], meta["mould_r"] = int(mm.sum()), mr
+save_f32(im.repair_mould(mouldy, 0.7), "mould.f32")
+
+# rainbow rings, their period falling from ~20 to ~6 px outwards, over the same kind of picture
+rclean = np.stack([0.5 + 0.2 * np.sin(x / MW * 2), 0.55 + 0.15 * np.cos(y / MH * 3),
+                   0.5 + 0.1 * np.sin((x - y) / (MW + MH) * 5)], -1) + rng.normal(0, 0.004, (MH, MW, 3))
+rclean[(x - 260) ** 2 + (y - 170) ** 2 < 900] = [0.3, 0.35, 0.6]  # a disc: its edge is not a ring
+rho = np.hypot(x - 0.3 * MW, y - 0.45 * MH)
+fringes = np.stack([np.cos(rho * rho / 267 * 550 / lam) for lam in (620, 550, 460)], -1)
+ringed = save_png(rclean + 0.05 * np.exp(-((rho / 120) ** 2))[..., None] * fringes, "rings.png")
+meta["newton_amount"] = 0.6
+nw, _ = im.newton_weight(ringed, 0.6)
+meta["newton_weight_sum"] = float(nw.sum())
+meta["newton_weight_samples"] = [float(nw[j, i]) for j, i in ((100, 96), (40, 40), (170, 260), (200, 300))]
+save_f32(im.repair_newton(ringed, 0.6), "newton.f32")
 
 (OUT / "golden.json").write_text(json.dumps(meta, indent=1))
 print("wrote", OUT)

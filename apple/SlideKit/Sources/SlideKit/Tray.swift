@@ -47,9 +47,20 @@ public struct Slide: Codable, Identifiable, Equatable, Sendable {
     public var feat: [Double]?
     /// Undo / redo of the slide's look (Python: `g["history"]`).
     public var history: History?
+    /// The slide mount found on its scans (Python: `g["mount"]`); see `currentMount`.
+    public var mount: MountEdge?
+    /// The slide's own film stock (Python: `g["stock"]`, filmstock.py); nil = the tray's. Kept so a
+    /// tray saved here doesn't lose it; this app has no stock UI or guess yet.
+    public var stock: String?
+
+    /// The slide's stock, else the tray's (Python: `filmstock.effective`).
+    public func effectiveStock(in tray: Tray) -> String? {
+        if let stock, !stock.isEmpty { return stock }
+        return tray.stock.flatMap { $0.isEmpty ? nil : $0 }
+    }
 
     enum CodingKeys: String, CodingKey {
-        case id, scans, excluded, rotation, params, reviewed, skip, immich, date, caption, locked, feat, history
+        case id, scans, excluded, rotation, params, reviewed, skip, immich, date, caption, locked, feat, history, mount, stock
         case autoExcluded = "auto_excluded", rotReason = "rot_reason", paramsSource = "params_source"
     }
 
@@ -75,6 +86,8 @@ public struct Slide: Codable, Identifiable, Equatable, Sendable {
         locked = try? c.decode(String.self, forKey: .locked)
         feat = try? c.decode([Double].self, forKey: .feat)
         history = try? c.decode(History.self, forKey: .history)
+        mount = try? c.decode(MountEdge.self, forKey: .mount)
+        stock = try? c.decode(String.self, forKey: .stock)
     }
 
     /// Every key, nulls included, like the Python app writes a group (it reads some with `g["immich"]`).
@@ -88,6 +101,8 @@ public struct Slide: Codable, Identifiable, Equatable, Sendable {
         try c.encode(immich, forKey: .immich)
         try c.encodeIfPresent(date, forKey: .date); try c.encodeIfPresent(caption, forKey: .caption); try c.encodeIfPresent(locked, forKey: .locked)
         try c.encodeIfPresent(feat, forKey: .feat); try c.encodeIfPresent(history, forKey: .history)
+        try c.encodeIfPresent(mount, forKey: .mount)
+        try c.encodeIfPresent(stock, forKey: .stock)
     }
 
     // MARK: undo
@@ -176,6 +191,14 @@ extension Slide {
         if !p.curves.isEmpty { parts.append(p.curves.sorted { $0.key < $1.key }.map { "\($0.key):\($0.value)" }.joined(separator: ";")) }
         if p.angle != 0 { parts.append(String(format: "a%.3f", p.angle)) }
         if let c = p.crop { parts.append("c\(c)") }
+        if p.dust != 0 { parts.append(String(format: "d%.3f", p.dust)) }   // only when on: older keys stay
+        if p.mould != 0 { parts.append(String(format: "m%.3f", p.mould)) }   // likewise
+        if p.newton != 0 { parts.append(String(format: "n%.3f", p.newton)) }
+        if !p.local.isEmpty {   // likewise only when there are some
+            let enc = JSONEncoder()
+            enc.outputFormatting = .sortedKeys
+            parts.append("l" + String(decoding: (try? enc.encode(p.local)) ?? Data(), as: UTF8.self))
+        }
         return shortHash(parts.joined(separator: "|"))
     }
 }
@@ -199,9 +222,11 @@ public struct Tray: Codable, Identifiable, Equatable, Sendable {
     /// Immich assets of slides that were merged away or skipped after upload, to trash next upload.
     public var orphanAssets: [String]?
     public var cardCleaned: Bool?
+    /// The tray's film stock, for slides without their own (Python: `d["stock"]`).
+    public var stock: String?
 
     enum CodingKeys: String, CodingKey {
-        case id, name, album, date, created, defaults, scans, groups, log
+        case id, name, album, date, created, defaults, scans, groups, log, stock
         case dateKey = "date_key", immichAlbumId = "immich_album_id", orphanAssets = "orphan_assets", cardCleaned = "card_cleaned"
     }
 

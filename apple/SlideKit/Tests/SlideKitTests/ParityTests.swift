@@ -148,4 +148,126 @@ final class ParityTests: XCTestCase {
         // clockwise: the top-left pixel ends up top-right
         XCTAssertEqual(Array(r.data[((r.width - 1)) * 3..<(r.width * 3)]), Array(a.data[0..<3]))
     }
+
+    // MARK: mount detection, dust & scratch repair
+
+    struct Repair: Decodable {
+        struct Found: Decodable { var angle: Double, confidence: Double, box: [Double?] }
+        var mount: Found, mount_none: Found
+        var mount_box_rot90: [Double?], mount_params: Params, mount_crop_rot90: [Double]
+        var dust_amount: Double, dust_marked: Int, dust_r: Int
+    }
+
+    lazy var repair: Repair = try! JSONDecoder().decode(Repair.self, from: Data(contentsOf: Self.dir.appendingPathComponent("golden.json")))
+
+    func testMountDetection() throws {
+        let mnt = try image("mount.png")
+        let m = Develop.detectMount(mnt)
+        XCTAssertEqual(m.angle, repair.mount.angle, accuracy: 0.02)
+        XCTAssertEqual(m.confidence, repair.mount.confidence, accuracy: 0.03)
+        for (a, b) in zip(m.box, repair.mount.box) { XCTAssertEqual(a!, b!, accuracy: 0.002) }
+        XCTAssertEqual(Develop.rotateBox(repair.mount.box, 90), repair.mount_box_rot90)
+        XCTAssertEqual(Develop.rotateBox(Develop.rotateBox(repair.mount.box, 180), 180), repair.mount.box)
+        let crop = try XCTUnwrap(Develop.mountCrop(mnt.rotated(90), repair.mount_params, box: repair.mount_box_rot90))
+        for (a, b) in zip(crop, repair.mount_crop_rot90) { XCTAssertEqual(a, b, accuracy: 0.002) }
+        let scene = try image("scene.png")
+        let inside = Develop.detectMount(scene.cropped(top: 8, bottom: scene.height - 8, left: 8, right: scene.width - 8))
+        XCTAssertEqual(inside.confidence, 0)
+    }
+
+    func testDustRepair() throws {
+        let dusty = try image("dusty.png")
+        let (mask, r) = Develop.dustMask(dusty, amount: repair.dust_amount)
+        XCTAssertEqual(r, repair.dust_r)
+        XCTAssertEqual(mask.reduce(0) { $0 + Int($1) }, repair.dust_marked)
+        let (mean, worst) = diff(Develop.repairDust(dusty, amount: repair.dust_amount).data, try floats("dust.f32"))
+        XCTAssertLessThan(mean, 1e-5)
+        XCTAssertLessThan(worst, 1e-3)
+        XCTAssertEqual(Develop.repairDust(dusty, amount: 0).data, dusty.data)
+    }
+
+    // MARK: mould and Newton rings
+
+    struct Damage: Decodable {
+        var mould_amount: Double, mould_marked: Int, mould_r: Int
+        var newton_amount: Double, newton_weight_sum: Double, newton_weight_samples: [Double]
+    }
+
+    lazy var damage: Damage = try! JSONDecoder().decode(Damage.self, from: Data(contentsOf: Self.dir.appendingPathComponent("golden.json")))
+
+    func testMouldRepair() throws {
+        let mouldy = try image("mouldy.png")
+        let (mask, r) = Develop.mouldMask(mouldy, amount: damage.mould_amount)
+        XCTAssertEqual(r, damage.mould_r)
+        XCTAssertEqual(mask.reduce(0) { $0 + Int($1) }, damage.mould_marked)
+        let (mean, worst) = diff(Develop.repairMould(mouldy, amount: damage.mould_amount).data, try floats("mould.f32"))
+        XCTAssertLessThan(mean, 1e-5)
+        XCTAssertLessThan(worst, 1e-3)
+        XCTAssertEqual(Develop.repairMould(mouldy, amount: 0).data, mouldy.data)
+    }
+
+    func testNewtonRingRemoval() throws {
+        let ringed = try image("rings.png")
+        let (weight, _) = Develop.newtonWeight(ringed, amount: damage.newton_amount)
+        XCTAssertEqual(weight.reduce(0, +), damage.newton_weight_sum, accuracy: 1e-6 * Double(weight.count))
+        for (k, (y, x)) in [(100, 96), (40, 40), (170, 260), (200, 300)].enumerated() {
+            XCTAssertEqual(weight[y * ringed.width + x], damage.newton_weight_samples[k], accuracy: 1e-6)
+        }
+        let (mean, worst) = diff(Develop.repairNewton(ringed, amount: damage.newton_amount).data, try floats("newton.f32"))
+        XCTAssertLessThan(mean, 1e-5)
+        XCTAssertLessThan(worst, 1e-3)
+        XCTAssertEqual(Develop.repairNewton(ringed, amount: 0).data, ringed.data)
+    }
+
+    struct Local: Decodable {
+        struct MaskStats: Decodable { var shape: [Int], sum: Double, samples: [Double] }
+        var params_local: Params, developed_local_shape: [Int]
+        var local_masks: [MaskStats], local_mask_size: [Int], local_turned: [LocalAdjustment]
+    }
+
+    lazy var local: Local = try! JSONDecoder().decode(Local.self, from: Data(contentsOf: Self.dir.appendingPathComponent("golden.json")))
+
+    func testLocalAdjustmentMasks() {
+        let (w, h) = (local.local_mask_size[0], local.local_mask_size[1])
+        let cells = [(0, 0), (300, 400), (500, 200), (100, 900), (600, 1000), (437, 409), (437, 609), (156, 859), (156, 767)]
+        for (adj, want) in zip(local.params_local.local, local.local_masks) {
+            let m = Develop.localMask(adj, width: w, height: h)
+            XCTAssertEqual([m.height, m.width], want.shape)
+            XCTAssertEqual(m.data.reduce(0.0) { $0 + Double($1) }, want.sum, accuracy: max(1, want.sum) * 1e-5)
+            for ((j, i), v) in zip(cells, want.samples) { XCTAssertEqual(Double(m.data[j * m.width + i]), v, accuracy: 1e-6) }
+        }
+        XCTAssertEqual(LocalAdjustment.turned(local.params_local.local, by: 90), local.local_turned)
+        XCTAssertEqual(LocalAdjustment.turned(LocalAdjustment.turned(local.params_local.local, by: 180), by: 180), local.params_local.local)
+    }
+
+    func testDevelopWithLocalAdjustments() throws {
+        let out = Develop.develop(try image("local.png"), local.params_local)
+        XCTAssertEqual([out.height, out.width], local.developed_local_shape)
+        let (mean, worst) = diff(out.data, try floats("developed_local.f32"))
+        XCTAssertLessThan(mean, 0.003)
+        XCTAssertLessThan(worst, 0.06)
+    }
+
+    // MARK: over-exposed scans
+
+    struct Blown: Decodable {
+        struct Case: Decodable { var scales: [Float], strength: Double }
+        var restore_blown: Case
+    }
+
+    lazy var blown: Blown = try! JSONDecoder().decode(Blown.self, from: Data(contentsOf: Self.dir.appendingPathComponent("golden.json")))
+
+    func testAutoRestoreBlownOut() throws {
+        let scene = try image("scene.png")
+        let want = try floats("restored_blown.f32")
+        let n = scene.data.count
+        for (i, k) in blown.restore_blown.scales.enumerated() {
+            let over = RGBImage(width: scene.width, height: scene.height, data: scene.data.map { min(1, max(0, $0 * k)) })
+            let out = Develop.autoRestore(over, strength: blown.restore_blown.strength)
+            XCTAssertTrue(out.data.allSatisfy { $0.isFinite }, "x\(k)")
+            let (mean, worst) = diff(out.data, Array(want[(i * n)..<((i + 1) * n)]))
+            XCTAssertLessThan(mean, 0.002, "x\(k)")
+            XCTAssertLessThan(worst, 0.05, "x\(k)")
+        }
+    }
 }

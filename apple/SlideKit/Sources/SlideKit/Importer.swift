@@ -47,15 +47,12 @@ public struct Importer: Sendable {
         try fm.createDirectory(at: originals, withIntermediateDirectories: true)
         try fm.createDirectory(at: library.cacheDir(trayID), withIntermediateDirectories: true)
 
-        func lostHere(_ sha: String) -> Bool {
-            tray.scans.contains { id, r in r.sha1 == sha && !fm.fileExists(atPath: originals.appendingPathComponent(r.file).path) }
-        }
-
         for (n, f) in files.enumerated() {
             progress(JobProgress("Copying \(files.count) scans", done: n, total: files.count))
             try Task.checkCancellation()
+            // always by content: the quick fingerprint (name+size+mtime) only estimates "new" on
+            // the card, and a different scan can share it (the scanner restarting its numbering)
             let fp = CardSource.quickFingerprint(f)
-            if let fp, let known = index.fp[fp], !lostHere(known) { result.skipped += 1; continue }
             let sha = try sha1(of: f)
             if index.sha[sha] != nil || shaIndex[sha] != nil {
                 // already imported — but if this tray lost that original, put it back (unlocks it)
@@ -90,6 +87,17 @@ public struct Importer: Sendable {
         // recorded straight after copying, so a crash can't cause double imports
         try await library.addToIndex(sha: shaIndex, fp: fpIndex)
         result.imported = newIDs.count
+
+        // scans copied by an import that stopped before grouping them (a crash, the app killed):
+        // the dedupe index skips them from now on, so they are grouped here, in their place
+        let grouped = Set(tray.groups.flatMap(\.scans))
+        let stranded = tray.scans.keys.filter { !grouped.contains($0) && !newIDs.contains($0) }
+        if !stranded.isEmpty {
+            newIDs = (newIDs + stranded).sorted {
+                let a = tray.scans[$0]?.taken ?? "", b = tray.scans[$1]?.taken ?? ""
+                return a == b ? $0 < $1 : a < b
+            }
+        }
 
         // signatures for grouping
         var sigs: [String: [Float]] = [:]
@@ -127,7 +135,9 @@ public struct Importer: Sendable {
             }
             let fused = try renderer.fusedProxy(tray, g)   // pre-blend the bracket so browsing is instant
             let feats = Learning.features(fused, scans: g.activeScans.count)
-            let suggestion = learning?.suggest(feats)
+            let found = Develop.detectMount(fused)
+            let mount = MountEdge(angle: found.angle, confidence: found.confidence, box: found.box, scans: g.activeScans)
+            let suggestion = learning?.suggest(feats, stock: g.effectiveStock(in: tray))
             let slide = g
             tray = try await library.update(trayID) { fresh in
                 var target: Slide
@@ -141,6 +151,9 @@ public struct Importer: Sendable {
                 }
                 if let rot, rot.1 != "", target.rotReason != "manual" { target.rotation = rot.0; target.rotReason = rot.1 }
                 target.feat = feats
+                target.mount = mount
+                // straighten to the mount by itself only when very sure (otherwise the Frame section offers it)
+                if !extend && target.straightensToMount { target.params.angle = -mount.angle }
                 if let suggestion, !target.reviewed, target.paramsSource != "manual" {
                     target.params = suggestion.apply(to: target.params)
                     target.paramsSource = "learned:\(suggestion.neighbours)"
