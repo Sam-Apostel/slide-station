@@ -43,7 +43,7 @@ slidestation/
   web/                    UI build output (`npm run build` in frontend/), committed
 frontend/                 the UI: React 19 + Vite 7 + Tailwind 4 + ProUI (§4)
 desktop/                  Electron shell around server + UI (§4a, desktop/README.md)
-tests/                    fake scanner card + mock Immich + Playwright flow (§7)
+tests/                    API tests (pytest), synthetic scans, mock Immich, Playwright flow (§7)
 ```
 
 State lives outside the repo: `~/.slidestation/config.json` (settings, incl. the Immich API key,
@@ -301,17 +301,37 @@ undo), and consider learning rotation corrections per film type once enough exam
 
 `tests/` contains what was used during development:
 
+- `tests/test_api.py` — pytest, the API under FastAPI's `TestClient` against a scratch library
+  (`uv run --python 3.12 pytest tests -q`, ~15 s): bracket grouping and re-import dedupe; curves
+  (`clean_curves`, `fit_curves` single / all, histogram caching, `render_key` ignoring neutral
+  extras); crop & straighten (`clean_crop`, `uncropped=1`, apply-to-rest keeps framing); undo /
+  redo (coalescing with the server's clock monkeypatched, redo cleared, the 60-step cap); dates
+  (validation, `slide_dates` sources, caption / date making an uploaded slide `changed`); upload
+  (v2 vs v3 fields, developed-only, re-upload trashes the old asset); locked slides (409s,
+  develop / skip allowed, re-import unlocks). `tests/conftest.py` sets `SLIDESTATION_HOME` (with a
+  `config.json`, learning off) and `SLIDESTATION_VOLUMES` to a temp dir *before* importing
+  `slidestation`, and routes the real Immich client to `fake_immich.app` in-process by swapping
+  `immich.httpx.Client` for a `TestClient`.
+- `tests/synthetic.py` — made-up scans (smooth colour field + shapes + grain, a faded cast, scanner
+  EXIF), every other slide a bracketed pair. `python tests/synthetic.py <folder> 8` writes a card's
+  worth for the browser test. Each tray in the tests gets new bytes *and* new file names: the
+  dedupe index also skips by a name + size + mtime fingerprint.
 - `tests/fake_immich.py` — FastAPI mock implementing version/users/albums/assets, with a `/debug`
   endpoint; set `MOCK_IMMICH_MAJOR=3` to exercise the v3 field rules.
-- `tests/ui_flow.py` — Playwright script: import from a fake card, browse, rotate, edit, toggle a
-  scan, hold-B before, approve, upload, clean the card; asserts no console errors and prints
-  timings. Selectors are roles/labels. `SS_APP`, `SS_SHOTS` and `SS_BROWSER_CHANNEL=chrome` (use
-  the installed Chrome, no `playwright install`) are configurable.
-- Make a fake card with `tests/make_card.sh <folder-with-scans>` → `/tmp/ss-card/DCIM/100MEDIA`,
-  then run the server with `SLIDESTATION_HOME`, `SLIDESTATION_VOLUMES`, `SLIDESTATION_PORT`,
+- `tests/ui_flow.py` — Playwright script: import from a fake card, browse, rotate, edit warmth and
+  saturation, toggle a scan, hold-B before, Fit the tone curve (F), crop and straighten (K, 1:1,
+  Enter), undo / redo (Ctrl/⌘Z), split view (Y), Develop (Space), upload, clean the card; asserts
+  no console errors and prints timings. Selectors are roles/labels. `SS_APP`, `SS_SHOTS`,
+  `SS_BROWSER_CHANNEL=chrome` (the installed Chrome) and `SS_BROWSER_PATH` (any Chromium, e.g.
+  `/opt/pw-browsers/chromium` when the pip Playwright wants a newer build) are configurable; no
+  `playwright install` needed.
+- Make a fake card with `tests/synthetic.py <vol>/SS-CARD/DCIM/100MEDIA` (or `tests/make_card.sh
+  <folder-with-scans>` → `/tmp/ss-card/DCIM/100MEDIA`), then run the server with
+  `SLIDESTATION_HOME`, `SLIDESTATION_VOLUMES` (the card's parent), `SLIDESTATION_PORT`,
   `SLIDESTATION_NO_BROWSER` pointed at scratch dirs. **Never test against the real library** —
   and note `SLIDESTATION_HOME` alone isn't enough: without a `config.json` in it the library
-  defaults to `~/Pictures/Slide Station`. Write one with a scratch `library` first.
+  defaults to `~/Pictures/Slide Station`. Write one with a scratch `library` (plus the mock's
+  `immich_url` and `"immich_key": "testkey"`, and `"learning_enabled": false`) first.
 
 Things to re-check after changes: grouping across two imports (a bracket set split over two card
 reads must merge), rotation suggestions, upload of a `changed` slide, skip-after-upload, and that
