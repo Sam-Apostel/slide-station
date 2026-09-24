@@ -887,6 +887,65 @@ def tag_people(job: Job) -> None:
         client.close()
 
 
+def tray_tag(name: str) -> str:
+    """The Immich tag a tray's photos carry: Trays/<tray name> (a "/" in the name would nest it deeper)."""
+    return "Trays/" + ((name or "").replace("/", "-").strip() or "Untitled tray")
+
+
+def placement(cfg: dict, d: dict) -> str:
+    """Where a tray's photos belong in Immich: the album (Settings' own, or the tray's by name) and
+    the tray tag. Stored as "placed" after an upload; a different one is put right on the next."""
+    album = cfg.get("immich_album") or "name:" + (d.get("album") or d["name"])
+    return f"{album}|{tray_tag(d['name']) if cfg.get('tag_trays', True) else ''}"
+
+
+def placement_stale(cfg: dict, d: dict) -> bool:
+    """Slides in Immich whose album or tray tag isn't what the settings and tray name say now."""
+    return (any(g.get("immich") and not g.get("skip") for g in d["groups"])
+            and d.get("placed") != placement(cfg, d))
+
+
+def album_label(cfg: dict, d: dict) -> str:
+    return (cfg.get("immich_album_name") or "the album chosen in Settings") if cfg.get("immich_album") \
+        else (d.get("album") or d["name"])
+
+
+def _place_tray(client: Immich, cfg: dict, sid: str, album: str) -> str:
+    """Every slide of the tray in Immich goes into `album` with the tray tag; the untouched scans
+    stacked under them come out of it (adding a stack to an album in Immich brings them along, and
+    albums show each photo of a stack on its own). Answers a note on what couldn't be done."""
+    d = Session(sid).data
+    recs = [g["immich"] for g in d["groups"] if g.get("immich") and not g.get("skip")]
+    assets = list(dict.fromkeys(r["asset_id"] for r in recs))
+    scans = sorted({a for r in recs for a in (r.get("originals") or {}).values()} - set(assets))
+    notes = []
+    tag = tray_tag(d["name"]) if cfg.get("tag_trays", True) else ""
+    if assets:
+        client.add_to_album(album, assets)  # the ones in it already just answer "duplicate"
+        if scans:
+            try:
+                client.remove_from_album(album, scans)
+            except ImmichError as e:
+                print("originals out of the album:", e)
+                notes.append("the untouched scans stay in the album: the API key needs albumAsset.delete")
+        old = d.get("tray_tag")
+        try:
+            if old and old != tag:
+                client.untag_assets(old, assets)
+            if tag and client.tag_assets([tag], assets) == 0:
+                notes.append("no tray tag: this Immich has no tags API")
+        except ImmichError as e:
+            notes.append(f"no tray tag ({e})")
+            tag = old or ""
+
+    def done(fresh: Session):
+        fresh.data["placed"] = placement(cfg, fresh.data)
+        fresh.data["tray_tag"] = tag
+
+    update_session(sid, done)  # a note is said once, not asked about again on every upload
+    return "".join(f"; {n}" for n in notes)
+
+
 def finish_session(job: Job, sid: str, only_ready: bool = False) -> None:
     """Export every slide that is not skipped and upload new/changed ones to the session's Immich album.
 
@@ -914,7 +973,13 @@ def finish_session(job: Job, sid: str, only_ready: bool = False) -> None:
 
     try:
         job.message = f"Connecting to Immich {client.version()}"
-        album = client.find_or_create_album(s.data["album"] or s.data["name"])
+        if cfg.get("immich_album"):  # one album for every tray, chosen in Settings
+            if not client.album(cfg["immich_album"]):
+                raise ImmichError(f"The album chosen in Settings ('{album_label(cfg, s.data)}') is gone from Immich, "
+                                  "or this API key can't see it: choose another one in Settings")
+            album = cfg["immich_album"]
+        else:
+            album = client.find_or_create_album(s.data["album"] or s.data["name"])
         update_session(sid, lambda f: f.data.__setitem__("immich_album_id", album))
         to_trash, uploaded, synced, duplicates, no_update = [], 0, 0, 0, False
         tagged: dict[str, list[str]] = {}  # tag -> asset ids to tag, uploaded or updated now
@@ -1067,7 +1132,7 @@ def finish_session(job: Job, sid: str, only_ready: bool = False) -> None:
                     g["immich"] = None
             if not only_ready or all(developed(g) or g.get("skip") for g in fresh.data["groups"]):
                 fresh.data["date_key"] = fresh.data.get("date")  # every slide now carries the date
-            fresh.log(f"Uploaded {uploaded} slides to album '{fresh.data['album']}'"
+            fresh.log(f"Uploaded {uploaded} slides to album '{album_label(cfg, fresh.data)}'"
                       + (f", updated {synced} in place" if synced else ""))
 
         update_session(sid, tidy)
@@ -1082,6 +1147,8 @@ def finish_session(job: Job, sid: str, only_ready: bool = False) -> None:
             except ImmichError as e:  # an older Immich or a key without tag permissions: the upload stands
                 print("immich tags:", e)
                 tag_note = f"; tags not sent ({e})"
+        job.message = "Putting the tray in its album"
+        place_note = _place_tray(client, cfg, sid, album)
         people_tagged, problem = 0, ""
         if cfg.get("people_enabled") and sent:  # named people go along as tags (People/<name>)
             people_tagged, problem = _tag_people(client, sid, sent, people.slide_names(people.refresh()))
@@ -1090,7 +1157,7 @@ def finish_session(job: Job, sid: str, only_ready: bool = False) -> None:
             look_note = _lookalikes_quietly(client, sid, list(sent), job)
         if not cfg.get("keep_originals", True):
             _drop_local_originals(Session(sid))
-        job.message = f"Done - {uploaded} slides uploaded to '{s.data['album']}'" + (
+        job.message = f"Done - {uploaded} slides uploaded to '{album_label(cfg, Session(sid).data)}'" + (
             f"; {synced} updated in place (date, caption, place)" if synced else "") + (
             "; dates / captions / places went up as new copies: give the API key asset.update to change them "
             "in place"
@@ -1100,7 +1167,7 @@ def finish_session(job: Job, sid: str, only_ready: bool = False) -> None:
             "stack.create" if want_originals and uploaded and stacks and not stacks[0] else "") + (
             f"; {len(lost)} skipped: their original scans were deleted after the last upload" if lost else "") + tag_note + (
             f"; {people_tagged} tagged with the people on them" if people_tagged else "") + (
-            f"; names not sent: {problem}" if problem else "") + look_note
+            f"; names not sent: {problem}" if problem else "") + look_note + place_note
     finally:
         client.close()
 

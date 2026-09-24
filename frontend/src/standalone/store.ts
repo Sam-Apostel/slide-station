@@ -114,6 +114,9 @@ export type SessionData = {
   log: [number, string][];
   card_cleaned?: boolean;
   immich_album_id?: string;
+  /** Where its slides were last put in Immich (album|tray tag, workflow.placement), and the tray tag. */
+  placed?: string;
+  tray_tag?: string;
   date_key?: string;
   orphan_assets?: string[];
   orphan_stacks?: string[];

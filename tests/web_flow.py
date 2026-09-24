@@ -722,6 +722,8 @@ def main() -> None:
             (album,) = [a for a in db["albums"].values() if a["name"] == "Web tray"]
             assert len(live) == SLIDES and all(k in album["assets"] for k in live), (live, album)
             assert db["assets"][first_id]["trashed"], "the pulled-in photo was replaced"
+            tagged = set((db.get("tags", {}).get("Trays/Pulled back") or {}).get("assets", []))
+            assert tagged == set(live), ("each photo carries its tray's tag", db.get("tags"))
             print(f"round trip: pulled {SLIDES} photos back in, uploaded, originals replaced")
             pg.screenshot(path=str(SHOTS / "06-pulled-back.png"))
             browser.close()

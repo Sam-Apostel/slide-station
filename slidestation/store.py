@@ -37,6 +37,11 @@ DEFAULT_CONFIG = {
     "jpeg_quality": 95,
     # also upload each slide's untouched scans, stacked under the developed photo in Immich
     "upload_originals_stacked": False,
+    # one Immich album for every tray (its id, and its name to show), instead of an album per tray
+    "immich_album": "",
+    "immich_album_name": "",
+    # each uploaded photo tagged Trays/<tray name>, so it can be traced back to its tray
+    "tag_trays": True,
     "stats_target": stats.DEFAULT_TARGET,  # slides to digitise in all, for the projected finish
 }
 

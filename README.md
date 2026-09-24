@@ -10,7 +10,8 @@ locally in your browser, keyboard-first, built for working through thousands of 
 - Optionally recognises people across all your trays: name someone once, Immich gets it as a tag
 - Straightens slides that sit crooked in their mount, and takes out dust, scratches, mould and Newton rings
 - Local adjustments: graduated filters, radials and a brush to dodge and burn one part of a slide
-- Uploads to a per-tray Immich album (works with Immich v1.118 → v3)
+- Uploads to an Immich album per tray, or to one album for every tray (shared albums too), each
+  photo tagged `Trays/<tray name>` so it can be traced back (works with Immich v1.118 → v3)
 - Deletes scans from the card only after they are verified and uploaded
 
 Import Kodak Slide N Scan scans, blend brackets into HDR, turn slides upright, restore faded
@@ -205,7 +206,8 @@ or drop the folder.
 ## Workflow per tray
 
 1. Scanner in **USB mode** → the top bar shows "Slide N Scan · N new scans" → **Import**.
-   Create a tray: name, Immich album (defaults to the name) and optionally the photo date
+   Create a tray: name, Immich album (defaults to the name; Settings → Immich album puts every
+   tray in one album instead) and optionally the photo date
    (`1985`, `1985-07` or `1985-07-14`). The date goes into the EXIF so Immich puts the slides in
    the right year; slides get one-minute steps so they stay in tray order.
 2. Scans of the same slide at different brightness are grouped automatically and exposure-fused.

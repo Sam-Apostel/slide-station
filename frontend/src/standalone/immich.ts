@@ -104,8 +104,7 @@ export class Immich {
   // ---------------------------------------------------------------- albums
 
   async findOrCreateAlbum(name: string): Promise<string> {
-    const albums = await (await this.req("GET", "/albums")).json();
-    const hit = albums.find((a: { albumName: string }) => a.albumName === name);
+    const hit = (await this.albums()).find((a) => a.albumName === name);
     if (hit) return hit.id;
     return (await (await this.req("POST", "/albums", { albumName: name })).json()).id;
   }
@@ -119,9 +118,20 @@ export class Immich {
     await this.req("DELETE", `/albums/${album}/assets`, { ids });
   }
 
-  /** Every album the user can see. */
+  /** Every album the user can see: `GET /albums` answers the user's own, albums others shared with
+   *  them only come with `shared=true`. */
   async albums(): Promise<{ id: string; albumName: string; assetCount?: number; albumThumbnailAssetId?: string }[]> {
-    return (await this.req("GET", "/albums")).json();
+    const out = new Map<string, { id: string; albumName: string; assetCount?: number; albumThumbnailAssetId?: string }>();
+    for (const path of ["/albums", "/albums?shared=true"])
+      for (const a of await (await this.req("GET", path)).json()) if (!out.has(a.id)) out.set(a.id, a);
+    return [...out.values()];
+  }
+
+  /** One album, null when it is gone or this key can't see it. */
+  async album(id: string): Promise<{ id: string; albumName: string } | null> {
+    const r = await this.raw("GET", `/albums/${id}${(this.major ?? 0) >= 3 ? "" : "?withoutAssets=true"}`);
+    if ([400, 403, 404].includes(r.status)) return null;
+    return (await this.check(r, "GET", "/albums/{id}")).json();
   }
 
   /** Ids of the albums an asset is in (`GET /albums?assetId=`, v1 through v3). */
@@ -272,6 +282,26 @@ export class Immich {
         if (q.status === 403) throw new ImmichError("the API key needs the tag.asset permission");
         await this.check(q, "PUT", "/tags/{id}/assets");
       }
+    }
+  }
+
+  /** Take the tag `name` (its full value) off these assets; a tag that doesn't exist is fine. */
+  async untagAssets(name: string, assets: string[]) {
+    if (!assets.length || this.tagsSupported === false) return;
+    const r = await this.raw("GET", "/tags");
+    if (r.status === 404 || r.status === 405) {
+      this.tagsSupported = false;
+      return;
+    }
+    const tag = ((await (await this.check(r, "GET", "/tags")).json()) as { id: string; value?: string }[]).find(
+      (t) => t.value === name,
+    );
+    if (!tag) return;
+    for (let i = 0; i < assets.length; i += 200) {
+      const q = await this.raw("DELETE", `/tags/${tag.id}/assets`, { ids: assets.slice(i, i + 200) });
+      if (q.status === 403)
+        throw new ImmichError("The API key can't tag photos (403): give it tag.create and tag.asset to send names.");
+      await this.check(q, "DELETE", "/tags/{id}/assets");
     }
   }
 

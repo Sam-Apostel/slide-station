@@ -350,7 +350,16 @@ export function Inspector({
         <ProDisclosureGroup title="Tray" summary={sm.name} showsBottomSeparator={false} {...section("tray")}>
           <div className="flex flex-col gap-2 px-3 pt-2.5 pb-3">
             <TrayField label="Name" value={sm.name} onCommit={(v) => app.patchSession({ name: v })} />
-            <TrayField label="Immich album" value={sm.album} onCommit={(v) => app.patchSession({ album: v })} />
+            {session.album_from_settings ? (
+              <Tip label="Every tray goes into this album: change it in Settings" side="left">
+                <div className="flex flex-col gap-1">
+                  <Label className="text-[11px] font-normal text-muted-foreground">Immich album</Label>
+                  <Input value={session.album_label ?? ""} readOnly aria-label="Immich album (set in Settings)" />
+                </div>
+              </Tip>
+            ) : (
+              <TrayField label="Immich album" value={sm.album} onCommit={(v) => app.patchSession({ album: v })} />
+            )}
             <TrayField
               label="Date"
               placeholder="e.g. 1985-07 — for slides without their own"
@@ -413,7 +422,14 @@ export function Inspector({
             </Tip>
           </div>
         )}
-        <UploadArea sm={sm} undeveloped={undeveloped} busy={busy} onUpload={onUpload} />
+        <UploadArea
+          sm={sm}
+          undeveloped={undeveloped}
+          busy={busy}
+          onUpload={onUpload}
+          restale={!!session.placement_stale}
+          album={session.album_label ?? sm.album}
+        />
         <div className="flex gap-1.5">
           <Tip
             label={
@@ -637,12 +653,27 @@ function UploadArea({
   undeveloped,
   busy,
   onUpload,
+  restale,
+  album,
 }: {
   sm: SessionPayload["summary"];
   undeveloped: number;
   busy: boolean;
   onUpload: (scope?: "ready" | "all") => void;
+  /** Everything is in Immich, but not in the album / with the tray tag the settings ask for now. */
+  restale: boolean;
+  album: string;
 }) {
+  if (sm.slides && !sm.pending_upload && restale) {
+    return (
+      <Tip label="Nothing is sent again: the photos in Immich join the album and get the tray tag" side="top">
+        <ProButton size="lg" fullWidth onClick={() => onUpload("all")} disabled={busy}>
+          <Upload />
+          Put in '{album}' in Immich
+        </ProButton>
+      </Tip>
+    );
+  }
   if (!sm.slides || !sm.pending_upload) {
     return (
       <ProButton size="lg" fullWidth disabled>
