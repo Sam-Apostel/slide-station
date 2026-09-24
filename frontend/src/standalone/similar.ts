@@ -8,6 +8,7 @@ import { similarity } from "./imaging";
 import { percentile, rgb, sortedCopy, type RGB } from "./pixels";
 import { activeScans, parseDate, pyDumps, PyInt, sha1Hex, type GroupData, type SessionData } from "./store";
 import type { Learned } from "./clip";
+import { bestOf, CLOSED, MODEL_ID as EYES_MODEL, slideOpen, type EyesEntry } from "./eyes";
 
 export const KINDS = ["duplicates", "split", "merge"] as const;
 export const MODEL_ID = "clip-vit-b32";
@@ -23,7 +24,7 @@ export const SCENE = 0.8;
 export const SCENE_SPAN = 4;
 
 export type Quality = { sharp: number; clipped: number };
-export type SlideEmb = { key: string; emb?: string; q?: Quality; error?: string };
+export type SlideEmb = { key: string; emb?: string; q?: Quality; eyes?: EyesEntry; error?: string };
 export type ScanEmb = { emb?: string; lum?: number; error?: string };
 export type Embeddings = { slides: Record<string, SlideEmb>; scans: Record<string, ScanEmb> };
 export type Scene = { start: number; end: number; label: string };
@@ -131,19 +132,30 @@ export function levels(a: RGB): RGB {
   return out;
 }
 
-/** The next slide whose embedding is missing or stale, else the next scan without one (similar._todo). */
-export function todo(d: SessionData, e: Embeddings): { g?: GroupData; scan?: string } {
+/** An embedded slide whose eyes weren't measured (the eye model came later), or by another model. */
+const eyesTodo = (g: GroupData, entry?: SlideEmb) =>
+  !!entry && entry.key === slideKey(g) && "emb" in entry && entry.eyes?.model !== EYES_MODEL;
+
+/** The next slide whose embedding is missing or stale, else the next scan without one, else (the eye
+ *  model on) the next slide whose eyes weren't measured (similar._todo). */
+export function todo(
+  d: SessionData,
+  e: Embeddings,
+  eyesOn = false,
+): { g?: GroupData; scan?: string; look?: GroupData } {
   const groups = d.groups.filter((g) => !g.skip);
   for (const g of groups) if (e.slides[g.id]?.key !== slideKey(g)) return { g };
   for (const g of groups) for (const x of activeScans(g)) if (!(x in e.scans)) return { scan: x };
+  if (eyesOn) for (const g of groups) if (eyesTodo(g, e.slides[g.id])) return { look: g };
   return {};
 }
 
-export function pending(d: SessionData, e: Embeddings): number {
+export function pending(d: SessionData, e: Embeddings, eyesOn = false): number {
   const groups = d.groups.filter((g) => !g.skip);
   return (
     groups.filter((g) => e.slides[g.id]?.key !== slideKey(g)).length +
-    groups.reduce((n, g) => n + activeScans(g).filter((x) => !(x in e.scans)).length, 0)
+    groups.reduce((n, g) => n + activeScans(g).filter((x) => !(x in e.scans)).length, 0) +
+    (eyesOn ? groups.filter((g) => eyesTodo(g, e.slides[g.id])).length : 0)
   );
 }
 
@@ -268,10 +280,23 @@ export async function suggest(
     if (members.length < 2) continue;
     const gids = members.map((i) => groups[i].id);
     const scores = Object.fromEntries(gids.map((gid) => [gid, Math.round(score(e.slides[gid].q) * 1e4) / 1e4]));
-    const best = gids.reduce((a, b) => (scores[b] > scores[a] ? b : a));
+    const opened: Record<string, number> = {};
+    for (const gid of gids) {
+      const o = slideOpen(e.slides[gid].eyes);
+      if (o !== null) opened[gid] = o;
+    }
+    const best = bestOf(gids, scores, opened);
     const cs = sims.filter(([i]) => members.includes(i)).map(([, , c]) => c);
     const conf = cs.reduce((a, b) => a + b, 0) / cs.length;
-    duplicates.push(sug("duplicates", "dup:" + gids.join(","), gids, conf, { best, scores }));
+    const measured = gids.filter((gid) => gid in opened);
+    // faces: how open each slide's eyes are, and the slides where someone blinked
+    const extra = measured.length
+      ? {
+          eyes: Object.fromEntries(measured.map((gid) => [gid, Math.round(opened[gid] * 100) / 100])),
+          closed: gids.filter((gid) => (opened[gid] ?? 1) < CLOSED),
+        }
+      : {};
+    duplicates.push(sug("duplicates", "dup:" + gids.join(","), gids, conf, { best, scores, ...extra }));
   }
   return { duplicates, split, merge, scenes: scenes(groups, e) };
 }

@@ -62,6 +62,20 @@ function SimilarCard({
         ? `Slide ${nums[0]}: from scan ${(groups[0]?.scans.indexOf(sug.scan ?? "") ?? 0) + 1} on it may be another slide`
         : `Slides ${numbers(nums)} look like one slide at two exposures`;
   const others = sug.groups.filter((id) => id !== keep).map(n);
+  // why the preselected one: the sharpest, and / or the one where nobody blinked (eyes.py)
+  const scores = sug.scores ?? {};
+  const sharpest = sug.groups.reduce((a, b) => ((scores[b] ?? 0) > (scores[a] ?? 0) ? b : a), sug.groups[0]);
+  const bestEyes = sug.eyes?.[sug.best ?? ""];
+  const why = !sug.eyes
+    ? "sharpest"
+    : sug.best === sharpest
+      ? bestEyes !== undefined && bestEyes >= 0.5
+        ? "sharpest, eyes open"
+        : "sharpest"
+      : bestEyes !== undefined
+        ? "eyes open"
+        : "no one blinking";
+  const closed = (sug.closed ?? []).map(n);
   return (
     <section className="ss-pile" aria-label={title}>
       <header className="flex items-start gap-2">
@@ -97,6 +111,11 @@ function SimilarCard({
           </span>
         ))}
       </div>
+      {closed.length > 0 && (
+        <p className="text-[11px] text-muted-foreground">
+          Eyes closed on {closed.length > 1 ? "slides" : "slide"} {numbers(closed)}
+        </p>
+      )}
       <div className="flex flex-wrap items-center gap-1.5">
         {sug.kind === "duplicates" ? (
           <Tip label="Skipped slides aren't uploaded; X on one brings it back. Click a photo to keep that one instead.">
@@ -106,7 +125,7 @@ function SimilarCard({
               onClick={() => app.decideSimilar("duplicates", "accept", sug.id, keep)}
             >
               <Check /> Keep {n(keep)}
-              {keep === sug.best && groups.length > 1 ? " (sharpest)" : ""}, skip {numbers(others)}
+              {keep === sug.best && groups.length > 1 ? ` (${why})` : ""}, skip {numbers(others)}
             </Button>
           </Tip>
         ) : sug.kind === "split" ? (

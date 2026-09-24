@@ -96,6 +96,7 @@ export function SettingsDialog({
   const [learned, setLearned] = React.useState<{ examples: number; min_examples: number } | null>(null);
   const [suggestTags, setSuggestTags] = React.useState(false);
   const [lookalikes, setLookalikes] = React.useState(false);
+  const [openEyes, setOpenEyes] = React.useState(false);
   const [suggestCaptions, setSuggestCaptions] = React.useState(false);
   const [insights, setInsights] = React.useState<InsightsState | null>(null);
   const [test, setTest] = React.useState<{ ok?: boolean; message: string } | null>(null);
@@ -117,6 +118,7 @@ export function SettingsDialog({
     api<{ examples: number; min_examples: number }>("GET", "/api/learning").then(setLearned, () => setLearned(null));
     setSuggestTags(config.insights_enabled ?? false);
     setLookalikes(!!config.lookalike_enabled);
+    setOpenEyes(!!config.eyes_enabled);
     setSuggestCaptions(config.captions_enabled ?? false);
     api<InsightsState>("GET", "/api/insights").then(setInsights, () => setInsights(null));
     setTest(null);
@@ -145,6 +147,7 @@ export function SettingsDialog({
         learning_enabled: learning,
         insights_enabled: suggestTags,
         lookalike_enabled: lookalikes,
+        eyes_enabled: openEyes,
         ...(standalone ? {} : { captions_enabled: suggestCaptions }), // captions: the desktop app only
         people_enabled: people,
       });
@@ -153,6 +156,7 @@ export function SettingsDialog({
       const models = [
         ...(suggestTags && !insights?.ready ? ["tags"] : []),
         ...(suggestCaptions && !insights?.captions.ready ? ["captions"] : []),
+        ...(suggestTags && openEyes && !insights?.eyes?.ready ? ["eyes"] : []),
       ];
       if (models.length && !insights?.downloading) await api("POST", "/api/insights/model", { models }).catch(() => {});
       toast.success("Settings saved");
@@ -346,6 +350,18 @@ export function SettingsDialog({
                   Finds a slide you scanned before (say with another tool, years ago) and offers to replace it. Uses
                   Immich's search by image where it has one (asset.read), else the photos taken around the slide's date;
                   the thumbnails are compared {standalone ? "in this browser" : "on this computer"} (asset.view).
+                </FieldDescription>
+              </Field>
+            )}
+            {suggestTags && (
+              <Field>
+                <CheckRow id="cfg-eyes" checked={openEyes} onChange={setOpenEyes}>
+                  Prefer the shot with open eyes (downloads a ~{insights?.eyes?.model_mb ?? 5} MB face model)
+                </CheckRow>
+                <FieldDescription>
+                  When slides look like the same shot, the one to keep is the sharpest where nobody blinked; the card
+                  says on which slides eyes are closed.
+                  {insights?.eyes?.ready ? " The model is downloaded." : ""}
                 </FieldDescription>
               </Field>
             )}

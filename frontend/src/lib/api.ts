@@ -86,9 +86,12 @@ export type SimilarSuggestion = {
   confidence: number;
   source: string;
   state: "suggested";
-  /** duplicates: the one to keep (sharpest, least clipped) and each slide's score. */
+  /** duplicates: the one to keep (sharpest, least clipped, eyes open) and each slide's quality score. */
   best?: string;
   scores?: Record<string, number>;
+  /** duplicates with faces: how open each measured slide's eyes are (0..1), the slides where someone blinked. */
+  eyes?: Record<string, number>;
+  closed?: string[];
   /** split: the scan the second slide starts at. */
   scan?: string;
   /** merge: how far apart the two exposures are, in stops. */
@@ -233,8 +236,9 @@ export type SessionPayload = {
   places?: { ocr: boolean; ocr_mb: number };
 };
 
-/** The models that make suggestions: scene tags (CLIP) and captions (Florence-2). */
-export type SuggestionModel = "tags" | "captions";
+/** The models that make suggestions: scene tags (CLIP), captions (Florence-2), and the eye model
+ *  (a face mesh) that look-alikes pick the shot with open eyes with. */
+export type SuggestionModel = "tags" | "captions" | "eyes";
 
 export type InsightsState = {
   /** The tag model: turned on, downloaded. */
@@ -245,6 +249,8 @@ export type InsightsState = {
   labels: string[];
   learned: Record<string, { accepted: number; dismissed: number }>;
   captions: { enabled: boolean; ready: boolean; model_mb: number };
+  /** Look-alikes prefer the shot with open eyes (on only with the tag model). */
+  eyes?: { enabled: boolean; ready: boolean; model_mb: number };
   /** Place suggestions from signs: the text reader and the place names are downloaded. */
   ocr_ready?: boolean;
   /** What that download still weighs. */
@@ -303,6 +309,8 @@ export type Config = {
   captions_enabled?: boolean;
   /** Faces → people (opt-in, downloads a face model). */
   people_enabled?: boolean;
+  /** Look-alikes: prefer the shot where nobody blinked (opt-in, downloads a small face mesh model). */
+  eyes_enabled?: boolean;
 };
 
 /** Someone found on the slides: faces grouped by likeness across every tray (People dialog). */

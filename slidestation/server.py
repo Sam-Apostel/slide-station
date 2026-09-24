@@ -13,7 +13,7 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-from . import accounts, captions, filmstock, insights, learning
+from . import accounts, captions, eyes, filmstock, insights, learning
 from . import people, places
 from . import raw, similar, tether, uploads, watch
 from . import store
@@ -181,7 +181,7 @@ def set_config(body: dict = Body(...)):
             return _err(e, 502)
     for k in (*own, "immich_key", "keep_originals", "keep_exports", "jpeg_quality",
               "learning_enabled", "upload_originals_stacked", "insights_enabled", "captions_enabled",
-              "people_enabled", "lookalike_enabled"):
+              "people_enabled", "lookalike_enabled", "eyes_enabled"):
         if k in body and not (k == "immich_key" and body[k] == ""):
             cfg[k] = body[k]
     if "stats_target" in body:  # slides to digitise in all, for the stats' projected finish
@@ -793,8 +793,9 @@ def _slide_insights(g: dict, live: dict, models: list[str]) -> dict | None:
             "stale": bool(ins) and ins.get("key") != insights.insights_key(g, models), "error": ins.get("error", "")}
 
 
-# the suggestion models: whether each is turned on, and downloaded
-MODELS = {"tags": insights, "captions": captions}
+# the suggestion models: whether each is turned on, and downloaded. The eye model (eyes.py) only
+# helps look-alikes pick the best shot: it counts as on with the tag model, never on its own.
+MODELS = {"tags": insights, "captions": captions, "eyes": eyes}
 
 
 def _insights_status(d: dict, models: list[str]) -> dict:
@@ -802,8 +803,9 @@ def _insights_status(d: dict, models: list[str]) -> dict:
     analysis runs), `missing` the ones turned on but not downloaded yet, `pending` slides to go."""
     on = [k for k, m in MODELS.items() if m.enabled()]
     missing = [k for k in on if not MODELS[k].model_ready()]
-    return {"enabled": bool(on), "ready": bool(on) and len(missing) < len(on), "pending": insights.pending(d, models),
-            "missing": missing}
+    analysing = [k for k in on if k != "eyes"]
+    return {"enabled": bool(on), "ready": len([k for k in missing if k != "eyes"]) < len(analysing),
+            "pending": insights.pending(d, models), "missing": missing}
 
 
 @app.get("/api/insights")
@@ -817,6 +819,8 @@ def insights_state():
         "labels": insights.TAGS,
         "learned": insights.learned().get("labels", {}),
         "captions": {"enabled": captions.enabled(), "ready": captions.model_ready(), "model_mb": captions.MODEL_MB},
+        # look-alikes prefer the shot with open eyes (eyes.py)
+        "eyes": {"enabled": eyes.enabled(), "ready": eyes.model_ready(), "model_mb": eyes.MODEL_MB},
         # place suggestions from signs: the text reader + the place names
         "ocr_ready": places.ocr_ready(),
         "ocr_mb": places.OCR_MB + (0 if places.gazetteer_ready() else places.GAZETTEER_MB),
@@ -827,17 +831,17 @@ def insights_state():
 @app.post("/api/insights/model")
 def insights_model(body: dict = Body(default={})):
     """Download suggestion models (one job, progress in MB) unless they are already there:
-    `models` ["tags", "captions"]; by default the ones turned on (the tag model when none is)."""
+    `models` ["tags", "captions", "eyes"]; by default the ones turned on (the tag model when none is)."""
     want = body.get("models") or [k for k, m in MODELS.items() if m.enabled()] or ["tags"]
     if any(k not in MODELS for k in want):
-        raise HTTPException(400, "models are tags and / or captions")
+        raise HTTPException(400, "models are tags, captions and / or eyes")
     todo = [MODELS[k] for k in want if not MODELS[k].model_ready()]
     if not todo:
         return {"ok": True, "ready": True}
 
     def run(job):
-        for m in todo:
-            m.download_model(job)
+        for m in sorted(todo, key=lambda m: m is not eyes):  # the small eye model first: the job ends
+            m.download_model(job)  # saying what the tag / caption model's arrival means
 
     try:
         wf.start_job("model", None, run)

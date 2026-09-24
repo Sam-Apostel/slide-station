@@ -66,7 +66,11 @@ export function openSuggestions(g: Group, models = false): [InsightKind, Suggest
 /** How a suggested value reads: film stocks by name. */
 export const shown = (kind: InsightKind, value: string) => (kind === "stock" ? (STOCK_NAMES[value] ?? value) : value);
 
-const MODEL_NAMES: Record<SuggestionModel, string> = { tags: "tag model", captions: "caption model" };
+const MODEL_NAMES: Record<SuggestionModel, string> = {
+  tags: "tag model",
+  captions: "caption model",
+  eyes: "eye model",
+};
 const modelNames = (m: SuggestionModel[] | undefined) => (m ?? []).map((k) => MODEL_NAMES[k]).join(" and ");
 
 /** One line for the collapsed Insights section. */

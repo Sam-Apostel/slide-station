@@ -41,6 +41,7 @@ slidestation/
   insights.py             suggestions per slide: scene tags from CLIP, background analysis (§5a)
   filmstock.py            film stock per slide: fade-signature guess / k-NN, eras for dating (§5d)
   similar.py              look-alikes from the CLIP embeddings: duplicates, split / merge, scenes, Immich (§5e)
+  eyes.py                 eyes open for look-alikes' "keep the best": face mesh + eye aspect ratio (§5e)
   captions.py             a caption per slide from Florence-2 (ONNX), for the insights (§5b)
   people.py               faces -> people: SFace embeddings, clustering, names (§5c)
   places.py               places: GeoNames gazetteer, sign OCR, tray neighbours (§5f)
@@ -593,7 +594,8 @@ standalone/
   yunet.ts           rotation from faces: YuNet on onnxruntime-web (below)
   models.ts          downloading models into the library (insights.fetch_files)
   clip.ts, insights.ts  scene tags (insights.py): tokenizer, preprocessing, labels; the suggestion plumbing
-  similar.ts         look-alikes (similar.py); places.ts, ocr.ts: gazetteer, sign OCR (places.py)
+  similar.ts         look-alikes (similar.py); eyes.ts: eyes open (eyes.py, §5e)
+  places.ts, ocr.ts  gazetteer, sign OCR (places.py)
   people.ts          faces -> people (people.py); all of these: "Suggestion models in the browser" below
 ```
 
@@ -1513,8 +1515,8 @@ or the model is missing). Each is `{kind, id, groups, confidence, source, state:
   whose blend embeddings are ≥ `DUPLICATE` (0.93) alike, joined into clusters (connected pairs).
   `best` = the highest `sharp × (1 − clipped)` of the blend (`imaging.scan_quality`, the same measure
   as best-of-bracket), `scores` per slide. Accept (`keep` = any member, default `best`) skips the
-  others (`_learn` forgets them; X brings one back). An eyes-open score is **not** done: YuNet gives
-  five landmarks and no eyelid state, so it would need another model — out of scope.
+  others (`_learn` forgets them; X brings one back). With the eye model on, `best` also weighs how
+  open the eyes are ("Eyes open" below).
 - *split* (the signature merged two slides): in a stack, a scan whose best similarity to the scans
   before it is < `SPLIT` (0.80) → split before it (`server._split`, the ✂ endpoint's code).
 - *merge* (the signature split one slide): neighbours whose touching scans (last of one, first of
@@ -1610,6 +1612,80 @@ tags and look-alikes, bracket scans agree after normalising); look-alikes agains
 and replaced (albums, favourite, trash), pending → checked by the job, dismiss kept across checks,
 the date fallback, a slide without a date, off by default. `SS_REAL_CLIP=1` runs the real model:
 bracket scans ≥ `MERGE`, beach vs snow < `SPLIT` / `DUPLICATE`.
+
+### Eyes open (`eyes.py`, ROADMAP §1 "Eyes open")
+
+"Keep the best" of duplicates prefers the shot where nobody blinked. Opt-in: config `eyes_enabled`
+(Settings → "Prefer the shot with open eyes", shown under Suggest tags; it counts as on only with
+`insights_enabled`, since duplicates come from CLIP).
+
+**Model.** YuNet's five landmarks say nothing about eyelids, and the ready-made open / closed eye
+classifiers on Hugging Face are CC BY-NC, so: a permissively licensed landmark model plus the eye
+aspect ratio. Google's MediaPipe Face Landmarker face mesh (478 points incl. irises, Apache 2.0),
+as ONNX converted from the TFLite with unchanged weights by `senty-au/face_landmarks_detector-ONNX`
+(Apache 2.0; the card names the `.task` bundle and the TFLite's sha256; pinned revision, 4.9 MB,
+sha256 checked, `insights.fetch_files` into `<library>/models/face-landmarks-478/model.onnx`; NOTICE.md).
+Also looked at: `fernandotonon/QtMeshEditor-facemesh-onnx` (the same graph, Apache 2.0, less
+documented), `astaileyyoung/FaceMeshONNX` (says MIT for Google's weights: not taken),
+`py-feat/mp_facemesh_v2` (PyTorch only), Qualcomm AI Hub's MediaPipe-Face-Detection (Apache 2.0,
+but the ONNX zip is on S3 without CORS, so the browser couldn't fetch it), `qualcomm/HRNetFace`
+(MIT code, COFW-trained weights of unclear terms), InsightFace's 2d106 (non-commercial upstream).
+Input `[1, 256, 256, 3]` RGB 0..1, outputs the 478 × 3 points in crop pixels and a face-presence logit.
+
+**Measuring a slide** (`eyes.measure`, on the upright blend): `imaging.detect_faces` (as people and
+the rotation vote); `prominent` keeps faces ≥ 0.7, ≥ 4 % of the width and ≥ half the largest face's
+width, largest first, at most 8 (someone in the background doesn't decide). Each is cut out as
+MediaPipe cuts a detection: `crop_matrix` = a square 1.5 × the box's longer side around its centre,
+turned so YuNet's eye points are level, `cv2.warpAffine` (bilinear, border 0) of the 8-bit picture
+to 256 px. Presence < 0.5 → skipped. Per eye the EAR of Soukupová & Čech (2016),
+`(|p2 − p6| + |p3 − p5|) / (2 |p1 − p4|)` on mesh points 33/160/158/133/153/144 and
+362/385/387/263/373/380; per face the mean of the two (a ratio: the same in crop and picture pixels).
+Stored per slide next to its embedding: `embeddings.json` `slides[gid].eyes = {"model":
+"face-landmarks-478", "ear": [per face, 3 decimals]}` (`[]` = no faces that count; `error` when it
+failed, not retried). Raw EARs, so the thresholds can change without measuring again.
+
+**When.** `similar.record_slide` measures with the embedding (the blend is at hand) when `eyes.on()`;
+slides embedded before the model arrived are caught up by `similar.step` after the scans (`_todo`'s
+third answer, counted in `pending`), committed only if the slide's key still matches. Turning / re-
+stacking replaces the whole entry, so the eyes are measured again with it.
+
+**Scores.** `openness(ear)` ramps 0 at `CLOSED_EAR` 0.10 to 1 at `OPEN_EAR` 0.18; a slide's eyes =
+its least open face (`slide_open`, `None` without faces). `similar.best_of`: each member's quality
+as a share of the cluster's best × (1 − `EYES_WEIGHT` + `EYES_WEIGHT` × open), `EYES_WEIGHT` = 0.6;
+unmeasured / faceless members count as open, the first wins a tie. So a blink keeps 40 % and loses
+unless the open-eyed shot is under 40 % as sharp (best-of-bracket already drops scans under 60 %);
+without faces `best` is exactly as before. The suggestion gains `eyes` ({gid: open, 2 decimals},
+measured slides only) and `closed` (open < `CLOSED` 0.5, i.e. EAR < 0.14) when any member has faces;
+`scores` stay the plain quality. The card (`components/similar.tsx`) says "Eyes closed on slide 13"
+and why the preselected one: "(sharpest)", "(sharpest, eyes open)", "(eyes open)".
+
+**Measured** (scratch scripts; photos from Hugging Face kept out of the repo): 700 AI-generated
+portraits labelled open / closed (`MichalMlodawski/closed-open-eyes`, ODC-BY, 4 + 3 shards):
+closed EAR median 0.04, open never below 0.22 (median 0.33); with the shipped rules 378 of 398 closed
+faces are called closed (most of the 20 others wear sunglasses or squint) and 0 of 300 open ones.
+1648 real photos (LFW, `bitmind/lfw`): median 0.27; looked at by hand, those below 0.10 are closed
+or screwed up in a laugh, 0.12–0.18 mostly open but narrow (smiles, 250 px photos), which is why the
+ramp sits lower than the AI set alone suggests; 12 % are called closed. ~65 ms a photo in Python with
+YuNet, ~55 ms a face in onnxruntime-web (Node). Refining the crop from a first pass's own points (as
+MediaPipe tracks) changed the EARs by < 0.01 and was left out. **Not measured on real slide scans**:
+faded, grainy 35 mm portraits may read lower; the constants are at the top of `eyes.py`.
+
+**Browser version** (`standalone/eyes.ts`, op `eyes` in `engine.worker.ts`): the same file from the
+same pinned revision (source id `face-landmarks-478` for tests), YuNet as for people, `prominent` /
+`cropMatrix` / `faceEar` / `bestOf` ported, the crop through `people.warpAffine` (OpenCV 5's float
+bilinear warp) of the 8-bit RGB picture. Checked in Node on 90 of those photos (92 faces) with Python's
+own YuNet rows: every EAR within 0.001 (the rounding). Settings shows the same checkbox; the tray's
+`insights.missing` names the eye model while it isn't downloaded. Swift: not ported (no look-alikes there).
+
+**Tests.** `tests/test_eyes.py`: EAR on synthetic eyes (turned, scaled, degenerate), the mesh's two
+eyes, the ramp and a slide's least open face, the crop matrix (centre, eyes level, scale), `measure`
+with the detector and the landmark model replaced (which faces count, presence, no faces), `best_of`,
+duplicates in the payload with planted EARs (best, `eyes`, `closed`, another model ignored), the
+background catching up when the model arrives and re-measuring a turned slide, a failure stored, the
+settings / status / download. `frontend/src/standalone/eyes.test.ts` against `eyes.fixture.json`
+(`tests/make_eyes_fixture.py`: EAR, `crop_matrix`, OpenCV's 256 px warp, `prominent`, `best_of`,
+`similar.suggest` with eyes). `tests/web_flow.py` turns it on and waits for every slide's `eyes`
+(a stand-in file; the synthetic slides have no faces, so the network itself isn't run there).
 ## 5f. Places (ROADMAP §1 "Location recognition")
 
 `places.py`. A slide's place is `g["place"] = {"name", "lat", "lon", "country"}` (+ `"admin"`, the
