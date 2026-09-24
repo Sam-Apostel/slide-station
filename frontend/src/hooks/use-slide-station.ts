@@ -51,12 +51,16 @@ const fail = (e: unknown) => toast.error(e instanceof Error ? e.message : String
 export function useSlideStation() {
   const [state, setState] = React.useState<AppState | null>(null);
   const [session, setSession] = React.useState<SessionPayload | null>(null);
-  const [sessionId, setSessionId] = React.useState(storedSession);
+  // The tray asked for (the tray switcher shows it at once) and the tray on screen: while a tray
+  // loads the previous one's payload is still shown, so every URL and action pairs that payload
+  // with its own id, never with the tray still loading (whose id would 404 with its slides).
+  const [openId, setOpenId] = React.useState(storedSession);
+  const sessionId = session?.summary.id ?? openId;
   const [sel, setSel] = React.useState(0);
 
   // Refs so polling, debounced saves and key handlers always see the latest values.
-  const ref = React.useRef({ state, session, sessionId, sel });
-  ref.current = { state, session, sessionId, sel };
+  const ref = React.useRef({ state, session, sessionId, openId, sel });
+  ref.current = { state, session, sessionId, openId, sel };
   const lastJobKey = React.useRef("");
   // Slider moves the server hasn't confirmed yet, per slide. Kept on screen over any payload
   // until the save carrying them returns, and saved one request at a time so responses can't
@@ -88,8 +92,8 @@ export function useSlideStation() {
       if (!id) return;
       const { sessionId: prevId, session: prev, sel: prevSel } = ref.current;
       const keepId = keepSel && prevId === id ? prev?.groups[prevSel]?.id : undefined;
-      ref.current.sessionId = id;
-      setSessionId(id);
+      ref.current.openId = id;
+      setOpenId(id);
       try {
         localStorage.setItem("session", id);
       } catch {
@@ -101,7 +105,8 @@ export function useSlideStation() {
       } catch (e) {
         return fail(e);
       }
-      if (ref.current.sessionId !== id) return; // user switched trays meanwhile
+      if (ref.current.openId !== id) return; // user switched trays meanwhile
+      ref.current.sessionId = id;
       if (keepId) return applyPayload(p, keepId);
       const firstTodo = p.groups.findIndex(needsReview);
       ref.current.session = p;
@@ -121,7 +126,7 @@ export function useSlideStation() {
     }
     ref.current.state = s;
     setState(s);
-    const { sessionId: sid } = ref.current;
+    const { openId: sid } = ref.current;
     const j = s.job;
     const jobKey = j ? `${j.kind}:${j.started}:${j.finished}` : "";
     if (j?.finished && jobKey !== lastJobKey.current && lastJobKey.current) {
@@ -143,7 +148,7 @@ export function useSlideStation() {
   }, [loadSession]);
 
   React.useEffect(() => {
-    const { sessionId: sid } = ref.current;
+    const { openId: sid } = ref.current;
     refreshState().then(() => {
       if (sid && ref.current.state?.sessions.some((x) => x.id === sid)) loadSession(sid);
     });
@@ -886,6 +891,7 @@ export function useSlideStation() {
     state,
     session,
     sessionId,
+    openId,
     sel,
     current,
     refreshState,

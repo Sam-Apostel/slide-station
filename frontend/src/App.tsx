@@ -360,7 +360,7 @@ function SlideStationApp() {
           left={
             <TraySwitcher
               state={state}
-              sessionId={sessionId}
+              sessionId={app.openId}
               onSelectSession={(id) => app.loadSession(id)}
               onNewTray={() => openNew()}
             />
@@ -390,7 +390,7 @@ function SlideStationApp() {
         <TopBar
           panelToggles={toggles}
           state={state}
-          sessionId={sessionId}
+          sessionId={app.openId}
           onSelectSession={(id) => app.loadSession(id)}
           onNewTray={() => openNew()}
           onImport={openImport}

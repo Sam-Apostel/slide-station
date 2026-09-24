@@ -285,6 +285,22 @@ def main():
         pg.wait_for_timeout(2500)
         expect(pg.get_by_role("button", name="Card cleaned")).to_be_visible()
         pg.screenshot(path=SHOTS / "done.png")
+
+        # a new tray right after this one: the stage used to ask for this tray's previews and
+        # thumbnails under the new tray's id for a moment (404s) until the new tray had loaded
+        bad = []
+        pg.on("response", lambda r: r.status >= 400 and "/api/" in r.url and bad.append(f"{r.status} {r.url}"))
+        pg.on("requestfailed", lambda r: "/api/" in r.url and bad.append(f"failed {r.url}"))
+        pg.get_by_role("button", name="New tray").click()
+        dlg = pg.get_by_role("dialog")
+        dlg.get_by_label("Name", exact=True).fill("Second tray")
+        dlg.get_by_label("Name", exact=True).press("Enter")
+        pg.wait_for_function(
+            "document.querySelector('select[aria-label=Tray]')?.selectedOptions[0]?.text.startsWith('Second tray')"
+        )
+        pg.wait_for_timeout(2500)
+        assert not bad, bad
+        print("new tray: no failed requests")
         assert not errors, errors
         print("no console errors")
         browser.close()
