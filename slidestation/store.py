@@ -199,7 +199,10 @@ def render_key(g: dict) -> str:
     # settings still at their neutral value are left out, so slides uploaded before a setting
     # existed (curves, straighten, crop) don't become "changed"
     params = {k: v for k, v in g["params"].items() if not (k in NEUTRAL_EXTRAS and v == NEUTRAL_EXTRAS[k])}
-    k = json.dumps([active_scans(g), g["rotation"], params], sort_keys=True)
+    k = [active_scans(g), g["rotation"], params]
+    if g.get("mirror"):  # left out when off, like the neutral settings above
+        k.append("mirror")
+    k = json.dumps(k, sort_keys=True)
     return hashlib.sha1(k.encode()).hexdigest()[:12]
 
 
@@ -207,7 +210,7 @@ def tone_key(g: dict) -> str:
     """Identifies the tone curve's input (what its histogram shows): scans, restore, trim, geometry."""
     p = g["params"]
     k = json.dumps([active_scans(g), g["rotation"], p.get("strength"), p.get("trim"), p.get("angle", 0.0),
-                    p.get("crop")])
+                    p.get("crop"), bool(g.get("mirror"))])
     return hashlib.sha1(k.encode()).hexdigest()[:12]
 
 

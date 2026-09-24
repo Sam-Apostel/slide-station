@@ -385,6 +385,7 @@ export const SHORTCUTS: [React.ReactNode, string][] = [
     </>,
     "Rotate right / left",
   ],
+  [<Kbd>H</Kbd>, "Mirror (scanned the wrong way round)"],
   [
     <>
       <Kbd>B</Kbd> (hold)

@@ -125,6 +125,20 @@ def rotate_arr(a: np.ndarray, rot: int) -> np.ndarray:
     return np.ascontiguousarray(np.rot90(a, k))
 
 
+def orient(a: np.ndarray, rot: int, mirror: bool = False) -> np.ndarray:
+    """A slide's frame: mirrored left-right first (a slide scanned the wrong way round), then rotated."""
+    return rotate_arr(a[:, ::-1] if mirror else a, rot)
+
+
+def mirror_params(p: Params) -> Params:
+    """The same frame mirrored left-right: straighten turns the other way, the crop flips across."""
+    p.angle = -p.angle if p.angle else 0.0
+    if p.crop:
+        l, t, r, b = p.crop
+        p.crop = [round(1 - r, 4), t, round(1 - l, 4), b]
+    return p
+
+
 def face_votes(rgb: np.ndarray) -> dict[int, float]:
     """Sum of confident face scores found at each candidate rotation."""
     global _detector

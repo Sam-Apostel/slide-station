@@ -67,6 +67,7 @@ export function useDesktop(
         case "prev": return a.select(a.sel - 1);
         case "review": return a.review();
         case "rotate": return a.rotate(typeof arg === "number" ? arg : 90);
+        case "mirror": return a.mirror();
         case "copy-prev": return a.copyPrev();
         case "reset-colour": return a.resetColour();
         case "skip": return a.toggleSkip();

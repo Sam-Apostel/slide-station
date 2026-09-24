@@ -32,6 +32,8 @@ export type Group = {
   can_undo: boolean;
   can_redo: boolean;
   rotation: number;
+  /** Scanned the wrong way round: shown mirrored left-right. */
+  mirror: boolean;
   rot_reason: string;
   params: Params;
   params_source: string;

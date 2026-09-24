@@ -323,7 +323,7 @@ def preview(s: Session, gid: str, size: int, before: bool = False, uncropped: bo
         h, w = a.shape[:2]
         f = 480 / max(h, w)
         a = np.asarray(Image.fromarray((a * 255).astype(np.uint8)).resize((int(w * f), int(h * f)), Image.BILINEAR)).astype(np.float32) / 255
-    a = im.rotate_arr(a, g["rotation"])
+    a = im.orient(a, g["rotation"], g.get("mirror", False))
     p = im.Params.from_dict(g["params"])
     # "before" is the untouched scan, but framed like the developed photo so the two line up
     a = im.before_view(a, p, crop=not uncropped) if before else im.develop(a, p, crop=not uncropped)
@@ -398,7 +398,7 @@ def render_export(sid: str, gid: str, quality: int) -> Path | None:
     scans = active_scans(g)
     with _export_lock:  # full-resolution blends take a few GB: never run two at once
         a = im.fuse([im.load_u8(str(s.original_path(x))) for x in scans])
-        a = im.rotate_arr(a, g["rotation"])
+        a = im.orient(a, g["rotation"], g.get("mirror", False))
         a = im.develop(a, im.Params.from_dict(g["params"]))
         out = Image.fromarray((a * 255 + 0.5).astype(np.uint8))
         del a

@@ -362,6 +362,7 @@ function buildMenu() {
         { type: "separator" },
         { label: "Rotate Right", ...hint("R"), enabled: s.hasSlides, click: cmd("rotate", 90) },
         { label: "Rotate Left", ...hint("Shift+R"), enabled: s.hasSlides, click: cmd("rotate", -90) },
+        { label: "Mirror", ...hint("H"), enabled: s.hasSlides, click: cmd("mirror") },
         { type: "separator" },
         { label: "Copy Colour from Previous", ...hint("C"), enabled: s.hasSlides, click: cmd("copy-prev") },
         { label: "Reset Colour", ...hint("0"), enabled: s.hasSlides, click: cmd("reset-colour") },

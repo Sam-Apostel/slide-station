@@ -100,6 +100,7 @@ def _session_payload(s: Session) -> dict:
     for i, g in enumerate(d["groups"]):
         groups.append({
             **{k: g[k] for k in ("id", "scans", "excluded", "rotation", "rot_reason", "params", "reviewed", "skip")},
+            "mirror": bool(g.get("mirror")),
             "params_source": g.get("params_source", ""),
             "auto_excluded": g.get("auto_excluded", {}),  # scan -> "blurry" / "clipped"
             # original scans deleted after upload: read-only, Immich has the final version
@@ -168,7 +169,7 @@ COALESCE_S = 1.5  # edits to the same settings closer together than this are one
 
 def _snapshot(g: dict) -> dict:
     return {"params": json.loads(json.dumps(g["params"])), "rotation": g["rotation"],
-            "rot_reason": g.get("rot_reason", ""), "params_source": g.get("params_source", "")}
+            "mirror": bool(g.get("mirror")), "rot_reason": g.get("rot_reason", ""), "params_source": g.get("params_source", "")}
 
 
 def _remember(g: dict, what: str) -> None:
@@ -184,7 +185,7 @@ def _remember(g: dict, what: str) -> None:
 
 
 def _restore(g: dict, snap: dict) -> None:
-    g["params"], g["rotation"] = snap["params"], snap["rotation"]
+    g["params"], g["rotation"], g["mirror"] = snap["params"], snap["rotation"], snap.get("mirror", False)
     g["rot_reason"], g["params_source"] = snap.get("rot_reason", ""), snap.get("params_source", "")
 
 
@@ -228,6 +229,8 @@ def _editable(g: dict) -> None:
 def _edit_label(body: dict) -> str | None:
     if "rotation" in body:
         return "rotation"
+    if "mirror" in body:
+        return "mirror"
     if "params" in body:
         return "params:" + ",".join(sorted(body["params"]))
     return None
@@ -246,6 +249,12 @@ def patch_group(sid: str, gid: str, body: dict = Body(...)):
         if "rotation" in body:
             g["rotation"] = int(body["rotation"]) % 360
             g["rot_reason"] = "manual"
+        if "mirror" in body and bool(body["mirror"]) != bool(g.get("mirror")):
+            # flip what's on screen left-right: the scan is mirrored before it's rotated, so the
+            # rotation, straighten and crop all turn the other way to keep the photo in place
+            g["mirror"] = bool(body["mirror"])
+            g["rotation"] = -g["rotation"] % 360
+            g["params"] = im.mirror_params(Params.from_dict(g["params"])).to_dict()
         if "params" in body:
             g["params"] = Params.from_dict({**g["params"], **body["params"]}).to_dict()
             g["params_source"] = "manual"
@@ -280,6 +289,7 @@ def split_group(sid: str, gid: str, body: dict = Body(...)):
             return _session_payload(s)
         tail = s.new_group(g["scans"][at:], g["rotation"], g["rot_reason"])
         tail["params"] = dict(g["params"])
+        tail["mirror"] = bool(g.get("mirror"))
         tail["excluded"] = [x for x in g.get("excluded", []) if x in tail["scans"]]
         g["scans"] = g["scans"][:at]
         g["excluded"] = [x for x in g.get("excluded", []) if x in g["scans"]]
@@ -392,7 +402,7 @@ def pick_neutral(sid: str, gid: str, body: dict = Body(...)):
     g = s.group(gid)
     _editable(g)
     p = Params.from_dict(g["params"])
-    a = im.rotate_arr(wf.fused_proxy(s, g), g["rotation"])  # the preview's frame
+    a = im.orient(wf.fused_proxy(s, g), g["rotation"], g.get("mirror", False))  # the preview's frame
     warmth, tint = im.neutral_balance(a, p, float(body["x"]), float(body["y"]))
     with lock:
         s = _session(sid)
