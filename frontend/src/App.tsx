@@ -139,6 +139,10 @@ function SlideStationApp() {
     });
 
   const busy = !!state?.job && !state.job.finished;
+  // the Python server in a browser tab (not the desktop app): folders are uploaded to it (lib/upload.ts)
+  const uploads = !standalone && !desktop;
+  const hosted = !!state?.server?.accounts;
+  const canCapture = !!state?.camera?.cameras.length;
   const hasTrays = !!state?.sessions.length;
   const source = state?.sources.find((x) => x.new > 0) ?? state?.sources[0];
 
@@ -147,8 +151,9 @@ function SlideStationApp() {
   const openImmich = () =>
     state?.config.has_key && state.config.immich_url ? setImmichOpen(true) : setSettingsOpen(true);
   const importFolder = async (folder?: string) => {
-    if (standalone) {
-      // the browser version: pick a folder, then import it like a card
+    if (standalone || (uploads && folder === undefined)) {
+      // the browser version: pick a folder, then import it like a card; a server in a browser tab
+      // gets the folder uploaded first
       const src = await app.addSource("pick");
       return src ? openImport(src) : undefined;
     }
@@ -222,7 +227,7 @@ function SlideStationApp() {
 
   /** Import this tray's scans again: from the connected card, else a folder you pick (desktop). */
   const reimport = async () => {
-    if (standalone) {
+    if (standalone || hosted) {
       const picked = await app.addSource("pick");
       return picked ? app.startImport(sessionId, picked.path) : undefined;
     }
@@ -230,7 +235,10 @@ function SlideStationApp() {
     if (src) return app.startImport(sessionId, src.path);
     const path = await desktop?.pickFolder({ title: "Folder with this tray's scans", buttonLabel: "Import" });
     if (path) return app.startImport(sessionId, path);
-    if (!desktop) toast("Connect the scanner (or use the desktop app to pick a folder) to re-import");
+    if (uploads) {
+      const picked = await app.addSource("pick");
+      if (picked) return app.startImport(sessionId, picked.path);
+    }
   };
 
   /** A suggestion accepted on one slide: offer it to the run of neighbours ("Apply 'beach' to 12–31?"). */
@@ -322,7 +330,7 @@ function SlideStationApp() {
   useDesktop(app, panels, handlers);
   const dropping = useFolderDrop(
     (path) => importFolder(path),
-    standalone ? (dt) => void app.addSource(dt).then((src) => src && openImport(src)) : undefined,
+    standalone || uploads ? (dt) => void app.addSource(dt).then((src) => src && openImport(src)) : undefined,
   );
 
   const toggles = session ? (
@@ -363,6 +371,7 @@ function SlideStationApp() {
               onImport={openImport}
               onEject={(src) => app.eject(src.path)}
               onChooseFolder={() => importFolder()}
+              onCapture={canCapture && session ? app.capture : undefined}
             />
           }
           right={
@@ -387,6 +396,7 @@ function SlideStationApp() {
           onImport={openImport}
           onEject={(src) => app.eject(src.path)}
           onChooseFolder={() => importFolder()}
+          onCapture={canCapture && session ? app.capture : undefined}
           onHelp={() => setHelpOpen(true)}
           onSettings={() => setSettingsOpen(true)}
           onStats={views.stats}
@@ -396,7 +406,7 @@ function SlideStationApp() {
 
       <main className="flex min-h-0 flex-1">
         {!state ? null : !hasTrays ? (
-          <EmptyState source={source} onImport={openImport} onImportFolder={() => importFolder()} />
+          <EmptyState source={source} onImport={openImport} onImportFolder={() => importFolder()} hosted={hosted} />
         ) : session ? (
           <ResizablePanelGroup
             key={panelIds.join()}
@@ -585,7 +595,7 @@ function SlideStationApp() {
         preferSource={newTray.source}
         preferFolder={newTray.folder}
         onCreate={app.createSession}
-        onChooseFolder={standalone ? () => app.addSource("pick") : undefined}
+        onChooseFolder={standalone || uploads ? () => app.addSource("pick") : undefined}
         onFromImmich={openImmich}
       />
       <HelpDialog open={helpOpen} onOpenChange={setHelpOpen} />
@@ -648,7 +658,11 @@ function SlideStationApp() {
           <div className="rounded-lg border border-primary/60 bg-(--ss-panel) px-6 py-4 text-center shadow-2xl">
             <div className="text-[14px] font-semibold">Drop a folder of scans</div>
             <div className="mt-1 text-[12px] text-muted-foreground">
-              {standalone ? "Its scans are imported into a tray" : "It becomes a new tray"}
+              {standalone
+                ? "Its scans are imported into a tray"
+                : uploads
+                  ? "It is uploaded, then imported"
+                  : "It becomes a new tray"}
             </div>
           </div>
         </div>
@@ -719,6 +733,11 @@ function useKeyboard(
       const k = e.key;
       if (k === "?") {
         help();
+        e.preventDefault();
+        return;
+      }
+      if ((k === "p" || k === "P") && a.state?.camera?.cameras.length && a.session) {
+        a.capture(); // camera rig mode: tethered capture into this tray
         e.preventDefault();
         return;
       }

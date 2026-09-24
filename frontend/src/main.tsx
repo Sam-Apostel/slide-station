@@ -1,6 +1,7 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import App from "./App";
+import { AccountGate } from "./components/sign-in";
 import { standalone } from "./lib/api";
 import "./index.css";
 import "./theme.css"; // Slide Station skin; must load after the ProUI theme
@@ -19,9 +20,12 @@ if (standalone) {
     ),
   );
 } else {
+  // a hosted server with accounts asks you to sign in first (components/sign-in.tsx)
   root.render(
     <StrictMode>
-      <App />
+      <AccountGate>
+        <App />
+      </AccountGate>
     </StrictMode>,
   );
 }

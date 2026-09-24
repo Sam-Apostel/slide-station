@@ -23,14 +23,27 @@ const WEB_STEPS = [
   <>Send them to your Immich, or save the finished JPEGs to disk.</>,
 ];
 
+// A hosted server (accounts): the scans come from this browser, the work happens on the server.
+const HOSTED_STEPS = [
+  <>
+    Drop a folder of scans on this window (the scanner's card, or any folder of JPEGs), or choose one. It is uploaded to{" "}
+    <b>your Slide Station server</b>, into your own library.
+  </>,
+  ...WEB_STEPS.slice(1, 3),
+  <>Send them to your Immich.</>,
+];
+
 export function EmptyState({
   source,
   onImport,
   onImportFolder,
+  hosted = false,
 }: {
   source: Source | undefined;
   onImport: (src: Source) => void;
   onImportFolder: () => void;
+  /** On a hosted server (accounts): folders come from the browser, there's no scanner to wait for. */
+  hosted?: boolean;
 }) {
   return (
     <div className="grid flex-1 place-items-center bg-[var(--pro-canvas)] p-6">
@@ -42,14 +55,14 @@ export function EmptyState({
           <EmptyTitle className="text-[18px]">Scan, review, upload</EmptyTitle>
           <EmptyDescription>
             <ol className="mt-2 list-decimal space-y-1 pl-5 text-left leading-relaxed text-muted-foreground [&_b]:text-foreground/90">
-              {(standalone ? WEB_STEPS : STEPS).map((s, i) => (
+              {(standalone ? WEB_STEPS : hosted ? HOSTED_STEPS : STEPS).map((s, i) => (
                 <li key={i}>{s}</li>
               ))}
             </ol>
           </EmptyDescription>
         </EmptyHeader>
         <EmptyContent>
-          {standalone && !source ? (
+          {(standalone || hosted) && !source ? (
             <Button className="bg-primary text-primary-foreground" onClick={onImportFolder}>
               <FolderInput /> Choose a folder of scans
             </Button>

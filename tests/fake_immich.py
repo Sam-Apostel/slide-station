@@ -2,7 +2,8 @@
 
 Set MOCK_IMMICH_MAJOR=1|2|3 to test the version-dependent upload fields (v1/v2 require
 deviceAssetId + deviceId, v3 rejects them). MOCK_IMMICH_CORS=1 lets other origins in (the browser
-version calls Immich from the page).
+version calls Immich from the page). MOCK_IMMICH_USERS=ann-key,bob-key adds users with those API keys
+(accounts mode: tests/hosted_flow.py).
 
 Beyond uploads it keeps what the round trip needs: assets with their bytes, checksum, favourite,
 trash flag and the description / date / GPS Immich would read from the EXIF (`PUT /assets/{id}`
@@ -51,8 +52,15 @@ async def deny(request: Request, call_next):
     return await call_next(request)
 
 
+# API key -> its user (/users/me); accounts mode (tests/test_hosted.py) signs in several of them
+USERS = {KEY: {"id": "5b7c3a0e-0000-4000-8000-000000000001", "name": "Test user", "email": "test@example.com"}}
+for _n, _k in enumerate(filter(None, os.environ.get("MOCK_IMMICH_USERS", "").split(",")), 2):  # more keys = users
+    USERS[_k] = {"id": f"5b7c3a0e-0000-4000-8000-{_n:012d}", "name": _k.split("-")[0].title(),
+                 "email": f"{_k}@example.com"}
+
+
 def auth(k):
-    if k != KEY:
+    if k not in USERS:
         raise HTTPException(401, "bad key")
 
 
@@ -120,7 +128,7 @@ def version():
 @app.get("/api/users/me")
 def me(x_api_key: str = Header(None)):
     auth(x_api_key)
-    return {"name": "Test user", "email": "test@example.com"}
+    return USERS[x_api_key]
 
 
 # ---------------------------------------------------------------- albums

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import base64
+import contextvars
 import hashlib
 import io
 import os
@@ -10,6 +11,7 @@ import subprocess
 import sys
 import threading
 import time
+import uuid
 from collections import OrderedDict
 from datetime import datetime
 from pathlib import Path
@@ -22,9 +24,12 @@ from .imaging import Params
 from . import filmstock, learning
 from . import people
 from . import places
+from . import raw
+from . import tether
+from . import uploads
 from .immich import Immich, ImmichError
-from .store import (Session, active_scans, add_to_index, group_status, imported_index, load_config, lock,
-                    meta_key, parse_date, render_key, sha1_file, slide_dates, slugify, statuses)
+from .store import (Session, active_scans, add_to_index, as_home, group_status, imported_index, library, load_config,
+                    lock, meta_key, parse_date, render_key, sha1_file, slide_dates, slugify, statuses, user_home)
 
 VOLUMES = Path(os.environ.get("SLIDESTATION_VOLUMES", "/Volumes"))
 SCANNER_MODELS = {"RODFS50"}  # Kodak Slide N Scan
@@ -47,17 +52,47 @@ class Job:
         return {k: getattr(self, k) for k in ("kind", "session", "total", "done", "message", "error", "finished", "started")}
 
 
-current_job: Job | None = None
+# One job at a time per library: the single user's, or each account's own (accounts mode). Read and
+# set as `wf.current_job` / `wf.active_session` from outside (module properties at the end of this
+# file); inside this module use job_now() / the dicts.
+_jobs: dict[str, Job | None] = {}
+_active: dict[str, str | None] = {}  # the tray each library has open (the background renderer's)
+_homes: dict[str, Path | None] = {"None": None}  # key -> the home to act as (None: the single user)
 _job_lock = threading.Lock()
 
 
+def _key() -> str:
+    h = user_home()
+    _homes.setdefault(str(h), h)
+    return str(h)
+
+
+def homes() -> list[Path | None]:
+    """Every library in use since the server started (the single user's, or each account's)."""
+    return list(_homes.values())
+
+
+def job_now() -> Job | None:
+    """The current library's job (running or last finished)."""
+    return _jobs.get(_key())
+
+
+def any_job_running() -> bool:
+    """A job runs in any library: full-resolution work waits (memory, §3)."""
+    return any(j and not j.finished for j in list(_jobs.values()))
+
+
+def set_active(sid: str | None) -> None:
+    _active[_key()] = sid
+
+
 def start_job(kind: str, session: str | None, fn, *args) -> Job:
-    global current_job
     with _job_lock:
-        if current_job and not current_job.finished:
-            raise RuntimeError(f"Busy with {current_job.kind} - wait for it to finish.")
+        cur = job_now()
+        if cur and not cur.finished:
+            raise RuntimeError(f"Busy with {cur.kind} - wait for it to finish.")
         job = Job(kind, session)
-        current_job = job
+        _jobs[_key()] = job
 
     def run():
         try:
@@ -70,7 +105,8 @@ def start_job(kind: str, session: str | None, fn, *args) -> Job:
         finally:
             job.finished = True
 
-    threading.Thread(target=run, daemon=True).start()
+    # the job acts as whoever started it (store.as_home): same library, same config
+    threading.Thread(target=contextvars.copy_context().run, args=(run,), daemon=True).start()
     return job
 
 
@@ -78,6 +114,9 @@ def start_job(kind: str, session: str | None, fn, *args) -> Job:
 
 
 def exif_info(path: str) -> dict:
+    if raw.is_raw(path):
+        m = raw.metadata(path)
+        return {"make": m.get("make", ""), "model": m.get("model", ""), "datetime": m.get("datetime", "")}
     try:
         ex = Image.open(path).getexif()
         return {"make": str(ex.get(271, "")).strip(), "model": str(ex.get(272, "")).strip(), "datetime": str(ex.get(306, ""))}
@@ -85,20 +124,32 @@ def exif_info(path: str) -> dict:
         return {"make": "", "model": "", "datetime": ""}
 
 
-def list_jpegs(root: Path) -> list[Path]:
+def scan_exts() -> tuple[str, ...]:
+    """What imports as a scan: JPEGs, and camera RAW files when rawpy is installed (raw.py)."""
+    return JPG + raw.RAW_EXTS if raw.available() else JPG
+
+
+def list_scans(root: Path) -> list[Path]:
+    """The scans under root. A camera shooting RAW + JPEG writes both: the RAW is the scan then, and
+    the JPEG next to it with the same name is left out (it would be a second, 8-bit copy)."""
+    exts = scan_exts()
     out = []
     for dirpath, dirnames, files in os.walk(root):
         dirnames[:] = [d for d in dirnames if not d.startswith(".")]
-        for f in files:
-            if f.lower().endswith(JPG) and not f.startswith("._"):
-                out.append(Path(dirpath) / f)
+        files = [f for f in files if f.lower().endswith(exts) and not f.startswith("._")]
+        raws = {Path(f).stem.lower() for f in files if raw.is_raw(f)}
+        out += [Path(dirpath) / f for f in files if raw.is_raw(f) or Path(f).stem.lower() not in raws]
     return sorted(out)
 
 
+list_jpegs = list_scans  # its name from before RAW files
+
+
 def detect_sources() -> list[dict]:
-    """Mounted volumes that look like a camera/scanner card (have a DCIM folder with JPEGs)."""
-    found = []
-    if not VOLUMES.exists():
+    """Mounted volumes that look like a camera/scanner card (have a DCIM folder with JPEGs), and
+    folders uploaded from the browser that aren't imported yet (uploads.py)."""
+    found = uploads.sources()
+    if user_home() is not None or not VOLUMES.exists():  # accounts don't see the server's drives
         return found
     idx = imported_index()
     for vol in sorted(VOLUMES.iterdir()):
@@ -106,7 +157,7 @@ def detect_sources() -> list[dict]:
         try:
             if not dcim.is_dir():
                 continue
-            files = list_jpegs(dcim)
+            files = list_scans(dcim)
         except OSError:
             continue
         if not files:
@@ -151,15 +202,18 @@ def _taken(path: Path) -> str:
     return dt or datetime.fromtimestamp(path.stat().st_mtime).strftime("%Y:%m:%d %H:%M:%S")
 
 
-def import_scans(job: Job, sid: str, source: str) -> None:
+def import_scans(job: Job, sid: str, source: str, label: str | None = None) -> None:
+    """Copy the new scans under `source` into the tray, verified, and group them into slides.
+    `label` names the source in the tray instead of the folder (uploads, camera captures: folders
+    that are deleted once imported)."""
     s = Session(sid)
     root = Path(source).expanduser()
     if not root.exists():
         raise RuntimeError(f"{root} does not exist")
     # only a card itself (a mounted volume with DCIM at its root) may ever be cleaned up afterwards;
-    # folders - including ones on external drives - are never deleted from
-    removable = root.parent == VOLUMES and (root / "DCIM").is_dir()
-    files = list_jpegs(root / "DCIM" if (root / "DCIM").is_dir() else root)
+    # folders - including ones on external drives, uploads and captures - are never deleted from
+    removable = label is None and root.parent == VOLUMES and (root / "DCIM").is_dir()
+    files = list_scans(root / "DCIM" if (root / "DCIM").is_dir() else root)
     files.sort(key=lambda p: (_taken(p), p.name))
     idx = imported_index()
     job.total = len(files)
@@ -184,15 +238,18 @@ def import_scans(job: Job, sid: str, source: str) -> None:
             fp_index[_quick_fp(f)] = sha
             continue
         scan_id = f"{f.stem}_{sha[:6]}"
-        dest = s.originals / f"{scan_id}.jpg"
+        dest = s.originals / (scan_id + (f.suffix.lower() if raw.is_raw(f) else ".jpg"))
         shutil.copy2(f, dest)
         if sha1_file(dest) != sha:
             dest.unlink(missing_ok=True)
             raise RuntimeError(f"Copy of {f.name} did not verify - card or disk problem?")
         records[scan_id] = {
-            "file": dest.name, "source": str(f), "source_root": str(root), "removable": removable,
+            "file": dest.name, "source": str(f) if label is None else f"{label}/{f.name}",
+            "source_root": label or str(root), "removable": removable,
             "size": f.stat().st_size, "sha1": sha, "taken": _taken(f), "source_deleted": False,
         }
+        if raw.is_raw(f):  # what the camera says about the shot (make, model, exposure)
+            records[scan_id]["camera"] = raw.metadata(f)
         new_ids.append(scan_id)
         fp_index[_quick_fp(f)] = sha
         sha_index[sha] = sid
@@ -268,12 +325,35 @@ def import_scans(job: Job, sid: str, source: str) -> None:
         if people_on():
             _faces_quietly(sid, last["id"] if extend else g["id"])
         job.done += 1
-    update_session(sid, lambda fresh: fresh.log(f"Imported {len(new_ids)} scans from {root} ({skipped} already imported)"))
+    update_session(sid, lambda fresh: fresh.log(f"Imported {len(new_ids)} scans from {label or root} ({skipped} already imported)"))
     if restored:
         update_session(sid, sync_locks)
     job.message = f"Imported {len(new_ids)} scans into {len(idx_groups)} slides" + (
         f" ({skipped} were already imported)" if skipped else "") + (
         f"; restored {restored} deleted originals, those slides can be edited again" if restored else "")
+
+
+def import_upload(job: Job, sid: str, upload_id: str) -> None:
+    """Import a folder uploaded from the browser (uploads.py) like any folder, then let the
+    staging copy go: the tray has its own verified copies."""
+    root, name = uploads.folder(upload_id)
+    import_scans(job, sid, str(root), label=f"upload:{name}")
+    uploads.delete(upload_id)
+
+
+def capture_into(job: Job, sid: str, port: str | None = None) -> None:
+    """Tethered capture (camera rig mode): the camera takes a picture, gphoto2 downloads it (RAW,
+    or RAW + JPEG), and it is imported into the tray like a scan from the card — so a bracket shot
+    one exposure at a time joins the slide before it, as a scanner's brackets do."""
+    job.message = "Taking a picture"
+    shot = library() / "captures" / (time.strftime("%Y%m%d-%H%M%S-") + uuid.uuid4().hex[:4])
+    try:
+        files = tether.capture(shot, port)
+        if not files:
+            raise RuntimeError("The camera took no picture (is it in PC / remote mode?)")
+        import_scans(job, sid, str(shot), label="camera")
+    finally:
+        shutil.rmtree(shot, ignore_errors=True)
 
 
 def straighten_to_mount(g: dict) -> bool:
@@ -311,10 +391,11 @@ _render_lock = threading.Lock()
 def fused_proxy(s: Session, g: dict) -> np.ndarray:
     scans = active_scans(g)
     key = s.id + ":" + ",".join(scans)
+    mem = str(s.dir) + ":" + key  # tray ids are only unique within one library
     with _render_lock:
-        if key in _fused_cache:
-            _fused_cache.move_to_end(key)
-            return _fused_cache[key]
+        if mem in _fused_cache:
+            _fused_cache.move_to_end(mem)
+            return _fused_cache[mem]
     f = s.cache / ("fused_" + hashlib.sha1(key.encode()).hexdigest()[:12] + ".jpg")
     if f.exists():
         a = im.load_rgb(str(f))
@@ -327,7 +408,7 @@ def fused_proxy(s: Session, g: dict) -> np.ndarray:
         a = im.fuse([im.load_rgb(str(s.cache / f"{x}.proxy.jpg")) for x in scans])
         f.write_bytes(im.to_jpeg_bytes(a, 95))
     with _render_lock:
-        _fused_cache[key] = a
+        _fused_cache[mem] = a
         while len(_fused_cache) > 48:
             _fused_cache.popitem(last=False)
     return a
@@ -440,12 +521,13 @@ def render_export(sid: str, gid: str, quality: int) -> Path | None:
     rkey, ekey = render_key(g), export_key(s, g, index)
     scans = active_scans(g)
     with _export_lock:  # full-resolution blends take a few GB: never run two at once
-        a = im.fuse([im.load_u8(str(s.original_path(x))) for x in scans])
+        a = im.fuse([im.load_full(str(s.original_path(x))) for x in scans])
         a = im.rotate_arr(a, g["rotation"])
         a = im.develop(a, im.Params.from_dict(g["params"]))
         out = Image.fromarray((a * 255 + 0.5).astype(np.uint8))
         del a
-    exif = Image.open(s.original_path(scans[0])).getexif()
+    first = s.original_path(scans[0])
+    exif = raw.exif_for_export(first) if raw.is_raw(first) else Image.open(first).getexif()
     exif[274] = 1  # orientation: pixels are already upright
     exif[305] = "Slide Station"
     if g.get("caption"):
@@ -497,7 +579,7 @@ def full_image(s: Session, gid: str) -> np.ndarray:
     lock (a 5-scan stack peaks around 3 GB). Raises FileNotFoundError when the originals are gone
     and there is no export to show."""
     g = s.group(gid)
-    key = (s.id, gid, render_key(g))
+    key = (str(s.dir), gid, render_key(g))
     with _full_lock:  # concurrent tile requests wait for one render instead of starting their own
         if _full.get("key") == key:
             return _full["img"]
@@ -509,7 +591,7 @@ def full_image(s: Session, gid: str) -> np.ndarray:
             raise FileNotFoundError("The original scans were deleted after upload: no full resolution to zoom into.")
         else:
             with _export_lock:
-                f = im.fuse([im.load_u8(str(s.original_path(x))) for x in active_scans(g)])
+                f = im.fuse([im.load_full(str(s.original_path(x))) for x in active_scans(g)])
                 f = im.develop(im.rotate_arr(f, g["rotation"]), im.Params.from_dict(g["params"]))
                 a = (f * 255 + 0.5).astype(np.uint8)
                 del f
@@ -529,28 +611,36 @@ def full_tile(s: Session, gid: str, col: int, row: int) -> bytes:
 
 
 # background renderer: renders reviewed slides while you keep reviewing, so uploading is quick
-active_session: str | None = None
+def libraries() -> list[tuple[Path | None, str | None]]:
+    """(home, open tray) of every library someone has opened a tray in since the server started."""
+    return [(_homes.get(k), sid) for k, sid in list(_active.items())]
+
+
+def _render_next(sid: str) -> None:
+    s = Session(sid)
+    for i, g in enumerate(s.data["groups"]):
+        if (g.get("reviewed") and not g.get("skip") and group_status(g) != "uploaded"
+                and not export_fresh(s, g, i) and not originals_missing(s, g)):
+            render_export(s.id, g["id"], int(load_config().get("jpeg_quality", 95)))
+            break
+    else:  # nothing to render: catch up on faces (slides turned since, trays from before)
+        if people_on():
+            todo = faces_pending([s.id])
+            if todo:
+                _faces_quietly(*todo[0])
 
 
 def _background_renderer():
     while True:
         time.sleep(1.5)
-        try:
-            if not active_session or (current_job and not current_job.finished):
+        for home, sid in libraries():  # each library's open tray (accounts: one per user)
+            if not sid or any_job_running():
                 continue
-            s = Session(active_session)
-            for i, g in enumerate(s.data["groups"]):
-                if (g.get("reviewed") and not g.get("skip") and group_status(g) != "uploaded"
-                        and not export_fresh(s, g, i) and not originals_missing(s, g)):
-                    render_export(s.id, g["id"], int(load_config().get("jpeg_quality", 95)))
-                    break
-            else:  # nothing to render: catch up on faces (slides turned since, trays from before)
-                if people_on():
-                    todo = faces_pending([s.id])
-                    if todo:
-                        _faces_quietly(*todo[0])
-        except Exception as e:  # never let the helper thread die
-            print("background render:", e)
+            try:
+                with as_home(home):
+                    _render_next(sid)
+            except Exception as e:  # never let the helper thread die
+                print("background render:", e)
 
 
 threading.Thread(target=_background_renderer, daemon=True).start()
@@ -1238,3 +1328,30 @@ def cleanup_card(job: Job, sid: str) -> None:
     update_session(sid, commit)
     job.message = f"Deleted {deleted} scans from the card" + (f", {missing} were already gone" if missing else "") + (
         f", left {mismatched} that didn't match" if mismatched else "")
+
+
+# --------------------------------------------------------------------------- per-library globals
+
+
+class _Workflow(type(sys)):
+    """`wf.current_job` and `wf.active_session` as they always were, but of the library the caller
+    acts as (store.as_home): each account has its own job and open tray."""
+
+    @property
+    def current_job(self) -> Job | None:
+        return job_now()
+
+    @current_job.setter
+    def current_job(self, job: Job | None) -> None:
+        _jobs[_key()] = job
+
+    @property
+    def active_session(self) -> str | None:
+        return _active.get(_key())
+
+    @active_session.setter
+    def active_session(self, sid: str | None) -> None:
+        set_active(sid)
+
+
+sys.modules[__name__].__class__ = _Workflow

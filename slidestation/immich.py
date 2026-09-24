@@ -58,9 +58,12 @@ class Immich:
         return f'{v.get("major")}.{v.get("minor")}.{v.get("patch")}'
 
     def whoami(self) -> str:
-        r = self._check(self.client.get(self.base + "/users/me"))
-        j = r.json()
+        j = self.me()
         return j.get("name") or j.get("email") or "?"
+
+    def me(self) -> dict:
+        """The key's user: {"id", "name", "email", ...} (every version has id, name and email)."""
+        return self._check(self.client.get(self.base + "/users/me")).json()
 
     @property
     def major(self) -> int:

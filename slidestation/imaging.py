@@ -13,6 +13,8 @@ import cv2
 import numpy as np
 from PIL import Image
 
+from . import raw
+
 PROXY_EDGE = 1600
 THUMB_EDGE = 360
 
@@ -20,7 +22,10 @@ THUMB_EDGE = 360
 
 
 def load_rgb(path: str, max_edge: int | None = None) -> np.ndarray:
-    """Load a JPEG as float32 RGB 0..1, optionally downscaled (fast via JPEG draft mode)."""
+    """Load a JPEG as float32 RGB 0..1, optionally downscaled (fast via JPEG draft mode).
+    Camera RAW files are decoded by raw.py (16 bits straight to float)."""
+    if raw.is_raw(path):
+        return raw.load_rgb(path, max_edge)
     im = Image.open(path)
     if max_edge:
         im.draft("RGB", (max_edge, max_edge))
@@ -211,6 +216,13 @@ def suggest_rotation(images: list[np.ndarray]) -> tuple[int, str]:
 def load_u8(path: str) -> np.ndarray:
     """Full-resolution RGB uint8 (a quarter of the memory of float32)."""
     return np.asarray(Image.open(path).convert("RGB"))
+
+
+def load_full(path: str) -> np.ndarray:
+    """A scan at full resolution for fuse(): uint8 for a JPEG, float32 0..1 for a camera RAW (its 16
+    bits go into the pipeline's float without an 8-bit step; a bracket of RAWs is fused in 8 bits
+    like JPEGs, since Mertens works on 8-bit exposures)."""
+    return raw.decode(path) if raw.is_raw(path) else load_u8(path)
 
 
 def fuse(images: list[np.ndarray]) -> np.ndarray:

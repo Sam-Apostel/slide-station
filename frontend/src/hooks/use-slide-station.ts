@@ -1,6 +1,8 @@
 import * as React from "react";
 import { toast } from "sonner";
 import { desktop } from "@/lib/desktop";
+import { droppedFiles, inputFolder, pickedFolder } from "@/lib/files";
+import { scansOf, uploadFolder } from "@/lib/upload";
 import {
   api,
   needsReview,
@@ -747,9 +749,14 @@ export function useSlideStation() {
     }
   };
 
-  /** Browser version: a folder of scans picked, or dropped on the window, as an import source. */
+  /**
+   * A folder of scans picked, or dropped on the window, as an import source. The browser version
+   * reads it in the page; a server in a browser tab (not the desktop app, which hands over paths)
+   * gets it uploaded (lib/upload.ts) and imports it as `upload:<id>`.
+   */
   const addSource = async (how: "pick" | DataTransfer): Promise<Source | null> => {
-    if (!standalone) return null;
+    if (desktop) return null;
+    if (!standalone) return uploadSource(how);
     try {
       const pick = await import("@/standalone/pick");
       const id = await (how === "pick" ? pick.chooseFolder() : pick.fromDrop(how));
@@ -764,6 +771,49 @@ export function useSlideStation() {
     } catch (e) {
       fail(e);
       return null;
+    }
+  };
+
+  const uploadSource = async (how: "pick" | DataTransfer): Promise<Source | null> => {
+    // a drop's files must be asked for inside the drop event: before anything is awaited
+    const dropped = how === "pick" ? null : droppedFiles(how);
+    const picked = dropped ? await dropped : await inputFolder().then((f) => (f?.length ? pickedFolder(f) : null));
+    if (!picked) {
+      if (how !== "pick") toast("Drop a folder of scans");
+      return null;
+    }
+    const scans = scansOf(picked.files, !!ref.current.state?.server?.raw);
+    if (!scans.length) {
+      toast(`No scans in “${picked.name}”`);
+      return null;
+    }
+    const t = toast.loading(`Uploading ${plural(scans.length, "scan")}…`);
+    try {
+      const id = await uploadFolder(picked.name, scans, (p) =>
+        toast.loading(`Uploading “${picked.name}” · ${p.files}/${p.of} · ${Math.floor((100 * p.sent) / p.bytes)} %`, {
+          id: t,
+        }),
+      );
+      toast.success(`Uploaded ${plural(scans.length, "scan")} from “${picked.name}”`, { id: t });
+      await refreshState();
+      return ref.current.state?.sources.find((x) => x.path === `upload:${id}`) ?? null;
+    } catch (e) {
+      toast.error(`Upload stopped: ${e instanceof Error ? e.message : e}. Drop the folder again to carry on.`, {
+        id: t,
+      });
+      return null;
+    }
+  };
+
+  /** Camera rig mode: the tethered camera takes a picture, which is imported into this tray. */
+  const capture = async () => {
+    const { sessionId: sid } = ref.current;
+    if (!sid) return toast("Open or start a tray first");
+    try {
+      await api("POST", `/api/sessions/${sid}/capture`, {});
+      refreshState();
+    } catch (e) {
+      fail(e);
     }
   };
 
@@ -881,6 +931,7 @@ export function useSlideStation() {
     startUpload,
     startSave,
     addSource,
+    capture,
     pullFromImmich,
     importFromImmich,
     startCleanup,
