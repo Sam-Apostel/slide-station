@@ -3,6 +3,7 @@ import {
   Aperture,
   Bookmark,
   CalendarRange,
+  Camera,
   ChartNoAxesColumn,
   CloudDownload,
   Images,
@@ -190,6 +191,14 @@ export function CommandPalette({
           run: () => src && handlers.importFrom(src),
         },
         { id: "folder", label: "Import a folder…", icon: <FolderInput />, keys: `${mod}⇧O`, run: () => handlers.importFolder() },
+        {
+          id: "capture",
+          label: `Capture with ${state?.camera?.cameras[0]?.model ?? "the camera"}`,
+          icon: <Camera />,
+          keys: "P",
+          hidden: !state?.camera?.cameras.length || !session || busy,
+          run: app.capture,
+        },
         {
           id: "from-immich",
           label: "Pull photos back in from Immich…",

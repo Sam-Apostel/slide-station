@@ -1,0 +1,7 @@
+# the image needs pyproject.toml, uv.lock and slidestation/ (with its committed web build) only
+*
+!pyproject.toml
+!uv.lock
+!slidestation/
+slidestation/**/__pycache__
+slidestation/web/.vite

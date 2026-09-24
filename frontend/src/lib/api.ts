@@ -137,7 +137,12 @@ export type Source = {
   new: number;
   scanner: boolean;
   removable: boolean;
+  /** A folder uploaded from the browser, not imported yet (`upload:<id>`). */
+  upload?: boolean;
 };
+
+/** A camera gphoto2 sees (camera rig mode: tethered capture). */
+export type Camera = { model: string; port: string };
 
 export type Job = {
   kind: string;
@@ -208,7 +213,22 @@ export type AppState = {
   sources: Source[];
   sessions: Summary[];
   job: Job | null;
+  /** What the Python server can do (absent in the browser version): accounts (a hosted server,
+   *  each Immich user their own library), camera RAW files. */
+  server?: { accounts: boolean; raw: boolean };
+  /** Tethered capture: null without gphoto2 (or on a hosted server). */
+  camera?: { cameras: Camera[] } | null;
 };
+
+/** A hosted server's accounts: who is signed in (GET /api/auth). */
+export type AuthState = {
+  accounts: boolean;
+  user: { id: string; name: string; email: string } | null;
+  immich_url?: string;
+};
+
+/** Fired when the server says the session is gone (accounts): the sign-in screen takes over. */
+export const SIGNED_OUT = "slide-station-signed-out";
 
 export async function api<T = unknown>(method: string, url: string, body?: unknown): Promise<T> {
   if (standalone) {
@@ -221,6 +241,7 @@ export async function api<T = unknown>(method: string, url: string, body?: unkno
     body: body ? JSON.stringify(body) : undefined,
   });
   const j = await r.json().catch(() => ({}));
+  if (r.status === 401 && j.signin) window.dispatchEvent(new Event(SIGNED_OUT));
   if (!r.ok) throw new Error(j.error || j.detail || `${r.status} ${r.statusText}`);
   return j as T;
 }

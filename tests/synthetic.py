@@ -61,6 +61,37 @@ def save_scan(a: np.ndarray, path: Path, taken: datetime, salt: int = 0) -> None
     Image.fromarray(u8).save(path, "JPEG", quality=92, exif=ex.tobytes())
 
 
+def save_dng(a: np.ndarray, path: Path, taken: datetime, salt: int = 0, exposure: float = 1 / 60) -> None:
+    """Write a scene as a camera would: a raw Bayer (RGGB) DNG, 16-bit, black level 256, whose
+    camera space is linear sRGB (ColorMatrix1 = XYZ -> linear sRGB) and as-shot white neutral, so a
+    neutral decode (raw.decode) gives back `a` within about 1 %. Needs tifffile. `salt` changes the
+    bytes, not the picture."""
+    import tifffile
+
+    lin = np.where(a <= 0.04045, a / 12.92, ((a + 0.055) / 1.055) ** 2.4)
+    h, w = a.shape[:2]
+    black, span = 256, 15000
+    cfa = np.zeros((h - h % 2, w - w % 2), np.uint16)
+    for (dy, dx), c in (((0, 0), 0), ((0, 1), 1), ((1, 0), 1), ((1, 1), 2)):
+        cfa[dy::2, dx::2] = np.round(lin[dy:cfa.shape[0]:2, dx:cfa.shape[1]:2, c] * span + black)
+    if salt:
+        cfa[0, 0] += np.uint16(1 + salt % 7)
+    matrix = []
+    for v in (3.2406, -1.5372, -0.4986, -0.9689, 1.8758, 0.0415, 0.0557, -0.2040, 1.0570):
+        matrix += [round(v * 10000), 10000]
+    tags = [
+        (271, "s", 0, "SynthCo", False), (272, "s", 0, "Synthetic Cam", False),
+        (306, "s", 0, taken.strftime("%Y:%m:%d %H:%M:%S"), False),
+        (33434, "2I", 1, (1, round(1 / exposure)), False), (34855, "H", 1, 100, False),  # exposure, ISO
+        (50706, "B", 4, (1, 4, 0, 0), False), (50708, "s", 0, "SynthCo Synthetic Cam", False),  # DNG
+        (33421, "H", 2, (2, 2), False), (33422, "B", 4, (0, 1, 1, 2), False),  # CFA: RGGB
+        (50714, "H", 1, black, False), (50717, "H", 1, black + span, False),  # black, white level
+        (50721, "2i", 9, tuple(matrix), False), (50778, "H", 1, 21, False),  # ColorMatrix1, D65
+        (50728, "2I", 3, (1, 1, 1, 1, 1, 1), False),  # AsShotNeutral
+    ]
+    tifffile.imwrite(path, cfa, photometric=32803, compression=None, subfiletype=0, metadata=None, extratags=tags)
+
+
 def make_scans(folder: Path, slides: int = 4, size: tuple[int, int] = (240, 160), salt: int = 0,
                first: int = 1, mounts: list[float | None] | None = None) -> list[list[str]]:
     """Write `slides` slides as scans IMG_0001.JPG… into folder; even-numbered slides (0, 2, …) are

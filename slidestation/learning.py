@@ -175,14 +175,15 @@ class Model:
         }
 
 
-_model: Model | None = None
+_models: dict[Path, Model] = {}  # one per library (accounts each have their own)
 
 
 def model() -> Model:
-    global _model
-    if _model is None or _model.path != (library() / "learning.json"):
-        _model = Model()
-    return _model
+    path = library() / "learning.json"
+    with lock:
+        if path not in _models:
+            _models[path] = Model(path)
+        return _models[path]
 
 
 def reset() -> None:

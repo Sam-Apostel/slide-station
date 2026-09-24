@@ -41,6 +41,8 @@ slidestation/
   insights.py             suggestions per slide: scene tags from CLIP, background analysis (§5a)
 
   people.py               faces -> people: SFace embeddings, clustering, names (§5a)
+  uploads.py, accounts.py folders uploaded from the browser; Immich-user accounts (§4e)
+  raw.py, tether.py       camera RAW files via rawpy; tethered capture via gphoto2 (§4f)
   store.py                config + session persistence (JSON on disk)
   immich.py               minimal Immich client (v1/v2/v3 compatible)
   models/                 YuNet face detector (MIT, from opencv_zoo)
@@ -516,6 +518,144 @@ with onnxruntime-web (wasm backend, one thread), and `yunet.ts` reproduces what
   the decode and NMS reading); (2) the built web app in headless Chromium importing 80 of those
   turned photos: 79/80 identical guesses, the one difference a borderline case (the winning vote
   missed Python's `2 × second + 0.3` margin by 0.02) where the browser's JPEG decode tipped it.
+
+## 4e. Hosted container: uploads from the browser, accounts (ROADMAP §4)
+
+The Python app as a container next to Immich (`Dockerfile`, `docker-compose.example.yml`): the
+same server and UI, bound to `0.0.0.0` (`SLIDESTATION_HOST`; the default stays `127.0.0.1` for the
+launcher and the desktop app), everything it keeps under `/data` (`SLIDESTATION_HOME`, with
+`SLIDESTATION_LIBRARY=/data/library` as the single user's default library), `GET /api/health` for
+the healthcheck (answers without signing in). python:3.12-slim + uv, `uv sync --frozen --no-dev
+--extra raw`, the committed UI build, runs as uid 1000. Built and run here with the synthetic flow
+below (two accounts, uploads, a DNG, upload to the mock Immich), not yet next to a real Immich.
+
+**Uploads** (`uploads.py`, `lib/upload.ts`). A browser tab can't hand the server a path, so the
+UI's drop / "Choose folder" — in the server app in a browser tab, not the desktop app (which has
+paths) and not the browser version (which reads the folder itself) — uploads the files into a
+staging folder `<library>/uploads/<id>/` and imports that:
+
+- `POST /api/uploads {"name"}` → `{id}`; `POST /api/uploads/{id}/check {"files": [{"path", "size",
+  "sha1"?}]}` → per file `{"have": true}` (here whole, or `"imported": true` when the library's
+  dedupe index has that SHA-1: not sent at all) or `{"offset": n}` (bytes here so far);
+  `PUT /api/uploads/{id}/files/{path}?offset=&size=&sha1=` appends one chunk (≤ 64 MB; the UI sends
+  8 MB, three files at a time) to `<path>.part`. A wrong offset answers 409 with the right one, so a
+  lost chunk just resumes; the chunk that completes the file checks the SHA-1 (422 and start over
+  on a mismatch) and moves it into place; `upload.json` records the complete files.
+- The UI remembers the upload id per folder (name, file count, bytes) in localStorage, so dropping
+  the same folder after a reload or a dropped connection continues that upload. The SHA-1 comes
+  from WebCrypto, which exists only in a secure context: over plain `http://` on the LAN the UI
+  sends none and the size is the only check (and "already imported" can't be told apart).
+- Paths are relative, without `..`, hidden parts, a leading `/` or a drive; only scan extensions
+  (JPEG, and RAW when rawpy is there, §4f); `SLIDESTATION_MAX_UPLOAD_MB` (300) per file.
+- Unimported uploads are listed as sources `upload:<id>` (`removable: false`, `upload: true`), so an
+  interrupted session finds its folder in the activity well. `POST …/import {"source":
+  "upload:<id>"}` runs `workflow.import_upload`: `import_scans` on the staging folder with
+  `label="upload:<name>"` (the tray records that instead of server paths; **never removable**, so
+  card cleanup refuses), then the staging folder is deleted. tus wasn't needed for this.
+
+**Accounts** (`accounts.py`, `SLIDESTATION_AUTH=immich`, off by default). Sign in with an API key of
+*the* Immich (`SLIDESTATION_IMMICH_URL`, required; the server won't start without it): `GET
+/api/users/me` with that key gives the user id, and `<home>/users/<id>/` holds that user's
+`config.json` (the key, their settings), `user.json` and `library/`. The URL is the server's, never the user's:
+whoever answers `/users/me` decides the folder, so a user-chosen "Immich" could claim any id.
+Immich's own OAuth isn't usable (Immich is an OAuth client of an identity provider, not a provider);
+putting Slide Station behind the same IdP would be the next step if API keys are too clumsy.
+
+- Sessions: a random token in an HttpOnly, SameSite=Lax cookie (Secure over https / behind a proxy
+  that says `X-Forwarded-Proto: https`); `<home>/auth.json` keeps only its SHA-256, the user id and
+  last use (a month from the last visit). `GET /api/auth` (who, and the server's Immich URL),
+  `POST /api/auth/login {"api_key"}`, `POST /api/auth/logout`.
+- **Per-user scope is a context variable**, `store.as_home(path)`: `load_config`, `library()` and
+  everything built on them (sessions, learning, presets, people, insights, uploads) follow it. The
+  `Accounts` middleware in `server.py` (plain ASGI, so the context reaches sync endpoints in the
+  thread pool) answers 401 `{"signin": true}` to every `/api/` request but health / auth without a
+  valid cookie, and runs the rest inside `as_home`. `start_job` copies the context into the job's
+  thread. An account's `load_config` forces `library = <home>/library` and `immich_url` = the
+  server's, and `POST /api/config` ignores both. **Tray ids** are checked to be one plain name
+  (`store.SID_RE`), so no URL can reach outside the caller's library.
+- **Jobs and background work per library**: `workflow` keeps a job and an open tray per home
+  (`_jobs`, `_active`); `wf.current_job` / `wf.active_session` are module properties that read and
+  write the caller's, so existing code and tests keep working. One job at a time *per user* (two
+  users import at once); the background renderer and the insights worker visit every library's open
+  tray in turn, and full-resolution work still waits while any job runs (the memory rule, §3).
+  Caches keyed by tray id (`_fused_cache`, the 1:1 `_full`) are keyed by the tray's folder now.
+- An account never sees the server's drives: `detect_sources` lists only its uploads, importing a
+  path answers 403, eject 403, "show in Finder" doesn't open anything, and tethered capture is off
+  (the camera would be everyone's). `SLIDESTATION_MODELS` puts downloaded models (CLIP, SFace) in
+  one shared folder instead of each user's library.
+- UI: `components/sign-in.tsx` (`AccountGate` around the app in `main.tsx`; a 401 with `signin` from
+  any call fires `SIGNED_OUT` and the gate shows the sign-in screen again; the app remounts per user).
+  Settings shows who is signed in with "Sign out", the Immich URL read-only and no library folder;
+  the empty state and activity well offer "Choose a folder of scans" instead of waiting for a
+  scanner. The browser version never asks `/api/auth`.
+
+What's left for a real multi-user service: a job *queue* (a second job of the same user is refused
+with 409 as before, and nothing survives a restart; a SQLite-backed queue per user would be the
+next step), memory limits across users (one full-resolution render at a time for the whole server
+today), quotas on uploads / library size, rate limiting of sign-in attempts, and removing a user's
+data when they leave Immich. Immich remains the only identity: revoking the API key in Immich stops
+uploads but not an open Slide Station session (sign out, or delete `auth.json`).
+
+Tests: `tests/test_hosted.py` (TestClient): health, the host default, upload + import as a folder
+(grouping, never removable, staging removed), resume at an offset / 409 / damaged 422 / skip what
+the library has, path escapes and limits, sign-in (bad key, cookie flags, only hashes on disk,
+forged cookie), an account can't move its library or Immich, **two users**: separate sources,
+trays, uploads, jobs at the same time, and every route into Ann's tray by id — payload, peek,
+previews, histogram, 1:1, thumbs, edits, upload, "develop like", presets from her slide, path tricks
+— answers Bob 404; imports of server paths 403. `tests/hosted_flow.py` (Playwright, against a
+running server in accounts mode, docstring) signs in in the real UI, uploads a folder through the
+folder picker, creates the tray, checks Settings, signs out, a wrong key, a second user who sees
+nothing of the first. Verified bound to `0.0.0.0` and reached over the machine's LAN address, and in
+the built image (`docker build`, healthcheck healthy, the same two-user flow over HTTP).
+
+## 4f. Camera rig mode: RAW files, tethered capture (ROADMAP §5)
+
+A camera over a light panel is just another source of scans; everything after import is the same.
+
+**RAW** (`raw.py`, optional `rawpy`: `uv run --extra raw`; in the Dockerfile; in the dev group for
+the tests). DNG, CR2, CR3, NEF, ARW, ORF and RAF import as scans when rawpy is installed
+(`workflow.scan_exts()`; otherwise they're simply not listed, and the upload filter leaves them out).
+
+- Decode: LibRaw `postprocess` with the camera's as-shot white balance, no auto brightening, sRGB
+  primaries and the sRGB curve (`gamma=(2.4, 12.92)`), 16 bits → float32 0..1. The pipeline expects
+  display-referred values like a decoded JPEG, so a RAW enters exactly where a JPEG scan does; the
+  Adjust panel, learning and fusion work unchanged. `imaging.load_rgb` dispatches on the extension
+  (proxies: LibRaw's half-size decode, no demosaicing, then INTER_AREA to 1600 px, cached as JPEG like
+  every proxy); `imaging.load_full` gives full-resolution float32 for a RAW (no 8-bit step) and uint8
+  for a JPEG. A single RAW develops in float from its 16 bits; a bracket of RAWs is fused like JPEGs
+  (Mertens takes 8-bit exposures). The camera's orientation flag is applied by LibRaw (unlike JPEG
+  scans, whose EXIF orientation Python ignores; the scanner doesn't set it).
+- Metadata (`raw.metadata`): make, model, capture time, exposure, f-number, ISO, focal length from
+  the TIFF header (DNG, CR2, NEF, ARW, ORF: IFD0 and the EXIF IFD, a ~40-line parser), else from the
+  EXIF of the embedded JPEG preview (CR3, RAF). It orders the import (`taken`), is stored on the scan
+  (`scans[id]["camera"]`), and the export's EXIF carries make / model / exposure / ISO
+  (`raw.exif_for_export`) where a scan's EXIF would be copied.
+- Originals keep their extension (`<scan>.dng`). A camera shooting RAW + JPEG writes pairs: the JPEG
+  with the same name next to a RAW is left out (`list_scans`).
+- Not in the browser version (no LibRaw in the page: RAW files aren't listed there) nor SlideKit.
+
+**Tethered capture** (`tether.py`, the `gphoto2` command line; `SLIDESTATION_GPHOTO2` overrides the
+binary). **Untested with a real camera**: the tests use a stand-in script that prints gphoto2's
+`--auto-detect` table and writes files like `--capture-image-and-download --filename` does.
+
+- `GET /api/state` has `camera: {"cameras": [{"model", "port"}]}` when gphoto2 is installed (null
+  otherwise, and on a hosted server); `--auto-detect` runs at most every 5 s, never during a capture.
+- `POST /api/sessions/{sid}/capture {"port"?}` starts a `capture` job: gphoto2 captures and
+  downloads into `<library>/captures/<time-id>/` (a fresh folder per shot, so nothing is hashed
+  twice), `import_scans(label="camera")` imports it into the tray, the folder is removed. Grouping is
+  the import's: a darker shot of the same slide right after continues the last slide (a bracket),
+  a new slide starts a new one — exactly like scans arriving from the card in two batches.
+- UI: when a camera is connected and a tray is open, the activity well shows the camera and
+  **Capture**; **P** captures (help dialog, ⌘K "Capture with …").
+- Not done: auto-advance of a projector / carousel, live view, setting exposure from the app (do it
+  on the camera), and camera-specific colour profiles (LibRaw's matrices are used).
+
+Tests: `tests/test_camera.py` — a synthetic DNG (`synthetic.save_dng`: an RGGB mosaic whose camera
+space is linear sRGB, so a neutral decode returns the scene within ~1 %) decodes to float with far
+more than 256 levels, metadata and export EXIF, a folder of RAW brackets + a JPEG twin + a JPEG
+imports as 2 + 1 + 1 slides with previews, 1:1 and exports; without rawpy RAW is hidden; the gphoto2
+parser; three captures group as a bracket + a slide; a failing capture reports gphoto2's message.
+Checked in the browser too: Capture and P into a new tray (a bracket of two DNGs → "HDR ×2").
 
 ## 5. Learning from past edits (new, working, untested in the wild)
 

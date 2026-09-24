@@ -1,5 +1,14 @@
 import type * as React from "react";
-import { ChartNoAxesColumn, CircleHelp, FolderInput, HardDriveDownload, Plus, Settings, Users } from "lucide-react";
+import {
+  Camera,
+  ChartNoAxesColumn,
+  CircleHelp,
+  FolderInput,
+  HardDriveDownload,
+  Plus,
+  Settings,
+  Users,
+} from "lucide-react";
 import { ProButton } from "@/components/ui/pro-button";
 import { Tip } from "@/components/tip";
 import { desktop, isMac } from "@/lib/desktop";
@@ -25,6 +34,8 @@ type TopBarProps = {
   onEject: (src: Source) => void;
   /** Browser version: pick a folder of scans (there is no scanner to wait for). */
   onChooseFolder?: () => void;
+  /** Camera rig mode: take a picture with the tethered camera into the open tray. */
+  onCapture?: () => void;
   onHelp: () => void;
   /** Progress across the library (slides per hour, projected finish). */
   onStats?: () => void;
@@ -74,10 +85,14 @@ export function ActivityWell({
   onImport,
   onEject,
   onChooseFolder,
+  onCapture,
   className,
-}: Pick<TopBarProps, "state" | "onImport" | "onEject" | "onChooseFolder"> & { className?: string }) {
+}: Pick<TopBarProps, "state" | "onImport" | "onEject" | "onChooseFolder" | "onCapture"> & { className?: string }) {
   const src = state?.sources.find((x) => x.new > 0) ?? state?.sources[0];
   const job = visibleJob(state);
+  // a hosted server has no scanner of yours to wait for: folders are uploaded from the browser
+  const pickOnly = standalone || !!state?.server?.accounts;
+  const camera = onCapture ? state?.camera?.cameras[0] : undefined;
   return (
     <ProTitlebarWell
       data-tone={job?.error ? "bad" : !job && src ? "ok" : undefined}
@@ -126,7 +141,7 @@ export function ActivityWell({
             <ProButton active onClick={() => onImport(src)}>
               <HardDriveDownload /> Import
             </ProButton>
-          ) : standalone ? (
+          ) : pickOnly ? (
             <ProButton onClick={onChooseFolder}>
               <FolderInput /> Another folder
             </ProButton>
@@ -134,7 +149,17 @@ export function ActivityWell({
             <ProButton onClick={() => onEject(src)}>Eject</ProButton>
           )}
         </>
-      ) : standalone ? (
+      ) : camera ? (
+        <>
+          <Camera aria-hidden className="size-3.5 shrink-0 text-[var(--pro-green)]" />
+          <span className="min-w-0 truncate">{camera.model}</span>
+          <Tip label="Take a picture into this tray" keys="P">
+            <ProButton active onClick={onCapture}>
+              Capture
+            </ProButton>
+          </Tip>
+        </>
+      ) : pickOnly ? (
         <>
           <span className="min-w-0 truncate pl-1 text-muted-foreground">Drop a folder of scans, or</span>
           <ProButton active onClick={onChooseFolder}>

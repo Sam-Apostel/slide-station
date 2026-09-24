@@ -8,12 +8,15 @@ import time
 import webbrowser
 from pathlib import Path
 
-from fastapi import Body, FastAPI, HTTPException
+from fastapi import Body, FastAPI, HTTPException, Request
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-from . import insights, learning
+from . import accounts, insights, learning
 from . import people
+from . import raw, tether, uploads
+from . import store
 from . import workflow as wf
 from . import imaging as im
 from .imaging import Params
@@ -22,6 +25,42 @@ from .store import (Session, active_scans, load_config, load_presets, lock, pars
                     save_presets, slide_dates, statuses, summary, tone_key)
 
 app = FastAPI(title="Slide Station")
+
+
+class Accounts:
+    """Accounts mode (accounts.py): every /api request but signing in needs a session cookie, and
+    runs as that user (store.as_home), so everything it touches — config, library, jobs — is theirs.
+    Plain ASGI rather than BaseHTTPMiddleware, so the user reaches the endpoint (and the threads it
+    starts) through the context."""
+
+    OPEN = ("/api/health", "/api/auth", "/api/auth/login", "/api/auth/logout")
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        path = scope.get("path", "")
+        if scope["type"] != "http" or not accounts.enabled() or not path.startswith("/api/") or path in self.OPEN:
+            return await self.app(scope, receive, send)
+        home = await run_in_threadpool(accounts.resolve, _cookie(scope))
+        if home is None:
+            return await JSONResponse({"error": "Sign in with your Immich API key", "signin": True},
+                                      status_code=401)(scope, receive, send)
+        with store.as_home(home):
+            await self.app(scope, receive, send)
+
+
+def _cookie(scope) -> str | None:
+    for k, v in scope.get("headers", []):
+        if k == b"cookie":
+            for part in v.decode("latin-1").split(";"):
+                name, _, value = part.strip().partition("=")
+                if name == accounts.COOKIE:
+                    return value
+    return None
+
+
+app.add_middleware(Accounts)
 # The UI is the React app in frontend/; its build is committed to slidestation/web so
 # the launcher works without Node.
 WEB = Path(__file__).parent / "web"
@@ -49,13 +88,68 @@ def state():
         "sources": wf.detect_sources(),
         "sessions": Session.list_all(),
         "job": wf.current_job.as_dict() if wf.current_job else None,
+        # what this server can do: accounts (hosted), RAW files, tethered capture (camera rig)
+        "server": {"accounts": accounts.enabled(), "raw": raw.available()},
+        "camera": _camera(),
     }
+
+
+def _camera() -> dict | None:
+    """Tethered capture: None without gphoto2 (or on a hosted server: the camera would be everyone's)."""
+    if accounts.enabled() or not tether.available():
+        return None
+    return {"cameras": tether.cameras()}
+
+
+@app.get("/api/health")
+def health():
+    """For the container's healthcheck: answers without signing in."""
+    return {"ok": True}
+
+
+# --------------------------------------------------------------------------- accounts
+
+
+@app.get("/api/auth")
+def auth_state(request: Request):
+    """Whether this server has accounts, and who is signed in."""
+    if not accounts.enabled():
+        return {"accounts": False, "user": None}
+    home = accounts.resolve(request.cookies.get(accounts.COOKIE))
+    return {"accounts": True, "user": accounts.profile(home) if home else None, "immich_url": store.USER_IMMICH_URL}
+
+
+@app.post("/api/auth/login")
+def auth_login(request: Request, body: dict = Body(...)):
+    """Sign in with an API key of the server's Immich; your Immich user is your account."""
+    if not accounts.enabled():
+        return _err(RuntimeError("This server has no accounts"), 404)
+    try:
+        token, user = accounts.login(str(body.get("api_key") or ""))
+    except ImmichError as e:
+        return _err(e, 401)
+    except Exception as e:  # Immich unreachable, no SLIDESTATION_IMMICH_URL
+        return _err(e, 502)
+    r = JSONResponse({"accounts": True, "user": user, "immich_url": store.USER_IMMICH_URL})
+    r.set_cookie(accounts.COOKIE, token, max_age=accounts.TTL, httponly=True, samesite="lax",
+                 secure=request.url.scheme == "https" or request.headers.get("x-forwarded-proto") == "https")
+    return r
+
+
+@app.post("/api/auth/logout")
+def auth_logout(request: Request):
+    accounts.logout(request.cookies.get(accounts.COOKIE))
+    r = JSONResponse({"ok": True})
+    r.delete_cookie(accounts.COOKIE)
+    return r
 
 
 @app.post("/api/config")
 def set_config(body: dict = Body(...)):
     cfg = load_config()
-    for k in ("library", "immich_url", "immich_key", "keep_originals", "keep_exports", "jpeg_quality",
+    # an account's library and Immich are the server's to decide (accounts.py)
+    own = () if store.user_home() is not None else ("library", "immich_url")
+    for k in (*own, "immich_key", "keep_originals", "keep_exports", "jpeg_quality",
               "learning_enabled", "upload_originals_stacked", "insights_enabled", "people_enabled"):
         if k in body and not (k == "immich_key" and body[k] == ""):
             cfg[k] = body[k]
@@ -72,7 +166,8 @@ def set_config(body: dict = Body(...)):
 def immich_test(body: dict = Body(default={})):
     cfg = load_config()
     try:
-        c = Immich(body.get("immich_url") or cfg["immich_url"], body.get("immich_key") or cfg["immich_key"])
+        url = cfg["immich_url"] if store.user_home() is not None else body.get("immich_url") or cfg["immich_url"]
+        c = Immich(url, body.get("immich_key") or cfg["immich_key"])
         v = c.version()
         who = c.whoami()
         c.close()
@@ -262,9 +357,80 @@ def patch_session(sid: str, body: dict = Body(...)):
 
 @app.post("/api/sessions/{sid}/import")
 def import_into(sid: str, body: dict = Body(...)):
+    """Import from a source: a card or folder path, or `upload:<id>` (a folder uploaded from the
+    browser). An account can only import what it uploaded: the server's disks aren't theirs."""
     _session(sid)
+    source = str(body.get("source") or "")
+    upload = uploads.id_of(source)
     try:
-        wf.start_job("import", sid, wf.import_scans, sid, body["source"])
+        if upload is not None:
+            uploads.folder(upload)  # 404 now rather than a failed job
+            wf.start_job("import", sid, wf.import_upload, sid, upload)
+        elif store.user_home() is not None:
+            return _err(RuntimeError("Upload the scans from your browser: this server's folders aren't yours"), 403)
+        else:
+            wf.start_job("import", sid, wf.import_scans, sid, source)
+    except uploads.UploadError as e:
+        return _err(e, e.status)
+    except RuntimeError as e:
+        return _err(e, 409)
+    return {"ok": True}
+
+
+# --------------------------------------------------------------------------- uploads from the browser
+
+
+def _upload_err(e: uploads.UploadError):
+    return JSONResponse({"error": str(e), **e.extra}, status_code=e.status)
+
+
+@app.post("/api/uploads")
+def upload_create(body: dict = Body(default={})):
+    """Start uploading a folder of scans: {"name"} -> {"id"}; import it later as `upload:<id>`."""
+    return {"id": uploads.create(str(body.get("name") or ""))}
+
+
+@app.post("/api/uploads/{uid}/check")
+def upload_check(uid: str, body: dict = Body(...)):
+    """{"files": [{"path", "size", "sha1"?}]} -> {"files": {path: {"have"} | {"offset"}}}: what to
+    send (and from where) to finish this upload, e.g. after the connection dropped."""
+    try:
+        return {"files": uploads.check(uid, list(body.get("files") or []))}
+    except uploads.UploadError as e:
+        return _upload_err(e)
+
+
+@app.put("/api/uploads/{uid}/files/{path:path}")
+async def upload_put(uid: str, path: str, request: Request, offset: int = 0, size: int = 0, sha1: str = ""):
+    """One chunk of a file (the request body), written at `offset` of `size` bytes in all."""
+    data = await request.body()
+    try:
+        return await run_in_threadpool(uploads.put, uid, path, offset, size, sha1, data)
+    except uploads.UploadError as e:
+        return _upload_err(e)
+
+
+@app.delete("/api/uploads/{uid}")
+def upload_delete(uid: str):
+    try:
+        uploads.folder(uid)
+    except uploads.UploadError as e:
+        return _upload_err(e)
+    uploads.delete(uid)
+    return {"ok": True}
+
+
+# --------------------------------------------------------------------------- tethered capture
+
+
+@app.post("/api/sessions/{sid}/capture")
+def capture(sid: str, body: dict = Body(default={})):
+    """Camera rig mode: take a picture with the tethered camera and import it into this tray."""
+    _session(sid)
+    if _camera() is None:
+        return _err(RuntimeError("No tethered capture here (install gphoto2 and connect the camera by USB)"), 404)
+    try:
+        wf.start_job("capture", sid, wf.capture_into, sid, body.get("port") or None)
     except RuntimeError as e:
         return _err(e, 409)
     return {"ok": True}
@@ -1017,7 +1183,10 @@ def full_tile(sid: str, gid: str, col: int, row: int, v: str = ""):
 
 @app.get("/api/sessions/{sid}/scans/{scan}/thumb.jpg")
 def scan_thumb(sid: str, scan: str):
-    return Response(wf.scan_thumb(_session(sid), scan), media_type="image/jpeg", headers={"Cache-Control": "max-age=31536000"})
+    s = _session(sid)
+    if scan not in s.data["scans"]:  # e.g. asked for with the next tray's id while the UI switches trays
+        raise HTTPException(404)
+    return Response(wf.scan_thumb(s, scan), media_type="image/jpeg", headers={"Cache-Control": "max-age=31536000"})
 
 
 @app.post("/api/sessions/{sid}/finish")
@@ -1051,6 +1220,8 @@ def cleanup(sid: str):
 
 @app.post("/api/eject")
 def eject(body: dict = Body(...)):
+    if store.user_home() is not None:
+        return _err(RuntimeError("Not on a hosted server"), 403)
     try:
         return {"ok": True, "message": wf.eject(body["path"]) or "Ejected"}
     except Exception as e:
@@ -1063,7 +1234,7 @@ def reveal(body: dict = Body(...)):
     s = _session(body["session"])
     s.export_dir.mkdir(parents=True, exist_ok=True)  # doesn't exist until the first render
     # The desktop app opens it itself, through the OS shell.
-    if os.uname().sysname == "Darwin" and not os.environ.get("SLIDESTATION_DESKTOP"):
+    if os.uname().sysname == "Darwin" and not os.environ.get("SLIDESTATION_DESKTOP") and store.user_home() is None:
         os.system(f'open "{s.export_dir}"')
     return {"ok": True, "path": str(s.export_dir)}
 
@@ -1094,9 +1265,13 @@ def main():
     import uvicorn
 
     port = int(os.environ.get("SLIDESTATION_PORT", "8765"))
+    # this computer only, unless told otherwise (the container: 0.0.0.0, next to Immich)
+    host = os.environ.get("SLIDESTATION_HOST", "127.0.0.1")
     if not os.environ.get("SLIDESTATION_NO_BROWSER"):
         threading.Timer(1.2, lambda: webbrowser.open(f"http://localhost:{port}")).start()
-    uvicorn.run(app, host="127.0.0.1", port=port, log_level="warning")
+    if accounts.enabled() and not store.USER_IMMICH_URL:
+        raise SystemExit("SLIDESTATION_AUTH=immich needs SLIDESTATION_IMMICH_URL (the Immich accounts belong to)")
+    uvicorn.run(app, host=host, port=port, log_level="warning")
 
 
 if __name__ == "__main__":

@@ -18,7 +18,7 @@ from pathlib import Path
 import numpy as np
 
 from . import imaging as im
-from .store import _atomic_write, active_scans, library
+from .store import _atomic_write, active_scans, library, models_dir
 
 MODEL_NAME = "face_recognition_sface_2021dec.onnx"
 # opencv_zoo's SFace (Apache-2.0), mirrored by OpenCV on Hugging Face
@@ -38,7 +38,7 @@ _lock = threading.RLock()  # faces.json files and people.json
 
 
 def model_file() -> Path:
-    return library() / "models" / MODEL_NAME
+    return models_dir() / MODEL_NAME
 
 
 def model_ready() -> bool:

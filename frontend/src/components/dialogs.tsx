@@ -21,8 +21,10 @@ import {
   api,
   plural,
   sourceLabel,
+  SIGNED_OUT,
   standalone,
   type AppState,
+  type AuthState,
   type Config,
   type Group,
   type InsightsState,
@@ -88,9 +90,13 @@ export function SettingsDialog({
   const [suggestTags, setSuggestTags] = React.useState(false);
   const [insights, setInsights] = React.useState<InsightsState | null>(null);
   const [test, setTest] = React.useState<{ ok?: boolean; message: string } | null>(null);
+  // a hosted server: signed in with an Immich API key, the library and Immich are the server's
+  const [auth, setAuth] = React.useState<AuthState | null>(null);
+  const hosted = !!auth?.accounts;
 
   React.useEffect(() => {
     if (!open || !config) return;
+    if (!standalone) api<AuthState>("GET", "/api/auth").then(setAuth, () => setAuth(null));
     setUrl(config.immich_url || "");
     setKey("");
     setLibrary(config.library);
@@ -156,14 +162,36 @@ export function SettingsDialog({
             <DialogTitle>Settings</DialogTitle>
           </DialogHeader>
           <FieldGroup className="gap-4">
+            {auth?.user && (
+              <div className="flex items-center gap-2 text-[12px] text-muted-foreground">
+                <span className="min-w-0 flex-1 truncate">
+                  Signed in as <b className="text-foreground/90">{auth.user.name || auth.user.email}</b>
+                  {auth.user.name && auth.user.email ? ` (${auth.user.email})` : ""}
+                </span>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={async () => {
+                    await api("POST", "/api/auth/logout").catch(() => {});
+                    onOpenChange(false);
+                    window.dispatchEvent(new Event(SIGNED_OUT));
+                  }}
+                >
+                  Sign out
+                </Button>
+              </div>
+            )}
             <Field>
               <FieldLabel htmlFor="cfg-url">Immich server URL</FieldLabel>
               <Input
                 id="cfg-url"
                 value={url}
+                readOnly={hosted}
                 onChange={(e) => setUrl(e.target.value)}
                 placeholder="http://your-server:2283"
               />
+              {hosted && <FieldDescription>Set by this Slide Station server: your account is on it.</FieldDescription>}
             </Field>
             <Field>
               <FieldLabel htmlFor="cfg-key">Immich API key</FieldLabel>
@@ -209,6 +237,13 @@ export function SettingsDialog({
             </div>
             {standalone ? (
               <BrowserLibrary config={config} />
+            ) : hosted ? (
+              <Field>
+                <FieldLabel>Library</FieldLabel>
+                <FieldDescription>
+                  Your trays live on this server, in a library of your own that nobody else signed in here can see.
+                </FieldDescription>
+              </Field>
             ) : (
               <Field>
                 <FieldLabel htmlFor="cfg-lib">Library folder</FieldLabel>
@@ -478,7 +513,9 @@ export function NewTrayDialog({
                       {sourceLabel(x)} ({x.new} new of {x.count})
                     </NativeSelectOption>
                   ))}
-                  {!standalone && <NativeSelectOption value={FOLDER}>A folder on this Mac…</NativeSelectOption>}
+                  {!standalone && !state?.server?.accounts && (
+                    <NativeSelectOption value={FOLDER}>A folder on this Mac…</NativeSelectOption>
+                  )}
                   <NativeSelectOption value={NOTHING}>Nothing yet</NativeSelectOption>
                 </NativeSelect>
                 {onChooseFolder && (
@@ -678,6 +715,7 @@ export const SHORTCUTS: [React.ReactNode, string][] = [
   ],
   [<Kbd>L</Kbd>, "Loupe: 100 % under the pointer"],
   [<Kbd>G</Kbd>, "Review grid: every slide at once (G or Esc back)"],
+  [<Kbd>P</Kbd>, "Capture: the tethered camera takes a picture into this tray (camera rig)"],
   [
     <>
       <Kbd>←</Kbd> <Kbd>→</Kbd> <Kbd>↑</Kbd> <Kbd>↓</Kbd>

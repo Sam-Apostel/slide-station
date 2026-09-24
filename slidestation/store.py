@@ -8,6 +8,8 @@ import re
 import threading
 import time
 import uuid
+from contextlib import contextmanager
+from contextvars import ContextVar
 from datetime import datetime
 from pathlib import Path
 
@@ -16,9 +18,16 @@ from .imaging import Params
 
 CONFIG_DIR = Path(os.environ.get("SLIDESTATION_HOME", Path.home() / ".slidestation"))
 CONFIG_FILE = CONFIG_DIR / "config.json"
+# Accounts mode (ARCHITECTURE "Hosted container"): every signed-in Immich user has a home of their
+# own, users/<id>/ with config.json and library/, set for the request (and the jobs it starts) by
+# `as_home`. Without it everything is the single user's CONFIG_DIR, as always.
+_home: ContextVar[Path | None] = ContextVar("slidestation_home", default=None)
+# The Immich every account belongs to: set by whoever runs the server, never chosen by a user (the
+# API key says who they are, so the server must be the one that answers it).
+USER_IMMICH_URL = os.environ.get("SLIDESTATION_IMMICH_URL", "")
 
 DEFAULT_CONFIG = {
-    "library": str(Path.home() / "Pictures" / "Slide Station"),
+    "library": os.environ.get("SLIDESTATION_LIBRARY") or str(Path.home() / "Pictures" / "Slide Station"),
     "immich_url": "",
     "immich_key": "",
     "keep_originals": True,
@@ -41,19 +50,51 @@ def _atomic_write(path: Path, data: dict) -> None:
     os.replace(tmp, path)
 
 
+def home() -> Path:
+    """Where config.json lives: the signed-in user's own folder, or the single user's."""
+    return _home.get() or CONFIG_DIR
+
+
+def user_home() -> Path | None:
+    """The signed-in user's folder in accounts mode, else None."""
+    return _home.get()
+
+
+@contextmanager
+def as_home(path: Path | None):
+    """Act as the user whose home this is (None: the single user)."""
+    token = _home.set(path)
+    try:
+        yield
+    finally:
+        _home.reset(token)
+
+
 def load_config() -> dict:
     cfg = dict(DEFAULT_CONFIG)
-    if CONFIG_FILE.exists():
-        cfg.update(json.loads(CONFIG_FILE.read_text()))
+    f = home() / "config.json"
+    if f.exists():
+        cfg.update(json.loads(f.read_text()))
+    if _home.get() is not None:  # an account: its library is its own folder, its Immich the server's
+        cfg["library"] = str(_home.get() / "library")
+        cfg["immich_url"] = USER_IMMICH_URL
     return cfg
 
 
 def save_config(cfg: dict) -> None:
-    _atomic_write(CONFIG_FILE, cfg)
+    f = home() / "config.json"
+    _atomic_write(f, cfg)
     try:
-        os.chmod(CONFIG_FILE, 0o600)  # holds the Immich API key
+        os.chmod(f, 0o600)  # holds the Immich API key
     except OSError:
         pass
+
+
+def models_dir() -> Path:
+    """Downloaded models: the library's models/ folder, or one folder every account on a hosted
+    server shares (SLIDESTATION_MODELS), so each user doesn't download their own copy."""
+    shared = os.environ.get("SLIDESTATION_MODELS")
+    return Path(shared) if shared else library() / "models"
 
 
 def library() -> Path:
@@ -118,10 +159,15 @@ def save_presets(presets: list[dict]) -> None:
 # --------------------------------------------------------------------------- sessions
 
 
+SID_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.-]*$")
+
+
 class Session:
     """A batch of slides (typically a tray or box) that becomes one Immich album."""
 
     def __init__(self, sid: str):
+        if not SID_RE.match(sid or ""):  # a tray id is one plain name: never a way out of the library
+            raise FileNotFoundError(sid)
         self.id = sid
         self.dir = library() / "sessions" / sid
         self.file = self.dir / "session.json"

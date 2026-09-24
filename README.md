@@ -92,6 +92,56 @@ origins in development builds only), so the page has to reach it in one of two w
 A page served over https can't reach an `http://` Immich (other than on localhost). Or skip Immich
 in the browser altogether: save to disk and drop the JPEGs into an Immich album yourself.
 
+## Next to Immich, as a container
+
+Run Slide Station on the server that runs Immich, and use it from any browser: folders of scans are
+uploaded from the browser to the server, which does the work and sends the slides to Immich.
+
+1. Add the service in `docker-compose.example.yml` (and its volume) to Immich's `docker-compose.yml`,
+   then `docker compose up -d`. Or build and run it on its own:
+
+   ```bash
+   docker build -t slide-station .
+   docker run -d -p 8765:8765 -v slide-station:/data \
+     -e SLIDESTATION_AUTH=immich -e SLIDESTATION_IMMICH_URL=http://immich-server:2283 slide-station
+   ```
+2. Open `http://<server>:8765` (or give it a hostname on the reverse proxy in front of Immich, with
+   large request bodies allowed: the browser sends 8 MB pieces).
+3. **Sign in with an Immich API key** (Immich → Account settings → API keys, with the permissions
+   below). Your Immich user is your account: each person has their own trays, settings and library
+   on the server, and nobody signed in there sees anyone else's.
+4. Drop a folder of scans on the window, or choose one. It is uploaded (an interrupted upload
+   continues when you drop the same folder again; files the server already has aren't sent again),
+   then imported into a tray as usual.
+
+Everything is kept in the `/data` volume (`users/<Immich user id>/` per person). Without
+`SLIDESTATION_AUTH` it is a single-user server with no sign-in: then anyone who can reach port 8765
+can use it, so keep it on a trusted network. The container checks its own health
+(`/api/health`). Not there on a server: the scanner itself (plug it into a computer and drop its
+folder), eject, show in Finder, tethered capture.
+
+Running the Python app yourself on another machine works the same way:
+`SLIDESTATION_HOST=0.0.0.0 uv run --python 3.12 python -m slidestation` (it listens on this
+computer only unless told otherwise).
+
+## Camera rig: RAW files and tethered capture
+
+A camera on a copy stand over a light panel gets far more out of a slide than the Slide N Scan.
+Slide Station treats a camera as just another source of scans:
+
+- **RAW files** (DNG, CR2, CR3, NEF, ARW, ORF, RAF) import like scans once the optional RAW support
+  is installed: start with `uv run --python 3.12 --extra raw python -m slidestation` (the container
+  has it). They are decoded in 16 bits with the camera's white balance, then restored and developed
+  like any scan; brackets are grouped and blended the same way. Shooting RAW + JPEG is fine: the
+  JPEG next to a RAW is skipped. The camera, exposure and ISO go into the finished JPEG's EXIF.
+- **Tethered capture** with [gphoto2](http://gphoto.org) (`brew install gphoto2`): connect the camera
+  by USB, open a tray, and the top bar shows the camera with a **Capture** button (or press **P**).
+  Each picture is downloaded and imported straight into the tray; a darker shot of the same slide
+  right after joins it as a bracket. Exposure and focus are set on the camera. *This has only been
+  tested with a stand-in for gphoto2, not a real camera yet* — reports welcome.
+
+The browser version doesn't read RAW files.
+
 ## Set up once
 
 Settings → Immich URL (e.g. `http://your-server:2283`) and an API key

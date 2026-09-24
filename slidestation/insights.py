@@ -34,7 +34,7 @@ from PIL import Image
 
 from . import imaging as im
 from . import workflow as wf
-from .store import Session, _atomic_write, active_scans, library, load_config, lock
+from .store import Session, _atomic_write, active_scans, as_home, library, load_config, lock, models_dir
 
 KINDS = ("tags", "caption", "date", "place")
 
@@ -105,7 +105,7 @@ STD = np.array([0.26862954, 0.26130258, 0.27577711], np.float32)
 
 
 def model_dir() -> Path:
-    return library() / "models" / MODEL_ID
+    return models_dir() / MODEL_ID
 
 
 def model_ready() -> bool:
@@ -415,12 +415,16 @@ def analyse_slide(sid: str, gid: str) -> bool:
 
 # ------------------------------------------------------------------------------------ background
 
-queued: list[str] = []  # trays asked for with "Analyse", besides the open one
+queued_by: dict[str, list[str]] = {}  # per library: trays asked for with "Analyse", besides the open one
+
+
+def _queued() -> list[str]:
+    return queued_by.setdefault(wf._key(), [])
 
 
 def queue_tray(sid: str) -> None:
-    if sid not in queued:
-        queued.append(sid)
+    if sid not in _queued():
+        _queued().append(sid)
 
 
 def pending(d: dict) -> int:
@@ -433,6 +437,7 @@ def step() -> bool:
         return False
     if wf.current_job and not wf.current_job.finished:  # imports reshape slides; uploads need the memory
         return False
+    queued = _queued()
     for sid in [x for x in [wf.active_session, *queued] if x]:
         try:
             s = Session(sid)
@@ -466,12 +471,14 @@ def step() -> bool:
 def _worker():
     while True:
         time.sleep(1.0)
-        try:
-            while step():
-                pass
-        except Exception as e:  # never let the helper thread die
-            print("insights:", e)
-            time.sleep(10)
+        for home in wf.homes():  # every library in use (accounts: each user's), one after the other
+            try:
+                with as_home(home):
+                    while step():
+                        pass
+            except Exception as e:  # never let the helper thread die
+                print("insights:", e)
+                time.sleep(10)
 
 
 threading.Thread(target=_worker, daemon=True, name="insights").start()
