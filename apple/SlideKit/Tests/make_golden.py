@@ -238,5 +238,51 @@ save_f32(np.concatenate([im.auto_restore(np.clip(base * k, 0, 1), 0.6).ravel() f
 meta["restore_blown"] = {"scales": blown_scales, "strength": 0.6}
 # --- blown fixture end
 
+# mould and Newton rings (added later, on their own pictures, so nothing above had to change)
+MW, MH = 320, 224
+rng = np.random.default_rng(13)
+y, x = np.mgrid[0:MH, 0:MW].astype(np.float32)
+mclean = np.stack([0.55 + 0.25 * np.sin(x / MW * 3 + 0.5), 0.5 + 0.2 * np.cos(y / MH * 3),
+                   0.45 + 0.15 * np.sin((x + y) / (MW + MH) * 4)], -1) + rng.normal(0, 0.01, (MH, MW, 3))
+# a branch reaching in from the right edge, twigs and all: picture, which must stay
+al = np.zeros((MH, MW), np.float32)
+for x0, y0, x1, y1, rad in [(320, 150, 250, 120, 3.0), (250, 120, 215, 80, 1.6), (250, 120, 205, 135, 1.2),
+                            (215, 80, 200, 60, 0.8), (215, 80, 190, 88, 0.7), (205, 135, 185, 150, 0.6)]:
+    for t in np.linspace(0, 1, 120):
+        cx, cy = x0 + (x1 - x0) * t, y0 + (y1 - y0) * t
+        al = np.maximum(al, np.clip(rad + 0.5 - np.hypot(x - cx, y - cy), 0, 1))
+mclean = mclean * (1 - al[..., None]) + np.array([0.15, 0.12, 0.08]) * al[..., None]
+mouldy = mclean.copy()
+for i in range(6):  # colonies: a ragged blotch and wandering, forking filaments, lighter or darker
+    cx, cy = 20 + rng.random() * 160, 20 + rng.random() * 180
+    al = np.zeros((MH, MW), np.float32)
+    for _ in range(4):
+        px, py, th = cx, cy, rng.random() * 2 * np.pi
+        for _ in range(int(24 + 30 * rng.random())):
+            th += rng.normal(0, 0.25)
+            px, py = px + 0.5 * np.cos(th), py + 0.5 * np.sin(th)
+            al = np.maximum(al, np.clip(1.1 - np.hypot(x - px, y - py), 0, 1))
+    al = np.maximum(al, np.clip(1.5 + rng.random() - np.hypot(x - cx, y - cy), 0, 1))
+    col = np.array([0.9, 0.88, 0.75] if i % 2 else [0.2, 0.22, 0.15])
+    mouldy = mouldy * (1 - 0.6 * al[..., None]) + col * 0.6 * al[..., None]
+mouldy = save_png(mouldy, "mouldy.png")
+meta["mould_amount"] = 0.7
+mm, mr = im.mould_mask(mouldy, 0.7)
+meta["mould_marked"], meta["mould_r"] = int(mm.sum()), mr
+save_f32(im.repair_mould(mouldy, 0.7), "mould.f32")
+
+# rainbow rings, their period falling from ~20 to ~6 px outwards, over the same kind of picture
+rclean = np.stack([0.5 + 0.2 * np.sin(x / MW * 2), 0.55 + 0.15 * np.cos(y / MH * 3),
+                   0.5 + 0.1 * np.sin((x - y) / (MW + MH) * 5)], -1) + rng.normal(0, 0.004, (MH, MW, 3))
+rclean[(x - 260) ** 2 + (y - 170) ** 2 < 900] = [0.3, 0.35, 0.6]  # a disc: its edge is not a ring
+rho = np.hypot(x - 0.3 * MW, y - 0.45 * MH)
+fringes = np.stack([np.cos(rho * rho / 267 * 550 / lam) for lam in (620, 550, 460)], -1)
+ringed = save_png(rclean + 0.05 * np.exp(-((rho / 120) ** 2))[..., None] * fringes, "rings.png")
+meta["newton_amount"] = 0.6
+nw, _ = im.newton_weight(ringed, 0.6)
+meta["newton_weight_sum"] = float(nw.sum())
+meta["newton_weight_samples"] = [float(nw[j, i]) for j, i in ((100, 96), (40, 40), (170, 260), (200, 300))]
+save_f32(im.repair_newton(ringed, 0.6), "newton.f32")
+
 (OUT / "golden.json").write_text(json.dumps(meta, indent=1))
 print("wrote", OUT)

@@ -212,12 +212,12 @@ app's keyboard map ignores keys while `.ss-crop` exists): arrows move the frame 
 ⌥ / Alt + arrows resize it from the bottom-right corner (ratio and bounds respected), Enter / Esc.
 A focused straighten slider keeps its own arrow keys.
 
-### Mount detection & dust repair
+### Mount detection & damage repair (dust, mould, Newton rings)
 
-Both are pixel features, so they exist three times — `imaging.py`, `standalone/imaging.ts`,
-`SlideKit/MountAndDust.swift` — pinned by the golden fixtures (`mount.png`, `dusty.png`,
-`dust.f32` and the `mount*` / `dust_*` keys of `golden.json`). Python tests:
-`tests/test_mount_dust.py`.
+All are pixel features, so they exist three times — `imaging.py`, `standalone/imaging.ts`,
+`SlideKit/MountAndDust.swift` (mould and rings: `MouldAndRings.swift`) — pinned by the golden
+fixtures (`mount.png`, `dusty.png`, `dust.f32` and the `mount*` / `dust_*` keys of `golden.json`;
+mould and rings below). Python tests: `tests/test_mount_dust.py`, `tests/test_mould_newton.py`.
 
 **Mount** (`imaging.detect_mount`, on the blended proxy shrunk to 800 px, before rotation — the
 tilt is the same at every quarter turn). The mount's darkness is the median of the outer 1 %
@@ -262,6 +262,79 @@ full-resolution export mark the same specks:
 - Keys: `store.NEUTRAL_EXTRAS` has `"dust": 0.0`, so `render_key` of existing slides doesn't change;
   `tone_key` appends dust only when it is on. Not learned (the colour features say nothing about
   dust); "Apply to rest" and "Copy previous" carry it like the colour settings.
+
+**Mould** (`Params.mould`, 0..1, default 0; `repair_mould` in `tone_base` right after the dust,
+so specks never sit in its samples). Fungus on the film shows as lighter or darker blotches and
+branching filaments a few proxy pixels thick and up to a few mm long, often with a coloured rim —
+bigger than dust, and shaped like things in pictures (twigs, birds), so it is found by shape.
+Found at proxy scale like the dust (`_find_mould`), **in integers throughout**, so all three ports
+mark the same pixels:
+
+- the proxy at 8 bits (`trunc(v × 255 + 0.5)` in float32); r as for the dust (3 at 1600 px);
+- the picture without its mould: cells of 4r × 4r px, each cell's integer mean (×9, floored), the
+  **lower median of the 9 × 9 cells** around it per channel (a ±54 px window at proxy size: mould
+  covers too little of it to move the median), bilinear between cell centres in float64 (the same
+  formula, in the same order, in every port: `_bilinear_axis`, rows first);
+- each channel's 3 × 3 sum (edge repeated) against that; a pixel is a candidate where the largest
+  channel difference exceeds `9 × (30 − 18 × mould) / 2` (8-bit levels) — hysteresis: shapes are
+  8-connected candidates at half the threshold with at least one pixel over the full threshold;
+- a shape is mould when it is bigger than dust (area ≥ 3r²), at most `MOULD_LONG × r` long (40r =
+  120 px, ~2.7 mm of the film) and fills little of its bounding box (area ≤ (35 + 20 × mould) % of
+  it: branching, filament-like, ragged). Picture detail joins up into shapes too long or too solid
+  for that: a tree's twigs reach its branches and trunk, discs, bars and leaves are solid or dense.
+  Grown by a (2g + 1)² dilation, g = round(r / 2), for the soft rims.
+
+Fill: low frequencies are the per-channel median of the clean proxy pixels on a 9 × 9 grid r apart
+(`_median_fill`, the dust fill's passes, shared; "clean" = not a candidate of any shape, so mould
+left alone isn't sampled), 6 passes, the background where that finds nothing. Grain comes from the
+first clean pixel 6r or 12r away (→, ←, ↓, ↑, then the diagonals): its value minus the mean of the
+(2g + 1)² around it, g one proxy pixel — so the fill carries the film's grain instead of a flat
+patch. At full resolution the mask is the proxy pixel's verdict, the low frequencies are the
+proxy's (bilinear) and the grain is the full-resolution picture's, so the cost stays at the
+proxy's. What it can't tell apart: a small, thin, isolated shape in the picture (a distant bird
+~50 px across at proxy size, a scribble) is removed; mould touching real detail joins its shape
+and stays.
+
+**Newton rings** (`Params.newton`, 0..1, default 0; `repair_newton` after the mould). Faint,
+rainbow-coloured, concentric fringes where the film touches the mount's glass, their period
+changing slowly across the frame. **Spatial, not an FFT**: the period changes across the rings, so
+a notch filter would need an FFT per tile (and a radix-2 FFT written identically three times),
+while a band-pass and three local statistics of it find the rings wherever they are and are just
+box filters. At proxy scale (s = long edge / 1600):
+
+- the band: `blur(x, r1) − blur(x, r2)` per channel, blur = two clipped box means (≈ Gaussian),
+  r1 = round(s) (0 = none, for thumbnails), r2 = 14s: grain below, the picture's broad shapes above
+  (periods ~8-80 px at proxy size);
+- statistics of the band blurred once more (radius max(1, 2 r1)), summed over the channels and
+  averaged over r3 = 20s: its energy E0, gradient energy E1 (= trace of the structure tensor J),
+  Laplacian energy E2; **narrow-band** = E1² / (E0 E2), ~1 for one local frequency (a sinusoid:
+  |∇b|² = k² b², (Δb)² = k⁴ b²) and ~0.3 for an edge's or grain's broad spectrum; **coherence**
+  of J (one direction: rings, edges; not texture); **amplitude** √E0, from above the grain
+  (0.001-0.003) up to `0.02 + 0.04 × newton` (fading out at twice that: real stripes and edges are
+  stronger);
+- weight = smoothstep(narrow, 0.6 − 0.15 n, +0.15) × smoothstep(coherence, 0.5 − 0.25 n, +0.25) ×
+  the amplitude window; the correction `−weight × band` (luminance and chroma alike — the band is
+  per channel) is added at proxy scale, or bilinear at full resolution (it is smooth).
+- Python adds with OpenCV's `boxFilter` (fast), the ports with float64 running sums along rows,
+  then columns; the results agree to ~1e-15, and the golden and proxy-size outputs came out
+  bit-identical in TypeScript.
+
+What it can't tell apart: faint, fine, regular stripes in the picture (corduroy, ripples, a
+low-contrast grille) are softened like rings; high-contrast stripes, edges, twigs, leaves and grain
+are left alone. The widest rings in the middle of a set (periods over ~80 px) are below the band on
+purpose — at that scale they are indistinguishable from shading.
+
+Both: `store.NEUTRAL_EXTRAS` has `"mould": 0.0, "newton": 0.0` (render keys of existing slides
+don't change); `tone_key` appends `["mould", v]` / `["newton", v]` only when on (named, so never
+confused with a dust value). Not learned; "Apply to rest", "Copy previous" and presets carry them
+like dust. UI: two more sliders under Dust in Adjust → Restore, in its reset and in the collapsed
+summary's count. Golden fixtures: `mouldy.png` → `mould.f32`, `rings.png` → `newton.f32`, keys
+`mould_*` / `newton_*` (added to `golden.json`, older fixtures untouched). Python tests:
+`tests/test_mould_newton.py` (synthetic colonies and rings on grainy pictures at proxy and full
+resolution: error against the clean picture drops ≥ 10× (mould, low frequencies) and ≥ 5× where
+the rings are 25-80 px apart; a bare tree, small discs and bars, dense leaves and a striped
+awning untouched). Timings at 1600 × 1067: mould ~0.6 s in the browser (node), ~1 s in Python;
+Newton rings ~1 s in either.
 
 ### Local adjustments (ROADMAP §6)
 
@@ -528,7 +601,7 @@ standalone/
   `parity.test.ts` (`npm test`) runs the TypeScript pipeline on SlideKit's golden fixtures with the
   same tolerances as `ParityTests.swift`: restore, trim, develop, crop, curves, fit, eyedropper,
   grouping, best of bracket, fusion, alignment, straighten, learning (incl. learned curves), mount
-  detection, dust repair and local adjustments.
+  detection, dust, mould and Newton ring repair and local adjustments.
 - **Images.** Preview URLs stay the same; `imageSrc()` / `useImageSrc()` in `lib/api.ts` render them
   in the worker and hand out object URLs, cached only when the render matches the URL's key (the
   server's cache rule). The stage asks with high priority, filmstrip tiles only once scrolled into

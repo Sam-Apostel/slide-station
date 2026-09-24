@@ -228,6 +228,40 @@ describe("parity with imaging.py", () => {
     expect(im.repairDust(dusty, 0)).toBe(dusty);
   });
 
+  it("mould repair", () => {
+    const mouldy = png("mouldy.png");
+    const { mask, r } = im.mouldMask(mouldy, golden.mould_amount);
+    expect(r).toBe(golden.mould_r);
+    expect(mask.reduce((s, v) => s + v, 0)).toBe(golden.mould_marked);
+    const before = Float32Array.from(mouldy.data);
+    const [mean, worst] = diff(im.repairMould(mouldy, golden.mould_amount).data, floats("mould.f32"));
+    expect(mean).toBeLessThan(1e-5);
+    expect(worst).toBeLessThan(1e-3);
+    expect(mouldy.data).toEqual(before); // not in place unless asked
+    expect(im.repairMould(mouldy, 0)).toBe(mouldy);
+  });
+
+  it("Newton ring removal", () => {
+    const ringed = png("rings.png");
+    const { weight } = im.newtonWeight(ringed, golden.newton_amount);
+    expect(Math.abs(weight.reduce((s, v) => s + v, 0) - golden.newton_weight_sum)).toBeLessThan(1e-6 * weight.length);
+    const at = [
+      [100, 96],
+      [40, 40],
+      [170, 260],
+      [200, 300],
+    ];
+    at.forEach(([y, x], k) =>
+      expect(Math.abs(weight[y * ringed.width + x] - golden.newton_weight_samples[k])).toBeLessThan(1e-6),
+    );
+    const before = Float32Array.from(ringed.data);
+    const [mean, worst] = diff(im.repairNewton(ringed, golden.newton_amount).data, floats("newton.f32"));
+    expect(mean).toBeLessThan(1e-5);
+    expect(worst).toBeLessThan(1e-3);
+    expect(ringed.data).toEqual(before);
+    expect(im.repairNewton(ringed, 0)).toBe(ringed);
+  });
+
   it("local adjustment masks", () => {
     const local = im.cleanParams(golden.params_local).local!;
     expect(local).toEqual(golden.params_local.local); // clean_local keeps what Python kept

@@ -284,9 +284,18 @@ extension Develop {
         }
         let f = Double(max(h, w)) / Double(max(mh, mw))
         let off = (-(r + 1)...(r + 1)).map { ($0 >= 0 ? 1 : -1) * Int(Double(abs($0)) * f + 0.5) }
-        var todo = (0..<(w * h)).filter { known[$0] == 0 }
+        let todo = (0..<(w * h)).filter { known[$0] == 0 }
+        _ = medianFill(&a, known: &known, todo: todo, off: off, passes: dustPasses)
+    }
+
+    /// Fill pixels `todo` of `a` with the per-channel median of the known pixels among the samples
+    /// at `off` × `off` around each (Python: `_median_fill`); pixels with none wait for the next
+    /// pass, which can use the ones filled before it. Returns the pixels still unfilled.
+    static func medianFill(_ a: inout RGBImage, known: inout [UInt8], todo start: [Int], off: [Int], passes: Int) -> [Int] {
+        let w = a.width, h = a.height
+        var todo = start
         var buf = [[Float]](repeating: [Float](repeating: 0, count: off.count * off.count), count: 3)
-        for _ in 0..<dustPasses where !todo.isEmpty {
+        for _ in 0..<passes where !todo.isEmpty {
             var vals = [Float](repeating: 0, count: todo.count * 3)
             var done = [Bool](repeating: false, count: todo.count)
             for (j, i) in todo.enumerated() {
@@ -314,5 +323,6 @@ extension Develop {
             }
             todo = todo.enumerated().filter { !done[$0.offset] }.map(\.element)
         }
+        return todo
     }
 }

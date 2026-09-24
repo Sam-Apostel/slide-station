@@ -1959,5 +1959,23 @@
    ]
   }
  ],
- "restore_blown": {"scales": [1.5, 2.0, 3.0], "strength": 0.6}
+ "restore_blown": {
+  "scales": [
+   1.5,
+   2.0,
+   3.0
+  ],
+  "strength": 0.6
+ },
+ "mould_amount": 0.7,
+ "mould_marked": 2060,
+ "mould_r": 1,
+ "newton_amount": 0.6,
+ "newton_weight_sum": 45515.63744639252,
+ "newton_weight_samples": [
+  0.0,
+  1.0,
+  0.010250710047789453,
+  0.0
+ ]
 }

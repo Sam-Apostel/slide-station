@@ -21,6 +21,10 @@ export type Params = {
   crop: [number, number, number, number] | null;
   /** Dust & scratch repair 0..1 (0 = off). */
   dust: number;
+  /** Mould repair 0..1 (0 = off). */
+  mould: number;
+  /** Newton ring removal 0..1 (0 = off). */
+  newton: number;
   /** Local adjustments, applied in order after the global ones (imaging.clean_local); per slide. */
   local?: Local[];
 };

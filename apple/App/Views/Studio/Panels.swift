@@ -206,7 +206,7 @@ struct InspectorPanel: View {
     private var histogramKey: String {
         guard let g = model.slide else { return "" }
         let p = g.params
-        return "\(g.id)|\(g.activeScans)|\(g.rotation)|\(p.strength)|\(p.trim)|\(p.dust)|\(p.angle)|\(p.crop ?? [])"
+        return "\(g.id)|\(g.activeScans)|\(g.rotation)|\(p.strength)|\(p.trim)|\(p.dust)|\(p.mould)|\(p.newton)|\(p.angle)|\(p.crop ?? [])"
     }
 
     private func loadHistogram() async {

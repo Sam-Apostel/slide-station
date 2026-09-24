@@ -260,6 +260,8 @@ class Params:
     angle: float = 0.0  # straighten, degrees clockwise (-15..15), zoomed in so no corners show
     crop: list | None = None  # [left, top, right, bottom] in 0..1 of the straightened frame
     dust: float = 0.0  # dust & scratch repair 0..1 (0 = off)
+    mould: float = 0.0  # mould repair 0..1 (0 = off)
+    newton: float = 0.0  # Newton ring removal 0..1 (0 = off)
     # local adjustments (graduated / radial / brush masks with their own sliders), see clean_local
     local: list = field(default_factory=list)
 
@@ -271,8 +273,8 @@ class Params:
                 p.curves = clean_curves(v)
             elif k == "crop":
                 p.crop = clean_crop(v)
-            elif k == "dust":
-                p.dust = min(1.0, max(0.0, float(v)))
+            elif k in ("dust", "mould", "newton"):
+                setattr(p, k, min(1.0, max(0.0, float(v))))
             elif k == "local":
                 p.local = clean_local(v)
             elif hasattr(p, k):
@@ -546,10 +548,17 @@ def repair_dust(a: np.ndarray, amount: float, inplace: bool = False) -> np.ndarr
     # the window: (2r + 3)² samples around the pixel, spread out as far as the proxy's pixels are
     f = max(h, w) / max(mh, mw)
     off = np.array([(1 if k >= 0 else -1) * int(abs(k) * f + 0.5) for k in range(-r - 1, r + 2)])
-    known = ~m
-    ys, xs = np.nonzero(m)
+    _median_fill(out, ~m, *np.nonzero(m), off, DUST_PASSES)
+    return out
+
+
+def _median_fill(out: np.ndarray, known: np.ndarray, ys: np.ndarray, xs: np.ndarray, off, passes: int):
+    """Fill pixels (ys, xs) of `out` in place with the per-channel median of the known pixels among
+    the samples at `off` × `off` around each; pixels with none wait for the next pass, which can
+    use the ones filled before it. Returns the pixels still unfilled after `passes`."""
+    h, w = known.shape
     dy, dx = (g.ravel() for g in np.meshgrid(off, off, indexing="ij"))
-    for _ in range(DUST_PASSES):
+    for _ in range(passes):
         if not len(ys):
             break
         vals = np.empty((len(ys), 3), np.float32)
@@ -565,6 +574,247 @@ def repair_dust(a: np.ndarray, amount: float, inplace: bool = False) -> np.ndarr
         out[ys[done], xs[done]] = vals[done]  # a pass reads only pixels known before it
         known[ys[done], xs[done]] = True
         ys, xs = ys[~done], xs[~done]
+    return ys, xs
+
+
+def _verdicts(m: np.ndarray, h: int, w: int) -> np.ndarray:
+    """A proxy-scale mask at h x w: every pixel takes its proxy pixel's verdict."""
+    mh, mw = m.shape
+    if (mh, mw) == (h, w):
+        return m
+    ys = np.minimum(((np.arange(h) + 0.5) * mh / h).astype(np.int64), mh - 1)
+    xs = np.minimum(((np.arange(w) + 0.5) * mw / w).astype(np.int64), mw - 1)
+    return m[ys][:, xs]
+
+
+def _bilinear_axis(n: int, sn: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """For each of n pixels, the two of sn grid centres around it and the weight of the second:
+    grid over the same span, clamped at the ends."""
+    u = (np.arange(n) + 0.5) * sn / n - 0.5
+    i0 = np.clip(np.floor(u), 0, sn - 1).astype(np.int64)
+    return i0, np.minimum(i0 + 1, sn - 1), np.clip(u - i0, 0, 1)
+
+
+def _bilinear_at(src: np.ndarray, ys: np.ndarray, xs: np.ndarray, h: int, w: int) -> np.ndarray:
+    """float64 values of `src` (a coarser grid over the same frame) at pixels (ys, xs) of an
+    h x w image: bilinear between the grid's centres, clamped at the edges. At src's own size, src.
+    Along rows first, then down: (a (1 - fx) + b fx) (1 - fy) + (c (1 - fx) + d fx) fy."""
+    x0, x1, fx = (v[xs] for v in _bilinear_axis(w, src.shape[1]))
+    y0, y1, fy = (v[ys] for v in _bilinear_axis(h, src.shape[0]))
+    if src.ndim == 3:
+        fx, fy = fx[:, None], fy[:, None]
+    s = src.astype(np.float64)
+    return (s[y0, x0] * (1 - fx) + s[y0, x1] * fx) * (1 - fy) + (s[y1, x0] * (1 - fx) + s[y1, x1] * fx) * fy
+
+
+def _upsample(src: np.ndarray, h: int, w: int, top: int = 0, bottom: int | None = None) -> np.ndarray:
+    """Rows top..bottom of `src` brought to h x w: _bilinear_at for every pixel (the same sums)."""
+    x0, x1, fx = _bilinear_axis(w, src.shape[1])
+    y0, y1, fy = (v[top:bottom] for v in _bilinear_axis(h, src.shape[0]))
+    s = src.astype(np.float64)
+    if src.ndim == 3:
+        fx, fy = fx[:, None], fy[:, None, None]
+    else:
+        fy = fy[:, None]
+    across = s[:, x0] * (1 - fx) + s[:, x1] * fx
+    return across[y0] * (1 - fy) + across[y1] * fy
+
+
+# --------------------------------------------------------------------------- mould
+
+MOULD_CELLS = 9  # the picture under the mould: the median of this many cells (4r px each) across
+MOULD_LONG = 40  # × r: the longest colony, in proxy pixels (120 at 1600 px, ~2.7 mm of the film)
+MOULD_PASSES = 6
+
+
+def _mould_background(q: np.ndarray, cell: int) -> np.ndarray:
+    """The picture without its mould, per channel and ×9 (like the 3×3 sums it is compared with):
+    the lower median of the MOULD_CELLS² cell means around each cell, bilinear between cells.
+    Cell means are integers, so the medians are the same in every port."""
+    h, w = q.shape[:2]
+    gh, gw = -(-h // cell), -(-w // cell)
+    ii = np.zeros((h + 1, w + 1, 3), np.int64)
+    ii[1:, 1:] = q.astype(np.int64).cumsum(0).cumsum(1)
+    y0, x0 = np.arange(gh) * cell, np.arange(gw) * cell
+    y1, x1 = np.minimum(y0 + cell, h), np.minimum(x0 + cell, w)
+    sums = ii[y1][:, x1] - ii[y0][:, x1] - ii[y1][:, x0] + ii[y0][:, x0]
+    cells = sums * 9 // ((y1 - y0)[:, None] * (x1 - x0)[None, :])[..., None]
+    k = MOULD_CELLS // 2
+    big = np.int64(1) << 40  # outside the picture: sorts last, never the median
+    pad = np.pad(cells, ((k, k), (k, k), (0, 0)), constant_values=big)
+    win = np.lib.stride_tricks.sliding_window_view(pad, (MOULD_CELLS, MOULD_CELLS), (0, 1))
+    win = np.sort(win.reshape(gh, gw, 3, -1), -1)
+    n = (win < big).sum(-1)
+    med = np.take_along_axis(win, ((n - 1) // 2)[..., None], -1)[..., 0]
+    return _upsample(med, gh * cell, gw * cell, 0, h)[:, :w]
+
+
+def _find_mould(a: np.ndarray, amount: float) -> tuple[np.ndarray, np.ndarray, np.ndarray, int]:
+    """Mould: fungus grown on the film — lighter or darker blotches and branching filaments, a few
+    proxy pixels thick and up to a few mm long, often with a coloured rim.
+
+    Found in integers (the proxy at 8 bits), so every port marks the same pixels: where any
+    channel's 3×3 sum differs from the picture without its mould (_mould_background) by more than
+    `amount` asks, the pixel is a candidate. Connected candidates (8-neighbours) count as mould only
+    when they look like it: bigger than dust, at most MOULD_LONG × r long, and filling little of
+    their bounding box (branching, filament-like, ragged). Picture detail joins up into shapes too
+    long or too solid for that — a tree's twigs reach its branches and trunk — and stays. Grown by
+    r / 2 for the soft rims. Returns (mask, all candidates, background ×9, r)."""
+    q = (np.clip(a, 0, 1) * np.float32(255) + np.float32(0.5)).astype(np.int64)
+    h, w = q.shape[:2]
+    r = max(1, int(3 * max(h, w) / DUST_EDGE + 0.5))
+    pad = np.pad(q, ((1, 1), (1, 1), (0, 0)), mode="edge")
+    s9 = sum(pad[dy : dy + h, dx : dx + w] for dy in range(3) for dx in range(3))
+    bg = _mould_background(q, 4 * r)
+    dev = np.abs(s9 - bg).max(-1)
+    thr = 9 * (30 - 18 * amount)
+    _, labels, st, _ = cv2.connectedComponentsWithStats((dev > thr / 2).astype(np.uint8), connectivity=8)
+    bw, bh, area = (st[:, k].astype(np.int64) for k in (cv2.CC_STAT_WIDTH, cv2.CC_STAT_HEIGHT, cv2.CC_STAT_AREA))
+    strong = np.zeros(len(area), bool)
+    strong[labels[dev > thr]] = True
+    keep = strong & (area >= 3 * r * r) & (np.maximum(bw, bh) <= MOULD_LONG * r)
+    keep &= area * 100 <= bw * bh * int(35 + 20 * amount)
+    keep[0] = False  # the background label
+    g = max(1, int(r / 2 + 0.5))
+    m = cv2.dilate(keep[labels].astype(np.uint8), np.ones((2 * g + 1, 2 * g + 1), np.uint8)).astype(bool)
+    return m, labels > 0, bg, r
+
+
+def mould_mask(a: np.ndarray, amount: float) -> tuple[np.ndarray, int]:
+    """(mask, r): the mould _find_mould keeps."""
+    m, _, _, r = _find_mould(a, amount)
+    return m, r
+
+
+def repair_mould(a: np.ndarray, amount: float, inplace: bool = False) -> np.ndarray:
+    """Find mould (mould_mask, at proxy scale) and paint it out without leaving flat patches.
+
+    Low frequencies from around the mark: the per-channel median of the unmarked proxy pixels on a
+    9 × 9 grid r apart, pass by pass as in the dust fill, and the background where that finds
+    nothing. Grain from the first clean spot 6r or 12r away round the compass: its pixel minus its
+    local mean, so the fill carries the film's own grain. At full resolution the low frequencies
+    are the proxy's (bilinear) and the grain is the full-resolution picture's."""
+    if amount <= 0:
+        return a
+    h, w = a.shape[:2]
+    small = shrink(a, DUST_EDGE)
+    m, busy, bg, r = _find_mould(small, amount)
+    if not m.any():
+        return a
+    mh, mw = m.shape
+    busy |= m  # samples and grain come from clean picture only, not from mould left alone
+    low = small.copy()
+    ly, lx = _median_fill(low, ~busy, *np.nonzero(m), np.arange(-4, 5) * r, MOULD_PASSES)
+    low[ly, lx] = (bg[ly, lx] / (9 * 255)).astype(np.float32)
+    mask, busy = _verdicts(m, h, w), _verdicts(busy, h, w)
+    ys, xs = np.nonzero(mask)
+    val = _bilinear_at(low, ys, xs, h, w)
+    f = max(h, w) / max(mh, mw)
+    qy, qx, found = ys.copy(), xs.copy(), np.zeros(len(ys), bool)
+    for d in (6 * r, 12 * r):
+        d = int(d * f + 0.5)
+        for sy, sx in ((0, 1), (0, -1), (1, 0), (-1, 0), (1, 1), (-1, -1), (1, -1), (-1, 1)):
+            cy, cx = ys + sy * d, xs + sx * d
+            i = np.nonzero(~found & (cy >= 0) & (cy < h) & (cx >= 0) & (cx < w))[0]
+            i = i[~busy[cy[i], cx[i]]]
+            qy[i], qx[i], found[i] = cy[i], cx[i], True
+    # its grain: the pixel minus the mean of the (2g + 1)² around it, g a proxy pixel
+    g = max(1, int(f + 0.5))
+    i = np.nonzero(found)[0]
+    mean = np.zeros((len(i), 3))
+    for dy in range(-g, g + 1):
+        yy = np.clip(qy[i] + dy, 0, h - 1)
+        for dx in range(-g, g + 1):
+            mean += a[yy, np.clip(qx[i] + dx, 0, w - 1)]
+    val[i] += a[qy[i], qx[i]] - mean / ((2 * g + 1) ** 2)
+    out = a if inplace else a.copy()
+    out[ys, xs] = np.clip(val, 0, 1)
+    return out
+
+
+# --------------------------------------------------------------------------- Newton rings
+
+NEWTON_EDGE = 1600
+
+
+def _box(a: np.ndarray, r: int) -> np.ndarray:
+    """float64 mean over the (2r + 1)² window, clipped to the image (so the window's own area).
+    The ports use running sums along rows then columns; OpenCV adds in another order, which
+    changes the last bits only (~1e-15)."""
+    h, w = a.shape[:2]
+    s = cv2.boxFilter(np.ascontiguousarray(a, np.float64), -1, (2 * r + 1, 2 * r + 1), normalize=False,
+                      borderType=cv2.BORDER_CONSTANT)
+    i, j = np.arange(h), np.arange(w)
+    ny = np.minimum(i + r + 1, h) - np.maximum(i - r, 0)
+    nx = np.minimum(j + r + 1, w) - np.maximum(j - r, 0)
+    n = (ny[:, None] * nx[None, :]).astype(np.float64)
+    return s / (n[..., None] if a.ndim == 3 else n)
+
+
+def _blur(a: np.ndarray, r: int) -> np.ndarray:
+    """Two box means over (2r + 1)²: close to a Gaussian."""
+    return _box(_box(a, r), r)
+
+
+def _smoothstep(x: np.ndarray, e0: float, e1: float) -> np.ndarray:
+    t = np.clip((x - e0) / (e1 - e0), 0, 1)
+    return t * t * (3 - 2 * t)
+
+
+def newton_weight(a: np.ndarray, amount: float) -> tuple[np.ndarray, np.ndarray]:
+    """Newton rings: interference fringes where the film touches the glass of the mount — faint,
+    rainbow-coloured, concentric, their period changing slowly across the frame.
+
+    Spatial, not an FFT: the period changes across the rings (a notch would need an FFT per tile,
+    and a radix-2 FFT in three ports), while a band-pass and a few local statistics of it find them
+    wherever they are. The band is two blurs apart (grain below, the picture's broad shapes above).
+    Rings are where that band, smoothed a little more, is (1) narrow-band — one frequency locally,
+    so its gradient energy squared equals its energy times its Laplacian energy (the ratio is ~1
+    for a sinusoid, ~0.3 for an edge's or grain's broad spectrum); (2) oriented — one direction
+    dominating its structure tensor; (3) faint — above the grain, well below real edges and
+    stripes. Returns (weight 0..1 per pixel, the band per channel), both float64."""
+    x = a.astype(np.float64)
+    h, w = x.shape[:2]
+    s = max(h, w) / NEWTON_EDGE
+    r1, r2, r3 = int(s + 0.5), max(2, int(14 * s + 0.5)), max(3, int(20 * s + 0.5))  # r1 0: no blur
+    band = _blur(x, r1) - _blur(x, r2)
+    b = _blur(band, max(1, 2 * r1))
+    pb = np.pad(b, ((1, 1), (1, 1), (0, 0)), mode="edge")  # neighbours, the edge repeated
+    xp, xm, yp, ym = pb[1:-1, 2:], pb[1:-1, :-2], pb[2:, 1:-1], pb[:-2, 1:-1]
+    gx, gy = (xp - xm) * 0.5, (yp - ym) * 0.5
+    lap = xp + xm + yp + ym - 4 * b
+
+    def energy(u, v):  # summed over the channels, blurred over the neighbourhood
+        return _blur(u[..., 0] * v[..., 0] + u[..., 1] * v[..., 1] + u[..., 2] * v[..., 2], r3)
+
+    e0, e2 = energy(b, b), energy(lap, lap)
+    jxx, jyy, jxy = energy(gx, gx), energy(gy, gy), energy(gx, gy)
+    e1 = jxx + jyy
+    narrow = e1 * e1 / (e0 * e2 + 1e-30)
+    coh = ((jxx - jyy) * (jxx - jyy) + 4 * jxy * jxy) / (e1 * e1 + 1e-30)
+    amp = np.sqrt(e0)
+    n0, c0, a1 = 0.6 - 0.15 * amount, 0.5 - 0.25 * amount, 0.02 + 0.04 * amount
+    wgt = (_smoothstep(narrow, n0, n0 + 0.15) * _smoothstep(coh, c0, c0 + 0.25)
+           * _smoothstep(amp, 0.001, 0.003) * (1 - _smoothstep(amp, a1, 2 * a1)))
+    return wgt, band
+
+
+def repair_newton(a: np.ndarray, amount: float, inplace: bool = False) -> np.ndarray:
+    """Take the ring band out where newton_weight finds rings (at proxy scale; the band is smooth,
+    so at full resolution the proxy's correction is laid on bilinear)."""
+    if amount <= 0:
+        return a
+    h, w = a.shape[:2]
+    small = shrink(a, NEWTON_EDGE)
+    wgt, band = newton_weight(small, amount)
+    corr = -wgt[..., None] * band
+    out = a if inplace else a.copy()
+    if corr.shape[:2] == (h, w):
+        out[:] = np.clip(a + corr, 0, 1)
+        return out
+    for y in range(0, h, 256):  # in strips: a float64 correction at full size would be 360 MB
+        rows = _upsample(corr, h, w, y, y + 256)
+        out[y : y + len(rows)] = np.clip(a[y : y + len(rows)] + rows, 0, 1)
     return out
 
 
@@ -679,14 +929,18 @@ def geometry(a: np.ndarray, p: Params, crop: bool = True) -> np.ndarray:
 
 
 def tone_base(a: np.ndarray, p: Params, crop: bool = True) -> np.ndarray:
-    """The image the tone curve works on: auto-restored, trimmed, dust repaired, straightened and
-    cropped. Dust comes after the trim so the mount's edge is never taken for a scratch, and the
-    trim (decided on the restored pixels) stays the one before_view uses."""
+    """The image the tone curve works on: auto-restored, trimmed, repaired (dust, mould, Newton
+    rings), straightened and cropped. Repairs come after the trim so the mount's edge is never taken
+    for damage, and the trim (decided on the restored pixels) stays the one before_view uses."""
     out = auto_restore(a, p.strength)
     if p.trim:
         out = trim_borders(out)
     if p.dust > 0:
         out = repair_dust(out, p.dust, inplace=True)  # out is ours: auto_restore copied
+    if p.mould > 0:  # after the dust, so specks don't sit in the mould fill's samples
+        out = repair_mould(out, p.mould, inplace=True)
+    if p.newton > 0:
+        out = repair_newton(out, p.newton, inplace=True)
     return geometry(out, p, crop)
 
 

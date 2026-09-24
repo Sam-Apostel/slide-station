@@ -235,6 +235,26 @@ final class FeatureTests: XCTestCase {
         XCTAssertEqual(old.dust, 0)
     }
 
+    func testMouldAndNewtonCountInTheRenderKeyOnlyWhenOn() throws {
+        var g = Slide(scans: ["a"], params: Params())
+        let key = g.renderKey
+        g.params.mould = 0.4
+        let mould = g.renderKey
+        g.params.mould = 0; g.params.newton = 0.4
+        XCTAssertNotEqual(g.renderKey, key)
+        XCTAssertNotEqual(g.renderKey, mould)
+        XCTAssertNotEqual(mould, key)
+        g.params.newton = 0
+        XCTAssertEqual(g.renderKey, key)
+        // trays from before mould and Newton ring repair decode with both off; out of range is clamped
+        let old = try JSONDecoder().decode(Params.self, from: Data(#"{"strength": 0.5, "dust": 0.2}"#.utf8))
+        XCTAssertEqual(old.mould, 0)
+        XCTAssertEqual(old.newton, 0)
+        let wild = try JSONDecoder().decode(Params.self, from: Data(#"{"mould": 3, "newton": -1}"#.utf8))
+        XCTAssertEqual(wild.mould, 1)
+        XCTAssertEqual(wild.newton, 0)
+    }
+
     func testMountRoundTripsAndGoesStaleWithTheScans() throws {
         var g = Slide(scans: ["a", "b"], params: Params())
         g.mount = MountEdge(angle: 1.5, confidence: 0.9, box: [0.1, nil, 0.9, 0.92], scans: g.activeScans)
