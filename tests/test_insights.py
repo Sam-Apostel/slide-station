@@ -51,6 +51,7 @@ def clip(monkeypatch):
     module's `step`, patched to do nothing), so the tests decide when slides are analysed."""
     fake = FakeClip()
     monkeypatch.setattr(insights, "backend", lambda: fake)
+    monkeypatch.setattr(insights, "model_ready", lambda: True)
     monkeypatch.setattr(insights, "step", lambda: False)
     store.save_config({**store.load_config(), "insights_enabled": True})
     (store.library() / "insights.json").unlink(missing_ok=True)
@@ -82,7 +83,7 @@ def tag_states(g) -> dict:
 def test_off_by_default_and_without_model(api, tray, monkeypatch):
     sid, _ = tray
     d = payload(api, sid)
-    assert d["insights"] == {"enabled": False, "ready": False, "pending": 4}
+    assert d["insights"] == {"enabled": False, "ready": False, "pending": 4, "missing": []}
     assert not STEP()  # disabled: nothing happens
     store.save_config({**store.load_config(), "insights_enabled": True})
     assert not STEP()  # enabled, but no model downloaded

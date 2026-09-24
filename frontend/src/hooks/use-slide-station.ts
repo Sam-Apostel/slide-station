@@ -530,8 +530,15 @@ export function useSlideStation() {
 
   // ---------------------------------------------------------------- insights (desktop app)
 
-  /** Accept or dismiss open suggestions of a kind (one value, or all): on the given slides, or the whole tray. */
-  const decide = async (kind: InsightKind, action: "accept" | "dismiss", value?: string, groupIds?: string[]) => {
+  /** Accept or dismiss open suggestions of a kind (one value, or all): on the given slides, or the whole tray.
+   *  `text`: a caption as the user edited it before accepting (one slide). */
+  const decide = async (
+    kind: InsightKind,
+    action: "accept" | "dismiss",
+    value?: string,
+    groupIds?: string[],
+    text?: string,
+  ) => {
     const { sessionId: sid } = ref.current;
     try {
       const p = await api<SessionPayload & { decided: number }>("POST", `/api/sessions/${sid}/insights/decide`, {
@@ -539,6 +546,7 @@ export function useSlideStation() {
         action,
         value,
         groups: groupIds,
+        text,
       });
       applyPayload(p);
       return p;
@@ -660,7 +668,7 @@ export function useSlideStation() {
     }
   };
 
-  /** Fetch the tag model (a job in the activity pill); the open tray is analysed once it's there. */
+  /** Fetch the models turned on (a job in the activity pill); the open tray is analysed once they're there. */
   const downloadModel = async () => {
     try {
       await api("POST", "/api/insights/model");

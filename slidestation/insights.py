@@ -7,14 +7,18 @@ Per slide, `g["insights"]` holds what the models suggest:
 
 `state` is "suggested", "accepted" (the value became the slide's own tag / caption / date) or
 "dismissed" (it never comes back for that slide, and counts against the label, below). `key` names
-what the suggestions were computed from (active scans, rotation, model, labels): a slide whose key
-is stale is analysed again, keeping every decision already made.
+what the suggestions were computed from (active scans, rotation, the models turned on, labels): a
+slide whose key is stale is analysed again, keeping every decision already made.
 
 Scene tags come from zero-shot CLIP (ViT-B/32, ONNX, quantized) on the blended proxy. The model is
 downloaded on first use into the library's `models/` folder (resumable, verified, atomic), the
 label text embeddings are computed once and cached next to it. A background thread analyses the
 open tray (and trays queued with `queue_tray`) one slide at a time while no job runs; it commits
 through `workflow.update_session`, so it never saves over an edit made meanwhile.
+
+Captions come from a small vision-language model (`captions.py`, Florence-2), opt-in on its own
+(`captions_enabled`); the same worker runs it on the same upright proxy, for slides without a
+caption of their own.
 
 Learning: every accept / dismiss is counted per label in the library's `insights.json`; a label
 dismissed more often than accepted needs a higher confidence before it is suggested again.
@@ -32,8 +36,9 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
-from . import imaging as im
+from . import captions
 from . import similar
+from . import imaging as im
 from . import workflow as wf
 from .store import Session, _atomic_write, active_scans, library, load_config, lock
 
@@ -127,24 +132,24 @@ def _checksum(path: Path, want: str) -> bool:
     return h.hexdigest() == digest
 
 
-OFFLINE = ("Couldn't reach huggingface.co to download the tag model ({}). Check the internet connection "
+OFFLINE = ("Couldn't reach huggingface.co to download the {} ({}). Check the internet connection "
            "and try again; the download continues where it stopped.")
 
 
-def download_model(job) -> None:
-    """Fetch the model files into the library (a job: progress in MB). Each file is written to a
-    .part file that a later attempt resumes (HTTP Range), checked against its checksum, then moved
-    into place, so a half-downloaded model is never used."""
+def fetch_files(job, repo: str, files: list, d: Path, what: str) -> None:
+    """Fetch model files (remote path, local name, bytes, checksum) from `repo` into `d` (a job:
+    progress in MB). Each file is written to a .part file that a later attempt resumes (HTTP Range),
+    checked against its checksum, then moved into place, so a half-downloaded model is never used.
+    Shared by every downloaded model (tags, captions)."""
     import httpx
 
-    d = model_dir()
     d.mkdir(parents=True, exist_ok=True)
-    job.total = MODEL_MB
-    job.message = "Downloading the tag model (MB)"
+    job.total = round(sum(f[2] for f in files) / 1e6)
+    job.message = f"Downloading the {what} (MB)"
     done = 0
     try:
         with httpx.Client(follow_redirects=True, timeout=httpx.Timeout(30, read=60)) as client:
-            for remote, name, size, want in MODEL_FILES:
+            for remote, name, size, want in files:
                 dest = d / name
                 if dest.is_file() and dest.stat().st_size == size:
                     done += size
@@ -157,7 +162,7 @@ def download_model(job) -> None:
                     have = 0
                 if have < size:
                     headers = {"Range": f"bytes={have}-"} if have else {}
-                    with client.stream("GET", _REPO + remote, headers=headers) as r:
+                    with client.stream("GET", repo + remote, headers=headers) as r:
                         if r.status_code == 200 and have:  # the server ignored the range: start over
                             have = 0
                         elif r.status_code not in (200, 206):
@@ -168,7 +173,7 @@ def download_model(job) -> None:
                                 have += len(chunk)
                                 job.done = round((done + have) / 1e6)
                 if part.stat().st_size < size:  # the connection ended early: keep it for the next try
-                    raise RuntimeError(OFFLINE.format("the download stopped early"))
+                    raise RuntimeError(OFFLINE.format(what, "the download stopped early"))
                 if part.stat().st_size != size or not _checksum(part, want):
                     part.unlink(missing_ok=True)
                     raise RuntimeError(f"The downloaded {name} didn't match its checksum; try again.")
@@ -176,8 +181,13 @@ def download_model(job) -> None:
                 done += size
                 job.done = round(done / 1e6)
     except httpx.TransportError as e:  # offline, DNS, proxy, a dropped connection, a timeout
-        raise RuntimeError(OFFLINE.format(e.__class__.__name__)) from None
+        raise RuntimeError(OFFLINE.format(what, e.__class__.__name__)) from None
     job.done = job.total
+
+
+def download_model(job) -> None:
+    """Fetch the tag model into the library (see `fetch_files`)."""
+    fetch_files(job, _REPO, MODEL_FILES, model_dir(), "tag model")
     job.message = "Tag model ready: slides are analysed in the background"
 
 
@@ -359,66 +369,102 @@ def threshold(label: str, stats: dict | None = None) -> float:
 # ------------------------------------------------------------------------------------ per slide
 
 
-def insights_key(g: dict) -> str:
-    return hashlib.sha1(json.dumps([active_scans(g), g["rotation"], MODEL_ID, LABELS_KEY]).encode()).hexdigest()[:12]
-
-
-def needs_analysis(g: dict) -> bool:
-    return not g.get("skip") and (g.get("insights") or {}).get("key") != insights_key(g)
-
-
-def analyse(s, g: dict, b) -> dict:
-    """Fresh suggestions for one slide (no decisions merged in yet)."""
-    return _analyse(s, g, b)[0]
-
-
-def _analyse(s, g: dict, b) -> tuple[dict, np.ndarray, np.ndarray]:
-    """(suggestions, the upright blend's CLIP embedding, the upright blend): the embedding is also
-    what near-duplicates and scenes are found with (similar.py)."""
-    rgb = im.rotate_arr(wf.fused_proxy(s, g), g["rotation"])
-    stats = learned()
-    emb = b.image_embed(rgb)
-    ranked = scene_tags(b, rgb, emb)
-    tags = [{"value": t, "confidence": round(p, 3), "source": MODEL_ID, "state": "suggested"}
-            for t, p in ranked if p >= threshold(t, stats)][:MAX_TAGS]
-    return {"key": insights_key(g), "tags": tags}, emb, rgb
-
-
-def merge(old: dict | None, new: dict, own_tags: list[str]) -> dict:
-    """New suggestions with the decisions already made kept: accepted and dismissed entries stay
-    (confidence refreshed), a new suggestion for a tag the slide already has counts as accepted."""
-    old = old or {}
-    kept = {e["value"]: e for e in old.get("tags", []) if e.get("state") in ("accepted", "dismissed")}
-    tags = []
-    for e in new.get("tags", []):
-        if e["value"] in kept:
-            tags.append({**e, "state": kept.pop(e["value"])["state"]})
-        else:
-            tags.append({**e, "state": "accepted" if e["value"] in own_tags else "suggested"})
-    tags += kept.values()
-    out = {"key": new["key"], "tags": tags}
-    for k in ("caption", "date", "place", "stock"):
-        out[k] = new.get(k) if new.get(k) is not None else old.get(k)
+def active_models() -> list[str]:
+    """What analyses a slide now: the models turned on and downloaded (tags, captions). Part of
+    every slide's key, so turning a model on (or its download finishing) analyses the trays again."""
+    out = [MODEL_ID, LABELS_KEY] if enabled() and model_ready() else []
+    if captions.enabled() and captions.model_ready():
+        out.append(captions.MODEL_ID)
     return out
 
 
-def analyse_slide(sid: str, gid: str) -> bool:
-    """Analyse one slide and commit if it is still the same slide (scans, rotation) afterwards."""
-    b = backend()
-    if b is None:
+def insights_key(g: dict, models: list[str] | None = None) -> str:
+    """What a slide's suggestions were computed from. With captions on it includes whether the slide
+    has a caption of its own: a slide with one isn't captioned, clearing it asks for a suggestion."""
+    models = active_models() if models is None else models
+    k = [active_scans(g), g["rotation"], *models]  # tags alone: the same key as before captions
+    if captions.MODEL_ID in models:
+        k.append(bool(g.get("caption")))
+    return hashlib.sha1(json.dumps(k).encode()).hexdigest()[:12]
+
+
+def needs_analysis(g: dict, models: list[str] | None = None) -> bool:
+    return not g.get("skip") and (g.get("insights") or {}).get("key") != insights_key(g, models)
+
+
+def analyse(s, g: dict, models: list[str]) -> dict:
+    """Fresh suggestions for one slide from the active models (no decisions merged in yet). A kind
+    that no model computed is left out, so `merge` keeps what was there."""
+    return _analyse(s, g, models)[0]
+
+
+def _analyse(s, g: dict, models: list[str]) -> tuple[dict, np.ndarray | None, np.ndarray]:
+    """(suggestions, the upright blend's CLIP embedding or None without the tag model, the upright
+    blend): the embedding is also what near-duplicates and scenes are found with (similar.py)."""
+    rgb = im.rotate_arr(wf.fused_proxy(s, g), g["rotation"])
+    out: dict = {"key": insights_key(g, models)}
+    emb = None
+    if MODEL_ID in models:
+        stats = learned()
+        emb = backend().image_embed(rgb)
+        ranked = scene_tags(backend(), rgb, emb)
+        out["tags"] = [{"value": t, "confidence": round(p, 3), "source": MODEL_ID, "state": "suggested"}
+                       for t, p in ranked if p >= threshold(t, stats)][:MAX_TAGS]
+    if captions.MODEL_ID in models and not g.get("caption"):
+        text, conf = captions.backend().caption(rgb)
+        if text:
+            out["caption"] = {"value": text, "confidence": round(conf, 3), "source": captions.MODEL_ID,
+                              "state": "suggested"}
+    return out, emb, rgb
+
+
+def merge(old: dict | None, new: dict, own_tags: list[str], own_caption: str = "") -> dict:
+    """New suggestions with the decisions already made kept: accepted and dismissed entries stay
+    (confidence refreshed), a new suggestion for a tag the slide already has counts as accepted.
+    A caption suggestion that was decided keeps its state while the model says the same; an open
+    one goes away once the slide has a caption of its own (it is never offered over one)."""
+    old = old or {}
+    if "tags" in new:
+        kept = {e["value"]: e for e in old.get("tags", []) if e.get("state") in ("accepted", "dismissed")}
+        tags = []
+        for e in new["tags"]:
+            if e["value"] in kept:
+                tags.append({**e, "state": kept.pop(e["value"])["state"]})
+            else:
+                tags.append({**e, "state": "accepted" if e["value"] in own_tags else "suggested"})
+        tags += kept.values()
+    else:  # the tag model is off: leave the tags as they were
+        tags = old.get("tags", [])
+    out = {"key": new["key"], "tags": tags}
+    for k in ("caption", "date", "place", "stock"):
+        out[k] = new.get(k) if new.get(k) is not None else old.get(k)
+    cap, was = new.get("caption"), old.get("caption")
+    if cap and was and was.get("state") != "suggested" and was.get("value") == cap["value"]:
+        out["caption"] = {**cap, "state": was["state"]}
+    if own_caption and (out["caption"] or {}).get("state") == "suggested":
+        out["caption"] = None
+    return out
+
+
+def analyse_slide(sid: str, gid: str, models: list[str] | None = None) -> bool:
+    """Analyse one slide and commit if it is still the same slide (scans, rotation, caption or not)
+    afterwards: never a stale save over an edit made while the models ran."""
+    models = active_models() if models is None else models
+    if not models:
         return False
     s = Session(sid)
     g = s.group(gid)
-    new, emb, rgb = _analyse(s, g, b)  # the slow part, outside the lock
-    similar.record_slide(sid, g, emb, rgb)
+    new, emb, rgb = _analyse(s, g, models)  # the slow part, outside the lock
+    if emb is not None:
+        similar.record_slide(sid, g, emb, rgb)
 
     def commit(fresh):
         try:
             fg = fresh.group(gid)
         except KeyError:
             return
-        if insights_key(fg) == new["key"] and (fg.get("insights") or {}).get("key") != new["key"]:
-            fg["insights"] = merge(fg.get("insights"), new, fg.get("tags", []))
+        if insights_key(fg, models) == new["key"] and (fg.get("insights") or {}).get("key") != new["key"]:
+            fg["insights"] = merge(fg.get("insights"), new, fg.get("tags", []), fg.get("caption", ""))
 
     wf.update_session(sid, commit)
     return True
@@ -434,13 +480,17 @@ def queue_tray(sid: str) -> None:
         queued.append(sid)
 
 
-def pending(d: dict) -> int:
-    return sum(1 for g in d["groups"] if needs_analysis(g))
+def pending(d: dict, models: list[str] | None = None) -> int:
+    models = active_models() if models is None else models
+    return sum(1 for g in d["groups"] if needs_analysis(g, models))
 
 
 def step() -> bool:
     """Analyse the next slide that needs it (open tray first). Returns whether it did anything."""
-    if not enabled() or backend() is None:
+    models = active_models()
+    if captions.MODEL_ID not in models:
+        captions.release()
+    if not models:
         return False
     if wf.current_job and not wf.current_job.finished:  # imports reshape slides; uploads need the memory
         return False
@@ -449,26 +499,26 @@ def step() -> bool:
             s = Session(sid)
         except FileNotFoundError:
             s = None
-        g = next((g for g in s.data["groups"] if needs_analysis(g)), None) if s else None
-        if g is None:  # tags done there: then the embeddings for look-alikes (slides from before, scans)
-            if s and similar.step(s, backend()):
+        g = next((g for g in s.data["groups"] if needs_analysis(g, models)), None) if s else None
+        if g is None:  # analysed there: then the embeddings for look-alikes (slides from before, scans)
+            if s and MODEL_ID in models and similar.step(s, backend()):
                 return True
             if sid in queued:
                 queued.remove(sid)
             continue
         try:
-            analyse_slide(sid, g["id"])
+            analyse_slide(sid, g["id"], models)
         except Exception as e:  # e.g. an unreadable scan: note it, don't try that slide forever
             print("insights:", e)
-            key = insights_key(g)
+            key = insights_key(g, models)
 
             def failed(fresh, gid=g["id"], key=key, err=str(e) or e.__class__.__name__):
                 try:
                     fg = fresh.group(gid)
                 except KeyError:
                     return
-                if insights_key(fg) == key:
-                    fg["insights"] = {**merge(fg.get("insights"), {"key": key, "tags": []}, fg.get("tags", [])),
+                if insights_key(fg, models) == key:
+                    fg["insights"] = {**merge(fg.get("insights"), {"key": key}, fg.get("tags", []), fg.get("caption", "")),
                                       "error": err}
 
             wf.update_session(sid, failed)

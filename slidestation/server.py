@@ -12,7 +12,7 @@ from fastapi import Body, FastAPI, HTTPException
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-from . import filmstock, insights, learning
+from . import captions, filmstock, insights, learning
 from . import people
 from . import similar
 from . import workflow as wf
@@ -57,7 +57,8 @@ def state():
 def set_config(body: dict = Body(...)):
     cfg = load_config()
     for k in ("library", "immich_url", "immich_key", "keep_originals", "keep_exports", "jpeg_quality",
-              "learning_enabled", "upload_originals_stacked", "insights_enabled", "people_enabled", "lookalike_enabled"):
+              "learning_enabled", "upload_originals_stacked", "insights_enabled", "captions_enabled",
+              "people_enabled", "lookalike_enabled"):
         if k in body and not (k == "immich_key" and body[k] == ""):
             cfg[k] = body[k]
     if "stats_target" in body:  # slides to digitise in all, for the stats' projected finish
@@ -210,6 +211,7 @@ def _mount_view(g: dict) -> dict | None:
 def _session_payload(s: Session) -> dict:
     d = s.data
     groups = []
+    models = insights.active_models()  # once: every slide's insights key depends on it
     dates = slide_dates(d)
     st = statuses(d)
     live = filmstock.views(d, dates)  # film stock and date guesses: no model, always on
@@ -227,7 +229,7 @@ def _session_payload(s: Session) -> dict:
             "caption": g.get("caption", ""),
             "tags": g.get("tags", []),
             "stock": g.get("stock", ""),  # its own ("" = the tray's, below)
-            "insights": _slide_insights(g, live[i]),
+            "insights": _slide_insights(g, live[i], models),
             # after upload: photos already in Immich that look like this one (similar.check_lookalikes)
             "lookalike": similar.lookalike_view(g),
             "date_est": dates[i],  # {"value", "source": own|between|near|tray|scan, "from": [indices]}
@@ -248,19 +250,23 @@ def _session_payload(s: Session) -> dict:
         "cleanup_blockers": wf.cleanup_blockers(s),
         "log": d.get("log", [])[-20:],
         "stock": d.get("stock", ""),  # the tray's film stock, for slides without their own
-        **_insights_payload(s),
+        **_insights_payload(s, models),
     }
 
 
-def _insights_payload(s: Session) -> dict:
-    """Top-level insights state, and the look-alike suggestions (tray-level: duplicates, split,
-    merge, scenes) once the model is there. `pending` counts slides to tag plus slides and scans to
-    embed: the UI keeps reloading the tray while it's above 0."""
-    on, ready = insights.enabled(), insights.model_ready()
-    sim = similar.payload(s) if on and ready else None
-    pending = insights.pending(s.data) + (sim["pending"] if sim else 0)
-    return {"insights": {"enabled": on, "ready": ready, "pending": pending},
-            "similar": {k: v for k, v in sim.items() if k != "pending"} if sim else None}
+def _insights_payload(s: Session, models: list[str]) -> dict:
+    """Top-level insights state (_insights_status), and the look-alike suggestions (tray-level:
+    duplicates, split, merge, scenes) once the tag model is there. `pending` counts slides to analyse
+    plus slides and scans to embed: the UI keeps reloading the tray while it's above 0."""
+    status = _insights_status(s.data, models)
+    sim = similar.payload(s) if insights.enabled() and insights.model_ready() else None
+    if sim:
+        # a slide still to analyse gets its embedding from that same analysis: count it once
+        e = similar.load(s.id)
+        overlap = sum(1 for g in s.data["groups"] if not g.get("skip") and insights.needs_analysis(g, models)
+                      and e["slides"].get(g["id"], {}).get("key") != similar.slide_key(g))
+        status["pending"] += sim["pending"] - overlap
+    return {"insights": status, "similar": {k: v for k, v in sim.items() if k != "pending"} if sim else None}
 
 
 @app.post("/api/sessions")
@@ -407,7 +413,7 @@ def patch_group(sid: str, gid: str, body: dict = Body(...)):
         if "date" in body:
             g["date"] = _clean_date(body["date"])
         if "caption" in body:
-            g["caption"] = str(body["caption"]).strip()[:2000]
+            _set_caption(g, str(body["caption"]).strip()[:2000])
         if "tags" in body:
             _set_tags(g, _clean_tags(body["tags"]))
         if "stock" in body:
@@ -487,14 +493,43 @@ def _set_stock(g: dict, v: str) -> None:
         g.pop("stock", None)
 
 
-def _slide_insights(g: dict, live: dict) -> dict | None:
+def _set_caption(g: dict, caption: str) -> None:
+    """Give a slide its own caption. An open caption suggestion goes (it's never offered over the
+    slide's own), and suggestions that were up to date stay so: no new look at the slide just for
+    that. Clearing the caption does make it stale, so a caption is suggested for it again."""
+    models = insights.active_models()
+    fresh = bool(g.get("insights")) and not insights.needs_analysis(g, models)
+    g["caption"] = caption
+    ins = g.get("insights")
+    if not ins or not caption:
+        return
+    if (ins.get("caption") or {}).get("state") == "suggested":
+        ins["caption"] = None
+    if fresh:
+        ins["key"] = insights.insights_key(g, models)
+
+
+def _slide_insights(g: dict, live: dict, models: list[str]) -> dict | None:
     """The slide's suggestions: the models' (stored), plus the film stock and date guesses (`live`,
     filmstock.views), which need no model."""
     ins = g.get("insights") or {}
     if not ins and not live["stock"] and not live["date"]:
         return None
     return {**{k: ins.get(k) for k in insights.KINDS}, **live, "tags": ins.get("tags", []),
-            "stale": ins.get("key") != insights.insights_key(g), "error": ins.get("error", "")}
+            "stale": bool(ins) and ins.get("key") != insights.insights_key(g, models), "error": ins.get("error", "")}
+
+
+# the suggestion models: whether each is turned on, and downloaded
+MODELS = {"tags": insights, "captions": captions}
+
+
+def _insights_status(d: dict, models: list[str]) -> dict:
+    """For the tray payload: `enabled` any model turned on, `ready` one of those downloaded (the
+    analysis runs), `missing` the ones turned on but not downloaded yet, `pending` slides to go."""
+    on = [k for k, m in MODELS.items() if m.enabled()]
+    missing = [k for k in on if not MODELS[k].model_ready()]
+    return {"enabled": bool(on), "ready": bool(on) and len(missing) < len(on), "pending": insights.pending(d, models),
+            "missing": missing}
 
 
 @app.get("/api/insights")
@@ -507,16 +542,27 @@ def insights_state():
         "model_mb": insights.MODEL_MB,
         "labels": insights.TAGS,
         "learned": insights.learned().get("labels", {}),
+        "captions": {"enabled": captions.enabled(), "ready": captions.model_ready(), "model_mb": captions.MODEL_MB},
     }
 
 
 @app.post("/api/insights/model")
-def insights_model():
-    """Download the tag model (a job with progress in MB) unless it is already there."""
-    if insights.model_ready():
+def insights_model(body: dict = Body(default={})):
+    """Download suggestion models (one job, progress in MB) unless they are already there:
+    `models` ["tags", "captions"]; by default the ones turned on (the tag model when none is)."""
+    want = body.get("models") or [k for k, m in MODELS.items() if m.enabled()] or ["tags"]
+    if any(k not in MODELS for k in want):
+        raise HTTPException(400, "models are tags and / or captions")
+    todo = [MODELS[k] for k in want if not MODELS[k].model_ready()]
+    if not todo:
         return {"ok": True, "ready": True}
+
+    def run(job):
+        for m in todo:
+            m.download_model(job)
+
     try:
-        wf.start_job("model", None, insights.download_model)
+        wf.start_job("model", None, run)
     except RuntimeError as e:
         return _err(e, 409)
     return {"ok": True, "ready": False}
@@ -537,11 +583,12 @@ def insights_run(sid: str, body: dict = Body(default={})):
     return _session_payload(s)
 
 
-def _decide(g: dict, kind: str, action: str, value: str | None) -> bool:
+def _decide(g: dict, kind: str, action: str, value: str | None, text: str | None = None) -> bool:
     """Accept or dismiss a slide's open suggestion(s) of one kind (all its values, or `value`).
-    Accepting makes it the slide's own tag / caption / date; decided ones are never revisited (a
-    tag accepted by mistake is removed from the slide's tags, which dismisses it). Returns whether
-    anything changed."""
+    Accepting makes it the slide's own tag / caption / date (a caption as edited: `text`); decided
+    ones are never revisited (a tag accepted by mistake is removed from the slide's tags, which
+    dismisses it). A suggested caption never replaces one the slide has. Returns whether anything
+    changed."""
     ins = g.get("insights") or {}
     if kind == "tags":
         hits = [e for e in ins.get("tags", []) if (value is None or e["value"] == value) and e.get("state") == "suggested"]
@@ -567,7 +614,14 @@ def _decide(g: dict, kind: str, action: str, value: str | None) -> bool:
         if kind == "date":
             g["date"] = _clean_date(e["value"])
         elif kind == "caption":
-            g["caption"] = str(e["value"]).strip()[:2000]
+            if g.get("caption"):  # typed (or pulled from Immich) meanwhile: that one stays
+                return False
+            caption = " ".join(str(e["value"] if text is None else text).split())[:2000]
+            if not caption:
+                return False
+            e["state"] = "accepted"
+            _set_caption(g, caption)
+            return True
         else:
             g[kind] = e["value"]  # place: kept on the slide, not sent to Immich yet
     e["state"] = "accepted" if action == "accept" else "dismissed"
@@ -578,8 +632,9 @@ def _decide(g: dict, kind: str, action: str, value: str | None) -> bool:
 def insights_decide(sid: str, body: dict = Body(...)):
     """Accept or dismiss suggestions: `kind` (tags / caption / date / place), `action` (accept /
     dismiss), optionally `value` (one tag, say "beach") and `groups` (slide ids; default: the whole
-    tray, the review view's "accept all"). Locked slides can't take accepted values."""
-    kind, action, value = body.get("kind"), body.get("action"), body.get("value")
+    tray, the review view's "accept all"). Locked slides can't take accepted values. A caption
+    accepted on one slide can carry `text`, the suggestion as the user edited it."""
+    kind, action, value, text = body.get("kind"), body.get("action"), body.get("value"), body.get("text")
     if action not in ("accept", "dismiss") or kind not in insights.KINDS + similar.KINDS + ("lookalike",):
         raise HTTPException(400, "kind must be tags, caption, date, place, stock, duplicates, split, merge or lookalike; "
                                  "action accept or dismiss")
@@ -603,7 +658,7 @@ def insights_decide(sid: str, body: dict = Body(...)):
                 e = live[s.group_index(g["id"])][kind]
                 if e and e.get("state") == "suggested" and (value is None or e["value"] == value):
                     g.setdefault("insights", {})[kind] = dict(e)
-            if _decide(g, kind, action, value):
+            if _decide(g, kind, action, value, text if kind == "caption" and len(targets) == 1 else None):
                 n += 1
                 if kind == "stock":
                     _stock_changed(s, [g])
@@ -735,10 +790,13 @@ def insights_propagate(sid: str, body: dict = Body(...)):
                     _set_tags(g, g.get("tags", []) + [value])
                     n += 1
             else:
-                g[kind] = value[:2000]
                 e = (g.get("insights") or {}).get(kind)
                 if e and e.get("value") == value:
                     e["state"] = "accepted"
+                if kind == "caption":
+                    _set_caption(g, value[:2000])
+                else:
+                    g[kind] = value[:2000]
                 n += 1
         s.save()
     return {**_session_payload(s), "applied": n}

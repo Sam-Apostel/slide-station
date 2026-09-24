@@ -288,7 +288,7 @@ def test_background_embeds_slides_and_scans(api, tmp_path, on, monkeypatch):
     # turned: embedded again (the tags too), nothing else
     n = fake.calls
     api.patch(f"/api/sessions/{sid}/groups/{d['groups'][1]['id']}", json={"rotation": 90})
-    assert payload(api, sid)["insights"]["pending"] == 2
+    assert payload(api, sid)["insights"]["pending"] == 1  # to analyse, and that embeds it too: once
     while STEP():
         pass
     assert fake.calls == n + 1  # one embedding serves the tags and the look-alikes

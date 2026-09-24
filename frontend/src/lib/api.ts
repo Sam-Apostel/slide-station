@@ -201,19 +201,25 @@ export type SessionPayload = {
   log: unknown[];
   /** The tray's film stock ("" = not set), for slides without their own. */
   stock: string;
-  /** Background analysis (desktop app only): turned on, model downloaded, slides still to analyse. */
-  insights?: { enabled: boolean; ready: boolean; pending: number };
+  /** Background analysis (desktop app only): a model turned on, one of those downloaded, slides still to
+   *  analyse, and the models turned on but not downloaded yet. */
+  insights?: { enabled: boolean; ready: boolean; pending: number; missing?: SuggestionModel[] };
   /** Look-alike suggestions for the tray (desktop app, once the model is there). */
   similar?: Similar | null;
 };
 
+/** The models that make suggestions: scene tags (CLIP) and captions (Florence-2). */
+export type SuggestionModel = "tags" | "captions";
+
 export type InsightsState = {
+  /** The tag model: turned on, downloaded. */
   enabled: boolean;
   ready: boolean;
   downloading: boolean;
   model_mb: number;
   labels: string[];
   learned: Record<string, { accepted: number; dismissed: number }>;
+  captions: { enabled: boolean; ready: boolean; model_mb: number };
 };
 
 export type Source = {
@@ -252,6 +258,8 @@ export type Config = {
   insights_enabled?: boolean;
   /** After upload, look for photos in Immich that look like the new slides (desktop app). */
   lookalike_enabled?: boolean;
+  /** Suggest a caption per slide (desktop app only; opt-in, downloads a caption model). */
+  captions_enabled?: boolean;
   /** Faces → people (desktop app only; opt-in, downloads a face model). */
   people_enabled?: boolean;
 };

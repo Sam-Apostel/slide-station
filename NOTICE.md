@@ -45,6 +45,14 @@ When "Suggest tags" is turned on, the app downloads OpenAI's CLIP ViT-B/32 (MIT 
 (<https://huggingface.co/Xenova/clip-vit-base-patch32>, a pinned revision) into the library's
 `models/` folder. Nothing of it is committed or bundled.
 
+## Florence-2 base (captions) — downloaded, not in the repo
+
+When "Suggest captions" is turned on, the app downloads Microsoft's Florence-2 base, fine-tuned
+(MIT licence, Copyright (c) Microsoft Corporation, <https://huggingface.co/microsoft/Florence-2-base-ft>)
+as 8-bit ONNX files converted by onnx-community
+(<https://huggingface.co/onnx-community/Florence-2-base-ft>, a pinned revision), plus its BART
+vocabulary, into the library's `models/` folder. Nothing of it is committed or bundled.
+
 ## Python and JavaScript dependencies
 
 See `pyproject.toml` and `frontend/package.json`; each keeps its own licence.
