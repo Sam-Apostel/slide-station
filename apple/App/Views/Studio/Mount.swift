@@ -256,7 +256,7 @@ enum MountFinish {
         case .gold: Palette(stops: [(0xd9ae55, 0), (0xa8792a, 0.35), (0xe6c173, 0.55), (0x8d6220, 1)], light: Color(proHex: 0xfff0c8), shade: Color(proHex: 0x3c2300),
                             print: Color(proHex: 0x5a3c0c), ring: Color(proHex: 0xfff3d0), glow: Color(proHex: 0xf5c86e))
         // polished emerald with its printing inlaid in pale gold
-        case .green: Palette(stops: [(0x1ecb7b, 0), (0x07804a, 0.3), (0x2fe092, 0.5), (0x06703f, 0.68), (0x034428, 1)], gloss: 0.3,
+        case .green: Palette(stops: [(0x17b06a, 0), (0x07804a, 0.3), (0x149c5f, 0.5), (0x06703f, 0.68), (0x034428, 1)], gloss: 0.16,
                              light: Color(proHex: 0xc8ffe1), shade: Color(proHex: 0x001e0e),
                              print: Color(proHex: 0xf3d98f), ring: Color(proHex: 0xd6ffe9), glow: Color(proHex: 0x28e68c))
         }
