@@ -360,11 +360,17 @@ export function adjustSummary(g: Group, defaults: Params) {
   const n =
     [off(p.brightness), off(p.contrast), off(p.saturation), off(p.warmth) || off(p.tint)].filter(Boolean).length +
     (off(p.strength, defaults.strength) ? 1 : 0);
-  const src = g.params_source.startsWith("learned:")
-    ? `learned from ${g.params_source.split(":")[1]}`
-    : g.params_source === "manual"
-      ? "by hand"
-      : "tray defaults";
+  const [kind, ...rest] = g.params_source.split(":");
+  const src =
+    kind === "learned"
+      ? `learned from ${rest[0]}`
+      : kind === "preset"
+        ? `preset “${rest.join(":")}”`
+        : kind === "like" // like:<slide number>:<tray name>
+          ? `like slide ${rest[0]} of ${rest.slice(1).join(":")}`
+          : kind === "manual"
+            ? "by hand"
+            : "tray defaults";
   return n ? `${src} · ${n} changed` : src;
 }
 

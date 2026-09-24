@@ -1357,3 +1357,47 @@ body {
   pointer-events: none;
   filter: saturate(0.4);
 }
+
+/* ------------------------------------------------------------------ review grid, zoom, loupe */
+
+/* developed slides in the grid get the gold edge their filmstrip mount has */
+.ss-grid-tile[data-status="reviewed"]:not([aria-selected="true"]) {
+  border-color: color-mix(in srgb, var(--ss-accent) 35%, transparent);
+}
+.ss-grid-tile[aria-selected="true"] {
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--ss-accent) 25%, transparent);
+}
+
+/* 1:1 zoom: what it shows, how to leave */
+.ss-zoom-tag {
+  position: absolute;
+  top: 14px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 12px;
+  border-radius: 999px;
+  background: rgb(10 10 12 / 85%);
+  color: var(--ss-text);
+  font-size: 11px;
+  white-space: nowrap;
+  pointer-events: none;
+}
+.ss-zoom-tag kbd {
+  padding: 0 4px;
+  border-radius: 3px;
+  background: rgb(255 255 255 / 10%);
+  font: 10px ui-monospace, monospace;
+}
+
+/* the loupe: a round window at 100 % under the pointer */
+.ss-loupe {
+  overflow: hidden;
+  border-radius: 50%;
+  background: var(--ss-sunken);
+  box-shadow:
+    0 0 0 2px color-mix(in srgb, var(--ss-accent) 70%, transparent),
+    0 8px 28px rgb(0 0 0 / 60%);
+}

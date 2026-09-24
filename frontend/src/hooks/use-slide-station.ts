@@ -9,6 +9,7 @@ import {
   type AppState,
   type Group,
   type Params,
+  type Preset,
   type Pulled,
   type SessionPayload,
   type Source,
@@ -170,8 +171,9 @@ export function useSlideStation() {
   };
 
   const patchGroup = React.useCallback(
-    async (body: Record<string, unknown>) => {
-      const url = groupUrl();
+    /** The selected slide, or the one with id `gid`. */
+    async (body: Record<string, unknown>, gid?: string) => {
+      const url = gid ? `/api/sessions/${ref.current.sessionId}/groups/${gid}` : groupUrl();
       if (!url) return;
       try {
         const p = await api<SessionPayload>("PATCH", url, body);
@@ -241,6 +243,15 @@ export function useSlideStation() {
     if (!s) return;
     const nxt = s.groups.findIndex((x, k) => k > i && needsReview(x));
     select(nxt >= 0 ? nxt : i + 1);
+  };
+
+  /** The review grid's Space: develop the slide under the cursor and step to the next tile. */
+  const developStep = () => {
+    const { session: s, sel: i } = ref.current;
+    const g = s?.groups[i];
+    if (!g) return;
+    select(i + 1); // first, so quick presses each move on
+    if (!g.reviewed) patchGroup({ reviewed: true }, g.id);
   };
 
   const toggleSkip = () => {
@@ -358,12 +369,79 @@ export function useSlideStation() {
     }
   };
 
+  // ---------------------------------------------------------------- looks: presets, develop like
+
+  const [presets, setPresets] = React.useState<Preset[]>([]);
+  const loadPresets = React.useCallback(async () => {
+    try {
+      setPresets((await api<{ presets: Preset[] }>("GET", "/api/presets")).presets);
+    } catch {
+      /* shown as an empty list */
+    }
+  }, []);
+  React.useEffect(() => {
+    loadPresets();
+  }, [loadPresets]);
+
+  /** This slide's colour settings (never its crop or straighten) as a named preset. */
+  const savePreset = async (name: string) => {
+    const { sessionId: sid, session: s, sel: i } = ref.current;
+    const g = s?.groups[i];
+    if (!g || !name.trim()) return false;
+    if (unsaved.current.has(g.id)) await flushParams(g.id); // save what the sliders show
+    try {
+      setPresets(
+        (await api<{ presets: Preset[] }>("POST", "/api/presets", { name, session: sid, group: g.id })).presets,
+      );
+      toast(`Saved the look as “${name.trim()}”`);
+      return true;
+    } catch (e) {
+      fail(e);
+      return false;
+    }
+  };
+
+  const deletePreset = async (name: string) => {
+    try {
+      setPresets((await api<{ presets: Preset[] }>("DELETE", `/api/presets/${encodeURIComponent(name)}`)).presets);
+    } catch (e) {
+      fail(e);
+    }
+  };
+
+  /**
+   * A preset's colour, or that of any slide in any tray, on this slide ("this") or on it and every
+   * following slide still to develop ("rest"). Framing stays; each slide can undo it.
+   */
+  const applyLook = async (
+    look: { preset: string } | { like: { session: string; group: string } },
+    scope: "this" | "rest" = "this",
+  ) => {
+    if (scope === "this" && !editable()) return false;
+    const url = groupUrl();
+    const g = ref.current.session?.groups[ref.current.sel];
+    if (!url || !g) return false;
+    if (unsaved.current.has(g.id)) await flushParams(g.id); // it would land after the look and undo it
+    try {
+      const p = await api<SessionPayload & { applied: number }>("POST", `${url}/look`, { ...look, scope });
+      applyPayload(p);
+      const what = "preset" in look ? `“${look.preset}”` : "the look";
+      toast(scope === "rest" ? `Applied ${what} to ${plural(p.applied, "slide")}` : `Applied ${what}`);
+      return true;
+    } catch (e) {
+      fail(e);
+      return false;
+    }
+  };
+
   const STEP_LABEL: Record<string, string> = {
     rotation: "rotation",
     fit: "curve fit",
     neutral: "white balance pick",
     learned: "learned settings",
     apply: "applied settings",
+    preset: "preset",
+    like: "develop like",
   };
   /** Step this slide's look back / forward (settings + rotation, drags count as one step). */
   const step = async (direction: "undo" | "redo") => {
@@ -561,6 +639,7 @@ export function useSlideStation() {
     setParam,
     rotate,
     review,
+    developStep,
     toggleSkip,
     toggleScan,
     splitAt,
@@ -573,6 +652,11 @@ export function useSlideStation() {
     pickNeutral,
     patchGroup,
     dateRange,
+    presets,
+    loadPresets,
+    savePreset,
+    deletePreset,
+    applyLook,
     undo,
     redo,
     patchSession,

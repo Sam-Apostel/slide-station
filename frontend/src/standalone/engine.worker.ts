@@ -182,6 +182,22 @@ function rotateRGBA(width: number, height: number, bytes: Uint8ClampedArray, deg
   return { width: ow, height: oh, bytes: new Uint8ClampedArray(out.buffer) };
 }
 
+/** Full resolution: blend the originals, turn, develop (what an export and 1:1 zoom show). */
+async function renderFull(blobs: Blob[], rotation: number, params: Params): Promise<RGB> {
+  const decoded = [];
+  for (const b of blobs) {
+    const d = await decodeRGBA(b);
+    decoded.push(rotateRGBA(d.width, d.height, d.bytes, rotation)); // turning bytes first is cheaper than floats after
+  }
+  const sources = decoded.map((d) => rgba8Source(d.width, d.height, d.bytes));
+  const a = sources.length === 1 ? materialise(sources[0]) : fuseSources(sources);
+  decoded.length = 0;
+  return im.develop(a, params, true, true);
+}
+
+/** The slide last zoomed into at full resolution, as RGBA bytes (one slide only: ~90 MB at 22 MP). */
+let zoomed: { key: string; width: number; height: number; bytes: Uint8ClampedArray } | null = null;
+
 const ops = {
   /** A new scan: its 1600 px proxy and 240 px thumbnail (JPEG), grouping signature and quality. */
   async proxy({ blob }: { blob: Blob }) {
@@ -254,16 +270,58 @@ const ops = {
     params: Params;
     quality: number;
   }) {
-    const decoded = [];
-    for (const b of blobs) {
-      const d = await decodeRGBA(b);
-      decoded.push(rotateRGBA(d.width, d.height, d.bytes, rotation)); // turning bytes first is cheaper than floats after
+    return encode(await renderFull(blobs, rotation, params), quality);
+  },
+
+  /**
+   * 1:1 zoom: render the slide at full resolution (or decode its fresh export) and keep it for
+   * `tile`. Returns its size. `key` names the render; asking for the same one again is free.
+   */
+  async zoomImage({
+    key,
+    exported,
+    blobs,
+    rotation,
+    params,
+  }: {
+    key: string;
+    exported: Blob | null;
+    blobs: Blob[];
+    rotation: number;
+    params: Params;
+  }) {
+    if (zoomed?.key !== key) {
+      zoomed = null; // free the previous slide first
+      if (exported) zoomed = { key, ...(await decodeRGBA(exported)) };
+      else {
+        const a = await renderFull(blobs, rotation, params);
+        const bytes = new Uint8ClampedArray(a.width * a.height * 4);
+        for (let i = 0, n = a.width * a.height; i < n; i++) {
+          bytes[i * 4] = a.data[i * 3] * 255;
+          bytes[i * 4 + 1] = a.data[i * 3 + 1] * 255;
+          bytes[i * 4 + 2] = a.data[i * 3 + 2] * 255;
+          bytes[i * 4 + 3] = 255;
+        }
+        zoomed = { key, width: a.width, height: a.height, bytes };
+      }
     }
-    const sources = decoded.map((d) => rgba8Source(d.width, d.height, d.bytes));
-    let a = sources.length === 1 ? materialise(sources[0]) : fuseSources(sources);
-    decoded.length = 0;
-    a = im.develop(a, params, true, true);
-    return encode(a, quality);
+    return { width: zoomed.width, height: zoomed.height };
+  },
+
+  /** A size x size square (col, row) of the zoomed slide as JPEG; fails if that slide isn't held. */
+  async tile({ key, col, row, size }: { key: string; col: number; row: number; size: number }) {
+    const z = zoomed;
+    if (z?.key !== key) throw new Error("not rendered");
+    const [x0, y0] = [col * size, row * size];
+    const w = Math.min(size, z.width - x0);
+    const h = Math.min(size, z.height - y0);
+    if (col < 0 || row < 0 || w <= 0 || h <= 0) throw new Error("No such tile");
+    const px = new Uint8ClampedArray(w * h * 4);
+    for (let y = 0; y < h; y++)
+      px.set(z.bytes.subarray(((y0 + y) * z.width + x0) * 4, ((y0 + y) * z.width + x0 + w) * 4), y * w * 4);
+    const c = new OffscreenCanvas(w, h);
+    c.getContext("2d")!.putImageData(new ImageData(px, w, h), 0, 0);
+    return c.convertToBlob({ type: "image/jpeg", quality: 0.9 });
   },
 };
 

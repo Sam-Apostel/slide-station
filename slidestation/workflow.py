@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import io
 import os
 import shutil
 import subprocess
@@ -430,6 +431,52 @@ def render_export(sid: str, gid: str, quality: int) -> Path | None:
     return s.export_dir / name if ok else None
 
 
+# --------------------------------------------------------------------------- 1:1 zoom
+
+TILE = 512  # zoom tiles are TILE x TILE pixels of the full-resolution render, on a fixed grid
+_full: dict = {}  # {"key": (session, slide, render key), "img": uint8 H x W x 3}: one slide only
+_full_lock = threading.Lock()
+
+
+def full_image(s: Session, gid: str) -> np.ndarray:
+    """The slide developed at full resolution, for 1:1 zoom (uint8, ~65 MB for 22 MP).
+
+    Only the slide last zoomed into is kept. A finished export of the same render is decoded
+    instead of fusing again; otherwise it renders like an export, under the same one-at-a-time
+    lock (a 5-scan stack peaks around 3 GB). Raises FileNotFoundError when the originals are gone
+    and there is no export to show."""
+    g = s.group(gid)
+    key = (s.id, gid, render_key(g))
+    with _full_lock:  # concurrent tile requests wait for one render instead of starting their own
+        if _full.get("key") == key:
+            return _full["img"]
+        _full.clear()  # free the previous slide before rendering this one
+        ex = g.get("export")
+        if ex and ex.get("key") == key[2] and (s.export_dir / ex["file"]).exists():
+            a = im.load_u8(str(s.export_dir / ex["file"]))  # same pixels (the key covers the render)
+        elif originals_missing(s, g):
+            raise FileNotFoundError("The original scans were deleted after upload: no full resolution to zoom into.")
+        else:
+            with _export_lock:
+                f = im.fuse([im.load_u8(str(s.original_path(x))) for x in active_scans(g)])
+                f = im.develop(im.rotate_arr(f, g["rotation"]), im.Params.from_dict(g["params"]))
+                a = (f * 255 + 0.5).astype(np.uint8)
+                del f
+        _full.update(key=key, img=a)
+        return a
+
+
+def full_tile(s: Session, gid: str, col: int, row: int) -> bytes:
+    """One TILE x TILE piece (smaller at the right / bottom edge) of the full-resolution render."""
+    a = full_image(s, gid)
+    t = a[row * TILE:(row + 1) * TILE, col * TILE:(col + 1) * TILE]
+    if col < 0 or row < 0 or not t.size:
+        raise KeyError("tile")
+    buf = io.BytesIO()
+    Image.fromarray(np.ascontiguousarray(t)).save(buf, "JPEG", quality=90)
+    return buf.getvalue()
+
+
 # background renderer: renders reviewed slides while you keep reviewing, so uploading is quick
 active_session: str | None = None
 
@@ -639,8 +686,9 @@ def finish_session(job: Job, sid: str, only_ready: bool = False) -> None:
                             print("remove from album:", e)
                 else:
                     to_trash.append(replaces)
+            # "at": when it went up, for the stats (slides uploaded without being developed)
             rec = {"asset_id": asset_id, "key": g["export"]["key"], "status": status, "meta": slide_meta(s, g, idx),
-                   "pushed": _pushed(s, g, idx)}
+                   "pushed": _pushed(s, g, idx), "at": time.time()}
             if originals and stack_id:
                 rec.update(originals=originals, own_originals=own, stack_id=stack_id)
 

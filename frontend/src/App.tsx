@@ -14,8 +14,10 @@ import { Inspector } from "@/components/inspector";
 import { EmptyState } from "@/components/empty-state";
 import { SlideMenu } from "@/components/slide-menu";
 import { CommandPalette } from "@/components/command-palette";
-import { DateRangeDialog, HelpDialog, NewTrayDialog, SettingsDialog } from "@/components/dialogs";
+import { DateRangeDialog, HelpDialog, NewTrayDialog, SettingsDialog, StatsDialog } from "@/components/dialogs";
 import { ImmichImportDialog } from "@/components/immich-import";
+import { ReviewGrid } from "@/components/review-grid";
+import { DevelopLikeDialog, PresetsDialog } from "@/components/looks";
 import { PanelToggles, WindowTitlebar } from "@/components/window-titlebar";
 import { useSlideStation, type SlideStation } from "@/hooks/use-slide-station";
 import { useDesktop, useFolderDrop, type DesktopHandlers } from "@/hooks/use-desktop";
@@ -74,15 +76,24 @@ function SlideStationApp() {
   // the crop tool: the photo shows uncropped with a crop frame over it until Done / Cancel
   const [cropping, setCropping] = React.useState(false);
   const [compare, setCompare] = React.useState(false);
+  // 1:1 zoom (where it opened, 0..1 of the photo), the loupe, and the batch review grid
+  const [zoom, setZoom] = React.useState<[number, number] | null>(null);
+  const [loupe, setLoupe] = React.useState(false);
+  const [grid, setGrid] = React.useState(false);
+  const gridCols = React.useRef(4);
   React.useEffect(() => {
     setPicking(false);
     setCropping(false);
+    setZoom(null); // the full-resolution render is per slide: moving on leaves the zoom
   }, [app.sel, sessionId]);
   const [settingsOpen, setSettingsOpen] = React.useState(false);
   const [helpOpen, setHelpOpen] = React.useState(false);
   const [paletteOpen, setPaletteOpen] = React.useState(false);
   const [dateRangeOpen, setDateRangeOpen] = React.useState(false);
   const [immichOpen, setImmichOpen] = React.useState(false);
+  const [presetsOpen, setPresetsOpen] = React.useState(false);
+  const [likeOpen, setLikeOpen] = React.useState(false);
+  const [statsOpen, setStatsOpen] = React.useState(false);
   const [newTray, setNewTray] = React.useState<{ open: boolean; source?: Source; folder?: string }>({ open: false });
   const [panels, setPanels] = React.useState(storedPanels);
   // What focus mode hid, so the same shortcut brings exactly that back.
@@ -226,7 +237,28 @@ function SlideStationApp() {
     toggleInspector,
     focusMode,
   };
-  useKeyboard(app, setBefore, () => setHelpOpen(true), () => setPaletteOpen(true), setPicking, setCropping, setCompare);
+  const view: ViewKeys = { grid, setGrid, gridCols, setZoom, setLoupe };
+  useKeyboard(
+    app,
+    setBefore,
+    () => setHelpOpen(true),
+    () => setPaletteOpen(true),
+    setPicking,
+    setCropping,
+    setCompare,
+    view,
+  );
+  const views = {
+    toggleGrid: () => {
+      setGrid((v) => !v);
+      setZoom(null);
+    },
+    toggleZoom: () => setZoom((z) => (z ? null : [0.5, 0.5])),
+    toggleLoupe: () => setLoupe((v) => !v),
+    stats: () => setStatsOpen(true),
+    presets: () => setPresetsOpen(true),
+    developLike: () => setLikeOpen(true),
+  };
   useDesktop(app, panels, handlers);
   const dropping = useFolderDrop(
     (path) => importFolder(path),
@@ -276,7 +308,11 @@ function SlideStationApp() {
           right={
             <>
               {toggles}
-              <AppActions onHelp={() => setHelpOpen(true)} onSettings={() => setSettingsOpen(true)} />
+              <AppActions
+                onHelp={() => setHelpOpen(true)}
+                onSettings={() => setSettingsOpen(true)}
+                onStats={views.stats}
+              />
             </>
           }
         />
@@ -292,6 +328,7 @@ function SlideStationApp() {
           onChooseFolder={() => importFolder()}
           onHelp={() => setHelpOpen(true)}
           onSettings={() => setSettingsOpen(true)}
+          onStats={views.stats}
         />
       )}
 
@@ -328,33 +365,54 @@ function SlideStationApp() {
               </>
             )}
             <ResizablePanel id="stage" minSize={320}>
-              <Stage
-                session={session}
-                sessionId={sessionId}
-                sel={app.sel}
-                before={before}
-                onBefore={setBefore}
-                onToggleScan={app.toggleScan}
-                onSplit={app.splitAt}
-                compare={compare}
-                onCompare={() => setCompare((v) => !v)}
-                onUndo={app.undo}
-                onRedo={app.redo}
-                slideMenu={slideMenu}
-                cropping={cropping}
-                onAngle={(a) => app.setParam("angle", Math.round(a * 10) / 10)}
-                onCropEnd={(rect, restoreAngle) => {
-                  setCropping(false);
-                  if (rect !== undefined) app.setParam("crop", rect, true);
-                  else if (restoreAngle !== undefined && restoreAngle !== (app.current?.params.angle ?? 0))
-                    app.setParam("angle", restoreAngle, true);
-                }}
-                picking={picking}
-                onPicked={(x, y) => {
-                  setPicking(false);
-                  if (x !== null && y !== null) app.pickNeutral(x, y);
-                }}
-              />
+              {grid ? (
+                <ReviewGrid
+                  session={session}
+                  sessionId={sessionId}
+                  sel={app.sel}
+                  onSelect={app.select}
+                  onOpen={(i) => {
+                    app.select(i);
+                    setGrid(false);
+                  }}
+                  onClose={() => setGrid(false)}
+                  columns={gridCols}
+                  slideMenu={slideMenu}
+                />
+              ) : (
+                <Stage
+                  session={session}
+                  sessionId={sessionId}
+                  sel={app.sel}
+                  before={before}
+                  onBefore={setBefore}
+                  onToggleScan={app.toggleScan}
+                  onSplit={app.splitAt}
+                  compare={compare}
+                  onCompare={() => setCompare((v) => !v)}
+                  onUndo={app.undo}
+                  onRedo={app.redo}
+                  slideMenu={slideMenu}
+                  cropping={cropping}
+                  onAngle={(a) => app.setParam("angle", Math.round(a * 10) / 10)}
+                  onCropEnd={(rect, restoreAngle) => {
+                    setCropping(false);
+                    if (rect !== undefined) app.setParam("crop", rect, true);
+                    else if (restoreAngle !== undefined && restoreAngle !== (app.current?.params.angle ?? 0))
+                      app.setParam("angle", restoreAngle, true);
+                  }}
+                  picking={picking}
+                  onPicked={(x, y) => {
+                    setPicking(false);
+                    if (x !== null && y !== null) app.pickNeutral(x, y);
+                  }}
+                  zoom={zoom}
+                  onZoom={setZoom}
+                  loupe={loupe}
+                  onLoupe={setLoupe}
+                  onGrid={views.toggleGrid}
+                />
+              )}
             </ResizablePanel>
             {panels.inspector && (
               <>
@@ -380,6 +438,8 @@ function SlideStationApp() {
                     onReimport={reimport}
                     onSave={standalone ? save : undefined}
                     onDateRange={() => setDateRangeOpen(true)}
+                    onPresets={views.presets}
+                    onDevelopLike={views.developLike}
                   />
                 </ResizablePanel>
               </>
@@ -441,9 +501,14 @@ function SlideStationApp() {
         onClean={clean}
         onDateRange={() => setDateRangeOpen(true)}
         onFromImmich={openImmich}
+        views={views}
+        grid={grid}
         busy={busy}
       />
       <ImmichImportDialog open={immichOpen} onOpenChange={setImmichOpen} onImport={app.importFromImmich} />
+      <StatsDialog open={statsOpen} onOpenChange={setStatsOpen} onSaved={app.refreshState} />
+      <PresetsDialog open={presetsOpen} onOpenChange={setPresetsOpen} app={app} />
+      <DevelopLikeDialog open={likeOpen} onOpenChange={setLikeOpen} app={app} />
       {session && (
         <DateRangeDialog
           open={dateRangeOpen}
@@ -467,9 +532,19 @@ function SlideStationApp() {
   );
 }
 
+/** What the keyboard map needs of the view: the review grid (and its columns), zoom and loupe. */
+type ViewKeys = {
+  grid: boolean;
+  setGrid: React.Dispatch<React.SetStateAction<boolean>>;
+  gridCols: React.MutableRefObject<number>;
+  setZoom: React.Dispatch<React.SetStateAction<[number, number] | null>>;
+  setLoupe: React.Dispatch<React.SetStateAction<boolean>>;
+};
+
 /**
  * The keyboard map is the reason the app is fast for 10,000 slides — keep it identical to the
  * original. Shortcuts win over whatever has focus, except text entry (and open dialogs).
+ * Added since: G (review grid, with its own arrows / Space / Enter), Z (1:1 zoom), L (loupe).
  */
 function useKeyboard(
   app: SlideStation,
@@ -479,9 +554,10 @@ function useKeyboard(
   setPicking: React.Dispatch<React.SetStateAction<boolean>>,
   setCropping: React.Dispatch<React.SetStateAction<boolean>>,
   setCompare: React.Dispatch<React.SetStateAction<boolean>>,
+  view: ViewKeys,
 ) {
-  const latest = React.useRef({ app, setBefore, openHelp, openPalette, setPicking, setCropping, setCompare });
-  latest.current = { app, setBefore, openHelp, openPalette, setPicking, setCropping, setCompare };
+  const latest = React.useRef({ app, setBefore, openHelp, openPalette, setPicking, setCropping, setCompare, view });
+  latest.current = { app, setBefore, openHelp, openPalette, setPicking, setCropping, setCompare, view };
 
   React.useEffect(() => {
     const isTextEntry = (t: EventTarget | null) =>
@@ -520,6 +596,34 @@ function useKeyboard(
         return;
       }
       if (!a.session?.groups.length) return;
+      const v = latest.current.view;
+      if (k === "g" || k === "G") {
+        v.setGrid((on) => !on);
+        v.setZoom(null);
+        e.preventDefault();
+        e.stopPropagation();
+        return;
+      }
+      if (v.grid) {
+        // the review grid: the cursor is the selection; the slide tools that need the stage are off
+        const cols = v.gridCols.current;
+        const n = a.session.groups.length;
+        let handled = true;
+        if (k === "ArrowRight") a.select(a.sel + 1);
+        else if (k === "ArrowLeft") a.select(a.sel - 1);
+        else if (k === "ArrowDown") a.select(Math.min(a.sel + cols, n - 1));
+        else if (k === "ArrowUp") a.select(a.sel >= cols ? a.sel - cols : a.sel);
+        else if (k === " ") a.developStep();
+        else if (k === "Enter" || k === "Escape") v.setGrid(false);
+        else if (/^[bwkyzl1-9]$/i.test(k)) {
+          /* before, eyedropper, crop, split, zoom, loupe, scans: they need the single-slide view */
+        } else handled = false; // R, X, M, C, 0, F act on the slide under the cursor as usual
+        if (handled) {
+          e.preventDefault();
+          e.stopPropagation();
+          return;
+        }
+      }
       if (k === "ArrowRight" || k === "ArrowDown") a.select(a.sel + 1);
       else if (k === "ArrowLeft" || k === "ArrowUp") a.select(a.sel - 1);
       else if (k === " " || k === "Enter") a.review();
@@ -536,7 +640,13 @@ function useKeyboard(
         if (!a.current?.locked) latest.current.setCropping(true);
       }
       else if (k === "y" || k === "Y") latest.current.setCompare((v) => !v);
-      else if (k === "Escape") latest.current.setPicking(false);
+      else if (k === "z" || k === "Z") latest.current.view.setZoom((z) => (z ? null : [0.5, 0.5]));
+      else if (k === "l" || k === "L") latest.current.view.setLoupe((on) => !on);
+      else if (k === "Escape") {
+        latest.current.setPicking(false);
+        latest.current.view.setZoom(null);
+        latest.current.view.setLoupe(false);
+      }
       else if (k === "f") a.fitCurves();
       else if (k === "F") a.fitCurves(true);
       else if (k === "b" || k === "B") {

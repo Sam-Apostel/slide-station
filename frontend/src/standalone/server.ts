@@ -2,7 +2,8 @@
 // the same React UI runs with no backend at all. Every route keeps the Python semantics — undo
 // history, render keys, locked slides, dedupe, the upload rules — over a Library (library.ts)
 // instead of the file system, with the pixel work in web workers (engine.ts).
-import type { AppState, Config, Job, Params, SessionPayload, Source } from "@/lib/api";
+import type { AppState, Config, FullInfo, Job, Params, Preset, SessionPayload, Source } from "@/lib/api";
+import { DEFAULT_TARGET, libraryStats, slideTimes } from "@/lib/stats";
 import { jobs, ui } from "./engine";
 import type { Src } from "./engine.worker";
 import { exifSegment, readExif, withExif } from "./exif";
@@ -53,6 +54,7 @@ type StoredConfig = {
   learning_enabled: boolean;
   jpeg_quality: number;
   upload_originals_stacked: boolean;
+  stats_target: number;
 };
 
 const CONFIG_KEY = "slide-station-config";
@@ -64,6 +66,7 @@ const DEFAULT_CONFIG: StoredConfig = {
   learning_enabled: true,
   jpeg_quality: 95,
   upload_originals_stacked: false,
+  stats_target: DEFAULT_TARGET,
 };
 
 function loadConfig(): StoredConfig {
@@ -234,6 +237,45 @@ function editable(g: GroupData) {
 }
 
 const FRAMING = { angle: 0, crop: null };
+
+// ------------------------------------------------------------------ looks: presets, develop like
+
+/** A slide's look without its framing: crop and straighten are each slide's own. */
+function colour(p: Params): Preset["params"] {
+  const { angle: _a, crop: _c, ...rest } = cleanParams(p);
+  return rest;
+}
+
+async function loadPresets(): Promise<Preset[]> {
+  try {
+    return JSON.parse((await lib.readText("presets.json")) ?? "{}").presets ?? [];
+  } catch {
+    return [];
+  }
+}
+
+const savePresets = (presets: Preset[]) => lib.write("presets.json", JSON.stringify({ presets }, null, 1));
+
+// ------------------------------------------------------------------ 1:1 zoom
+
+const TILE = 512;
+let zoomKey = ""; // the render the jobs worker holds for zoom tiles
+
+/** Render (or decode the fresh export of) a slide at full resolution in the jobs worker, for zoom. */
+async function zoomImage(d: SessionData, g: GroupData): Promise<{ key: string; width: number; height: number }> {
+  const key = `${d.id}:${g.id}:${renderKey(g)}`;
+  const ex = g.export?.key === renderKey(g) ? await lib.read(`${sessionDir(d.id)}/export/${g.export.file}`) : null;
+  let blobs: Blob[] = [];
+  if (!ex) {
+    const originals = await Promise.all(activeScans(g).map((x) => lib.read(originalPath(d, x))));
+    if (originals.some((x) => !x))
+      throw new HttpError(409, "The original scans were deleted after upload: no full resolution to zoom into.");
+    blobs = originals as Blob[];
+  }
+  const size = await jobs.call("zoomImage", { key, exported: ex, blobs, rotation: g.rotation, params: g.params }, 5);
+  zoomKey = key;
+  return { key, ...size };
+}
 
 // ------------------------------------------------------------------ payloads
 
@@ -643,6 +685,22 @@ export async function image(url: string, priority = 0): Promise<{ blob: Blob; fr
     );
     return { blob, fresh };
   }
+  m = u.pathname.match(/\/api\/sessions\/([^/]+)\/groups\/([^/]+)\/tile\.jpg$/);
+  if (m) {
+    const d = await loadSession(m[1]);
+    const g = group(d, m[2]);
+    const [col, row] = [Number(u.searchParams.get("col")), Number(u.searchParams.get("row"))];
+    const fresh = u.searchParams.get("v") === renderKey(g);
+    const key = `${d.id}:${g.id}:${renderKey(g)}`;
+    if (zoomKey !== key) await zoomImage(d, g);
+    try {
+      return { blob: await jobs.call("tile", { key, col, row, size: TILE }, 8), fresh };
+    } catch (e) {
+      if (!(e instanceof Error) || e.message !== "not rendered") throw e;
+      await zoomImage(d, g); // the worker let go of it (another slide, or it restarted)
+      return { blob: await jobs.call("tile", { key, col, row, size: TILE }, 8), fresh };
+    }
+  }
   m = u.pathname.match(/\/api\/sessions\/([^/]+)\/scans\/([^/]+)\/thumb\.jpg$/);
   if (m) {
     const d = await loadSession(m[1]);
@@ -982,6 +1040,7 @@ async function finishSession(
       status,
       meta: slideMeta(d, g, idx),
       pushed: pushedMeta(d, g, idx),
+      at: Date.now() / 1000, // when it went up, for the stats
     };
     if (stackId && Object.keys(originals).length)
       Object.assign(rec, { originals, own_originals: own, stack_id: stackId });
@@ -1312,6 +1371,7 @@ export async function handle(method: string, url: string, body: Body = {}): Prom
       keep_exports: cfg.keep_exports,
       learning_enabled: cfg.learning_enabled,
       upload_originals_stacked: cfg.upload_originals_stacked,
+      stats_target: cfg.stats_target,
     };
     return { config, sources: await sourceList(), sessions: await listSessions(), job: current } satisfies AppState;
   }
@@ -1327,6 +1387,12 @@ export async function handle(method: string, url: string, body: Body = {}): Prom
       "upload_originals_stacked",
     ] as const)
       if (k in body && !(k === "immich_key" && body[k] === "")) (cfg as Record<string, unknown>)[k] = body[k];
+    if ("stats_target" in body) {
+      // slides to digitise in all, for the stats' projected finish
+      const n = Math.trunc(Number(body.stats_target));
+      if (!Number.isFinite(n)) throw new HttpError(400, "The target is a number of slides");
+      cfg.stats_target = Math.max(1, n);
+    }
     saveConfig(cfg);
     return { ok: true };
   }
@@ -1415,6 +1481,11 @@ export async function handle(method: string, url: string, body: Body = {}): Prom
         g.params = cleanParams({ ...g.params, ...(body.params as object) });
         g.params_source = "manual";
       }
+      if ("reviewed" in body) {
+        // when, for the stats (slides per hour, projected finish)
+        if (body.reviewed && !g.reviewed) g.developed_at = Date.now() / 1000;
+        else if (!body.reviewed) delete g.developed_at;
+      }
       for (const k of ["reviewed", "skip"] as const) if (k in body) g[k] = !!body[k];
       if ("date" in body) g.date = cleanDate(body.date);
       if ("caption" in body) g.caption = String(body.caption).trim().slice(0, 2000);
@@ -1486,6 +1557,89 @@ export async function handle(method: string, url: string, body: Body = {}): Prom
       if (body.as_default) d.defaults = { ...p, ...FRAMING };
     });
     return payload(d);
+  }
+  if (is("GET", /^\/api\/presets$/)) return { presets: await loadPresets() };
+  if (is("POST", /^\/api\/presets$/)) {
+    const name = String(body.name ?? "")
+      .trim()
+      .slice(0, 80);
+    if (!name) throw new HttpError(400, "Give the preset a name");
+    let params: Params;
+    if (body.session) params = group(await loadSession(String(body.session)), String(body.group ?? "")).params;
+    else if (body.params && typeof body.params === "object") params = body.params as Params;
+    else throw new HttpError(400, "Nothing to save: send params or a slide");
+    return locked(async () => {
+      const presets = (await loadPresets()).filter((p) => p.name !== name);
+      presets.push({ name, params: colour(params), created: Date.now() / 1000 });
+      await savePresets(presets);
+      return { presets };
+    });
+  }
+  if ((m = is("DELETE", /^\/api\/presets\/(.+)$/))) {
+    const name = decodeURIComponent(m[1]);
+    return locked(async () => {
+      const presets = await loadPresets();
+      if (!presets.some((p) => p.name === name)) throw new HttpError(404, "No such preset");
+      const left = presets.filter((p) => p.name !== name);
+      await savePresets(left);
+      return { presets: left };
+    });
+  }
+  if ((m = is("POST", /^\/api\/sessions\/([^/]+)\/groups\/([^/]+)\/look$/))) {
+    // another look's colour (a preset, or any slide of any tray) on this slide or on it and the rest
+    const [, sid, gid] = m;
+    let look: Params;
+    let source: string;
+    let what: string;
+    if ("preset" in body) {
+      const hit = (await loadPresets()).find((p) => p.name === body.preset);
+      if (!hit) throw new HttpError(404, "No such preset");
+      [look, source, what] = [{ ...hit.params, ...FRAMING } as Params, `preset:${hit.name}`, "preset"];
+    } else if (body.like && typeof body.like === "object") {
+      const like = body.like as { session?: string; group?: string };
+      const other = await loadSession(String(like.session ?? ""));
+      const og = group(other, String(like.group ?? ""));
+      [look, source, what] = [og.params, `like:${groupIndex(other, og.id) + 1}:${other.name}`, "like"];
+    } else throw new HttpError(400, "Send a preset or a slide to develop like");
+    const c = colour(look);
+    const rest = body.scope === "rest";
+    let applied = 0;
+    const { d } = await update(sid, async (d) => {
+      const start = groupIndex(d, gid);
+      if (start < 0) throw new HttpError(404, "Slide not found");
+      if (!rest) editable(d.groups[start]);
+      for (const [i, g] of d.groups.entries()) {
+        if (g.locked || i < start || (i > start && (!rest || g.reviewed))) continue;
+        remember(g, what);
+        g.params = cleanParams({ ...c, angle: g.params.angle ?? FRAMING.angle, crop: g.params.crop ?? FRAMING.crop });
+        g.params_source = source;
+        await learn(d, g);
+        applied++;
+      }
+    });
+    return { ...(await payload(d)), applied };
+  }
+  if ((m = is("GET", /^\/api\/stats$/))) {
+    const t = Math.trunc(Number(u.searchParams.get("target")));
+    const all: SessionData[] = [];
+    for (const e of await lib.list("sessions")) {
+      if (e.kind !== "directory") continue;
+      try {
+        all.push(await loadSession(e.name));
+      } catch {
+        /* not a tray */
+      }
+    }
+    return libraryStats(
+      all.map(summary),
+      all.flatMap(slideTimes),
+      t > 0 ? t : loadConfig().stats_target || DEFAULT_TARGET,
+    );
+  }
+  if ((m = is("GET", /^\/api\/sessions\/([^/]+)\/groups\/([^/]+)\/full$/))) {
+    const d = await loadSession(m[1]);
+    const { width, height } = await zoomImage(d, group(d, m[2]));
+    return { width, height, tile: TILE, key: renderKey(group(d, m[2])) } satisfies FullInfo;
   }
   if ((m = is("POST", /^\/api\/sessions\/([^/]+)\/groups\/([^/]+)\/resuggest$/))) {
     const [, sid, gid] = m;

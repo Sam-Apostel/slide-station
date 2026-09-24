@@ -28,6 +28,8 @@ export type ImmichRecord = {
   stack_id?: string;
   originals?: Record<string, string>;
   own_originals?: string[];
+  /** When it went up (seconds), for the stats. */
+  at?: number;
 };
 
 export type Snapshot = {
@@ -52,6 +54,8 @@ export type GroupData = {
   immich: ImmichRecord | null;
   /** Pulled in from Immich: its upload replaces this asset. */
   source_asset?: { id: string };
+  /** When it was marked developed (seconds), for the stats. */
+  developed_at?: number;
   params_source?: string;
   auto_excluded?: Record<string, string>;
   locked?: string;

@@ -17,8 +17,8 @@ from . import workflow as wf
 from . import imaging as im
 from .imaging import Params
 from .immich import Immich, ImmichError
-from .store import (Session, active_scans, load_config, lock, parse_date, render_key, save_config, slide_dates,
-                    statuses, summary, tone_key)
+from .store import (Session, active_scans, load_config, load_presets, lock, parse_date, render_key, save_config,
+                    save_presets, slide_dates, statuses, summary, tone_key)
 
 app = FastAPI(title="Slide Station")
 # The UI is the React app in frontend/; its build is committed to slidestation/web so
@@ -58,6 +58,11 @@ def set_config(body: dict = Body(...)):
               "learning_enabled", "upload_originals_stacked"):
         if k in body and not (k == "immich_key" and body[k] == ""):
             cfg[k] = body[k]
+    if "stats_target" in body:  # slides to digitise in all, for the stats' projected finish
+        try:
+            cfg["stats_target"] = max(1, int(body["stats_target"]))
+        except (TypeError, ValueError):
+            raise HTTPException(400, "The target is a number of slides")
     save_config(cfg)
     return {"ok": True}
 
@@ -218,8 +223,10 @@ def create_session(body: dict = Body(...)):
 
 
 @app.get("/api/sessions/{sid}")
-def get_session(sid: str):
+def get_session(sid: str, peek: int = 0):
     s = _session(sid)
+    if peek:  # a look into another tray (the "develop like" picker), not the one you work on
+        return _session_payload(s)
     wf.active_session = sid  # the background renderer works on the tray you're looking at
     if wf.sync_locks(s):  # originals deleted (or restored) since we last looked
         s = wf.update_session(sid, wf.sync_locks)
@@ -336,6 +343,11 @@ def patch_group(sid: str, gid: str, body: dict = Body(...)):
         if "params" in body:
             g["params"] = Params.from_dict({**g["params"], **body["params"]}).to_dict()
             g["params_source"] = "manual"
+        if "reviewed" in body:  # when, for the stats (slides per hour, projected finish)
+            if body["reviewed"] and not g.get("reviewed"):
+                g["developed_at"] = time.time()
+            elif not body["reviewed"]:
+                g.pop("developed_at", None)
         for k in ("reviewed", "skip"):
             if k in body:
                 g[k] = bool(body[k])
@@ -442,6 +454,109 @@ def apply_params(sid: str, body: dict = Body(...)):
     return _session_payload(s)
 
 
+# --------------------------------------------------------------------------- looks: presets, develop like
+
+
+def _colour(params: dict) -> dict:
+    """A slide's look without its framing: crop and straighten are each slide's own."""
+    p = Params.from_dict(params).to_dict()
+    for k in FRAMING:
+        p.pop(k)
+    return p
+
+
+@app.get("/api/presets")
+def list_presets():
+    return {"presets": load_presets()}
+
+
+@app.post("/api/presets")
+def save_preset(body: dict = Body(...)):
+    """Save a named look (library-wide, presets.json): `params`, or the saved settings of slide
+    `group` in tray `session`. Colour only. The same name replaces the old one."""
+    name = str(body.get("name", "")).strip()[:80]
+    if not name:
+        raise HTTPException(400, "Give the preset a name")
+    if body.get("session"):
+        try:
+            params = _session(body["session"]).group(body.get("group", ""))["params"]
+        except KeyError:
+            raise HTTPException(404, "Slide not found")
+    elif isinstance(body.get("params"), dict):
+        params = body["params"]
+    else:
+        raise HTTPException(400, "Nothing to save: send params or a slide")
+    with lock:
+        presets = [p for p in load_presets() if p["name"] != name]
+        presets.append({"name": name, "params": _colour(params), "created": time.time()})
+        save_presets(presets)
+    return {"presets": presets}
+
+
+@app.delete("/api/presets/{name}")
+def delete_preset(name: str):
+    with lock:
+        presets = load_presets()
+        if not any(p["name"] == name for p in presets):
+            raise HTTPException(404, "No such preset")
+        presets = [p for p in presets if p["name"] != name]
+        save_presets(presets)
+    return {"presets": presets}
+
+
+@app.post("/api/sessions/{sid}/groups/{gid}/look")
+def apply_look(sid: str, gid: str, body: dict = Body(...)):
+    """Give slides another look's colour settings, keeping their own framing. The look is a preset
+    (`{"preset": name}`) or any slide of any tray (`{"like": {"session", "group"}}`). scope "this"
+    (default) is this slide; "rest" is this slide and every following one still to develop.
+    Every slide it changes gets an undo step."""
+    if "preset" in body:
+        hit = [p for p in load_presets() if p["name"] == body["preset"]]
+        if not hit:
+            raise HTTPException(404, "No such preset")
+        look, source = hit[0]["params"], f"preset:{hit[0]['name']}"
+    elif isinstance(body.get("like"), dict):
+        try:
+            other = _session(str(body["like"].get("session", "")))
+            og = other.group(str(body["like"].get("group", "")))
+        except KeyError:
+            raise HTTPException(404, "Slide not found")
+        look = og["params"]
+        source = f"like:{other.group_index(og['id']) + 1}:{other.data['name']}"
+    else:
+        raise HTTPException(400, "Send a preset or a slide to develop like")
+    colour = _colour(look)
+    rest = body.get("scope") == "rest"
+    with lock:
+        s = _session(sid)
+        try:
+            start = s.group_index(gid)
+        except ValueError:
+            raise HTTPException(404, "Slide not found")
+        if not rest:
+            _editable(s.data["groups"][start])
+        n = 0
+        for i, g in enumerate(s.data["groups"]):
+            if g.get("locked") or i < start or (i > start and (not rest or g.get("reviewed"))):
+                continue
+            _remember(g, "preset" if "preset" in body else "like")
+            g["params"] = Params.from_dict({**colour, **{k: g["params"].get(k, v) for k, v in FRAMING.items()}}).to_dict()
+            g["params_source"] = source
+            _learn(s, g)
+            n += 1
+        s.save()
+    return {**_session_payload(s), "applied": n}
+
+
+# --------------------------------------------------------------------------- stats
+
+
+@app.get("/api/stats")
+def library_stats(target: int = 0):
+    """Slides per hour, trays left and the projected finish, across the whole library."""
+    return Session.library_stats(target if target > 0 else int(load_config().get("stats_target") or 10_000))
+
+
 @app.get("/api/learning")
 def learning_stats():
     return {**learning.model().stats(), "enabled": load_config().get("learning_enabled", True)}
@@ -544,6 +659,35 @@ def group_preview(sid: str, gid: str, size: int = 1600, before: int = 0, uncropp
     # Only let the browser keep it if it is the render the URL names. A preview requested while
     # an edit is still being saved renders the older settings and must not be cached as the new.
     fresh = v and v == render_key(g)
+    return Response(data, media_type="image/jpeg", headers={"Cache-Control": "max-age=31536000" if fresh else "no-store"})
+
+
+@app.get("/api/sessions/{sid}/groups/{gid}/full")
+def full_info(sid: str, gid: str):
+    """Size of the slide's full-resolution render, for 1:1 zoom; renders it (seconds) if needed.
+    The zoom then loads it in TILE-pixel squares from tile.jpg."""
+    s = _session(sid)
+    try:
+        g = s.group(gid)
+        a = wf.full_image(s, gid)
+    except KeyError:
+        raise HTTPException(404)
+    except FileNotFoundError as e:
+        raise HTTPException(409, str(e))
+    return {"width": a.shape[1], "height": a.shape[0], "tile": wf.TILE, "key": render_key(g)}
+
+
+@app.get("/api/sessions/{sid}/groups/{gid}/tile.jpg")
+def full_tile(sid: str, gid: str, col: int, row: int, v: str = ""):
+    s = _session(sid)
+    try:
+        g = s.group(gid)
+        data = wf.full_tile(s, gid, col, row)
+    except KeyError:
+        raise HTTPException(404)
+    except FileNotFoundError as e:
+        raise HTTPException(409, str(e))
+    fresh = v and v == render_key(g)  # cached only when it is the render the URL names
     return Response(data, media_type="image/jpeg", headers={"Cache-Control": "max-age=31536000" if fresh else "no-store"})
 
 

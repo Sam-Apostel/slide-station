@@ -114,6 +114,8 @@ export type Config = {
   learning_enabled?: boolean;
   /** Also upload the untouched scans, stacked under each developed photo in Immich. */
   upload_originals_stacked?: boolean;
+  /** Slides to digitise in all, for the stats' projected finish. */
+  stats_target?: number;
 };
 
 /** An Immich album to pull photos back in from (`GET /api/immich/albums`). */
@@ -124,6 +126,12 @@ export type ImmichAsset = { id: string; name: string; date: string; favorite: bo
 
 /** What "Pull from Immich" brought back into a tray. */
 export type Pulled = { checked: number; captions: number; dates: number; gone: number };
+
+/** A named colour look (never framing), library-wide. */
+export type Preset = { name: string; params: Omit<Params, "crop" | "angle">; created: number };
+
+/** The full-resolution render of a slide, for 1:1 zoom: loaded in `tile`-pixel squares. */
+export type FullInfo = { width: number; height: number; tile: number; key: string };
 
 export type AppState = {
   config: Config;
@@ -159,6 +167,10 @@ export const previewUrl = (sid: string, g: Group, size: number, before = false, 
 
 export const histogramUrl = (sid: string, g: Group) =>
   `/api/sessions/${sid}/groups/${g.id}/histogram?v=${g.tone_key}`;
+
+/** A square of the slide's full-resolution render (1:1 zoom), on a fixed grid of FullInfo.tile pixels. */
+export const tileUrl = (sid: string, g: Group, col: number, row: number) =>
+  `/api/sessions/${sid}/groups/${g.id}/tile.jpg?col=${col}&row=${row}&v=${g.key}`;
 
 export const scanThumbUrl = (sid: string, scan: string) => `/api/sessions/${sid}/scans/${scan}/thumb.jpg`;
 

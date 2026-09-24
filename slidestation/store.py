@@ -11,6 +11,7 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 
+from . import stats
 from .imaging import Params
 
 CONFIG_DIR = Path(os.environ.get("SLIDESTATION_HOME", Path.home() / ".slidestation"))
@@ -26,6 +27,7 @@ DEFAULT_CONFIG = {
     "jpeg_quality": 95,
     # also upload each slide's untouched scans, stacked under the developed photo in Immich
     "upload_originals_stacked": False,
+    "stats_target": stats.DEFAULT_TARGET,  # slides to digitise in all, for the projected finish
 }
 
 lock = threading.RLock()
@@ -91,6 +93,27 @@ def add_to_index(entries: dict) -> None:
         _atomic_write(_index_file(), idx)
 
 
+# --------------------------------------------------------------------------- presets
+
+
+def _presets_file() -> Path:
+    return library() / "presets.json"
+
+
+def load_presets() -> list[dict]:
+    """Named colour looks, library-wide: [{"name", "params", "created"}], in the order saved."""
+    f = _presets_file()
+    try:
+        return json.loads(f.read_text()).get("presets", []) if f.exists() else []
+    except (ValueError, AttributeError):
+        return []
+
+
+def save_presets(presets: list[dict]) -> None:
+    with lock:
+        _atomic_write(_presets_file(), {"presets": presets})
+
+
 # --------------------------------------------------------------------------- sessions
 
 
@@ -142,19 +165,31 @@ class Session:
     _summaries: dict = {}
 
     @staticmethod
-    def list_all() -> list[dict]:
+    def _scan_all() -> list[tuple]:
+        """(mtime, summary, slide times) of every tray, re-reading only the trays that changed."""
         out = []
         for f in sorted((library() / "sessions").glob("*/session.json"), reverse=True):
             try:
                 mt = f.stat().st_mtime_ns
                 hit = Session._summaries.get(str(f))
-                if not hit or hit[0] != mt:  # only re-read trays that changed
-                    hit = (mt, summary(json.loads(f.read_text())))
+                if not hit or hit[0] != mt:
+                    d = json.loads(f.read_text())
+                    hit = (mt, summary(d), stats.slide_times(d))
                     Session._summaries[str(f)] = hit
             except Exception:
                 continue
-            out.append(hit[1])
+            out.append(hit)
         return out
+
+    @staticmethod
+    def list_all() -> list[dict]:
+        return [hit[1] for hit in Session._scan_all()]
+
+    @staticmethod
+    def library_stats(target: int) -> dict:
+        """Progress across every tray (stats.library_stats)."""
+        all_ = Session._scan_all()
+        return stats.library_stats([h[1] for h in all_], [t for h in all_ for t in h[2]], target)
 
     def save(self) -> None:
         with lock:

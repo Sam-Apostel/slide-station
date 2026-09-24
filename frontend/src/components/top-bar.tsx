@@ -1,5 +1,5 @@
 import type * as React from "react";
-import { CircleHelp, FolderInput, HardDriveDownload, Plus, Settings } from "lucide-react";
+import { ChartNoAxesColumn, CircleHelp, FolderInput, HardDriveDownload, Plus, Settings } from "lucide-react";
 import { ProButton } from "@/components/ui/pro-button";
 import { Tip } from "@/components/tip";
 import { desktop, isMac } from "@/lib/desktop";
@@ -26,6 +26,8 @@ type TopBarProps = {
   /** Browser version: pick a folder of scans (there is no scanner to wait for). */
   onChooseFolder?: () => void;
   onHelp: () => void;
+  /** Progress across the library (slides per hour, projected finish). */
+  onStats?: () => void;
   onSettings: () => void;
 };
 
@@ -145,9 +147,16 @@ export function ActivityWell({
 }
 
 /** Shortcuts and settings, at the right end of whichever bar is on top. */
-export function AppActions({ onHelp, onSettings }: Pick<TopBarProps, "onHelp" | "onSettings">) {
+export function AppActions({ onHelp, onSettings, onStats }: Pick<TopBarProps, "onHelp" | "onSettings" | "onStats">) {
   return (
     <>
+      {onStats && (
+        <Tip label="Stats: slides per hour, projected finish">
+          <ProButton onClick={onStats} aria-label="Stats">
+            <ChartNoAxesColumn />
+          </ProButton>
+        </Tip>
+      )}
       <Tip label="Keyboard shortcuts" keys="?">
         <ProButton onClick={onHelp} aria-label="Keyboard shortcuts">
           <CircleHelp />

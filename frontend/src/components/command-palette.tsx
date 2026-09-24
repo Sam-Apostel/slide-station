@@ -1,9 +1,14 @@
 import * as React from "react";
 import {
   Aperture,
+  Bookmark,
   CalendarRange,
+  ChartNoAxesColumn,
   CloudDownload,
   Images,
+  LayoutGrid,
+  Search,
+  ZoomIn,
   Wand2,
   ArrowLeft,
   ArrowRight,
@@ -65,6 +70,8 @@ export function CommandPalette({
   onClean,
   onDateRange,
   onFromImmich,
+  views,
+  grid,
   busy,
 }: {
   open: boolean;
@@ -76,6 +83,16 @@ export function CommandPalette({
   onDateRange: () => void;
   /** Opens "pull photos back in from Immich". */
   onFromImmich: () => void;
+  /** The review grid, zoom, loupe, and the stats / presets / develop-like dialogs. */
+  views: {
+    toggleGrid: () => void;
+    toggleZoom: () => void;
+    toggleLoupe: () => void;
+    stats: () => void;
+    presets: () => void;
+    developLike: () => void;
+  };
+  grid: boolean;
   busy: boolean;
 }) {
   const { state, session, sessionId, sel } = app;
@@ -118,6 +135,8 @@ export function CommandPalette({
               run: () => app.resuggest(true),
             },
             { id: "rest", label: "Apply colour to the rest", icon: <Layers />, run: app.applyRest },
+            { id: "presets", label: "Presets: save or apply a colour…", icon: <Bookmark />, run: views.presets },
+            { id: "like", label: "Develop like another slide…", icon: <Images />, run: views.developLike },
             {
               id: "skip",
               label: g.skip ? "Unskip slide" : "Skip slide",
@@ -128,6 +147,26 @@ export function CommandPalette({
             { id: "date-range", label: "Date a range of slides…", icon: <CalendarRange />, run: onDateRange },
             { id: "merge", label: "Merge with next", icon: <Merge />, keys: "M", hidden: sel >= count - 1, run: app.mergeNext },
           ]
+        : [],
+    ],
+    [
+      "Presets",
+      g
+        ? app.presets.flatMap((p) => [
+            {
+              id: `preset-${p.name}`,
+              label: `Apply preset “${p.name}”`,
+              icon: <Bookmark />,
+              hidden: g.locked,
+              run: () => void app.applyLook({ preset: p.name }),
+            },
+            {
+              id: `preset-rest-${p.name}`,
+              label: `Apply preset “${p.name}” to this and the rest`,
+              icon: <Bookmark />,
+              run: () => void app.applyLook({ preset: p.name }, "rest"),
+            },
+          ])
         : [],
     ],
     [
@@ -200,11 +239,27 @@ export function CommandPalette({
         { id: "filmstrip", label: "Show or hide filmstrip", icon: <PanelLeft />, keys: `${alt}1`, run: handlers.toggleFilmstrip },
         { id: "inspector", label: "Show or hide inspector", icon: <PanelRight />, keys: `${alt}2`, run: handlers.toggleInspector },
         { id: "focus", label: "Focus on the photo", icon: <ScanEye />, keys: `${alt}F`, run: handlers.focusMode },
+        {
+          id: "grid",
+          label: grid ? "Back to the single slide" : "Review grid",
+          icon: <LayoutGrid />,
+          keys: "G",
+          hidden: !count,
+          run: views.toggleGrid,
+        },
+        { id: "zoom", label: "Zoom to 100 %", icon: <ZoomIn />, keys: "Z", hidden: !g || grid, run: views.toggleZoom },
+        { id: "loupe", label: "Loupe", icon: <Search />, keys: "L", hidden: !g || grid, run: views.toggleLoupe },
       ],
     ],
     [
       "Slide Station",
       [
+        {
+          id: "stats",
+          label: "Stats: slides per hour, projected finish…",
+          icon: <ChartNoAxesColumn />,
+          run: views.stats,
+        },
         { id: "settings", label: "Settings…", icon: <Settings />, keys: `${mod},`, run: handlers.settings },
         { id: "help", label: "Keyboard shortcuts", icon: <Keyboard />, keys: "?", run: handlers.help },
       ],

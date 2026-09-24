@@ -232,6 +232,34 @@ def main() -> None:
             print(f"background render: {pg.evaluate(EXPORTS)} slides, {time.time() - t0:.1f}s")
             pg.screenshot(path=str(SHOTS / "02-developed.png"))
 
+            # ---- 1:1 zoom (the worker renders the originals at full resolution), a preset, the grid
+            t0 = time.time()
+            pg.keyboard.press("z")
+            pg.wait_for_function(
+                "() => [...document.querySelectorAll('.ss-zoom img')].some(i => i.naturalWidth > 0)", timeout=60_000
+            )
+            expect(pg.locator(".ss-zoom-tag")).to_contain_text("100 % · 1200 × ")
+            print(f"zoom: {time.time() - t0:.1f}s")
+            pg.keyboard.press("Escape")
+            pg.get_by_role("button", name="Presets", exact=True).click()
+            dlg = pg.get_by_role("dialog", name="Presets")
+            dlg.get_by_label(re.compile(r"^Save slide")).fill("Web look")
+            dlg.get_by_role("button", name="Save", exact=True).click()
+            dlg.get_by_role("listitem", name="Web look").get_by_role("button", name="+ rest").click()
+            expect(pg.get_by_text(re.compile(r"Applied “Web look” to \d+ slides?")).first).to_be_visible()
+            expect(dlg).to_have_count(0)
+            pg.keyboard.press("g")
+            grid = pg.get_by_role("grid", name="Slides")
+            expect(grid).to_be_visible()
+            pg.wait_for_function(
+                "() => [...document.querySelectorAll('[role=gridcell] img')].filter(i => i.naturalWidth > 0).length >= 3",
+                timeout=30_000,
+            )
+            pg.keyboard.press(" ")
+            pg.screenshot(path=str(SHOTS / "02b-grid.png"))
+            pg.keyboard.press("g")
+            expect(grid).to_have_count(0)
+
             # ---- date a range of slides
             pg.keyboard.press("Control+k")
             pg.get_by_placeholder("Type an action or a tray name…").fill("Date a range")
