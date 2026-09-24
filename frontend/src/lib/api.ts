@@ -110,7 +110,15 @@ export type Config = {
   keep_originals: boolean;
   keep_exports: boolean;
   learning_enabled?: boolean;
+  /** Slides to digitise in all, for the stats' projected finish. */
+  stats_target?: number;
 };
+
+/** A named colour look (never framing), library-wide. */
+export type Preset = { name: string; params: Omit<Params, "crop" | "angle">; created: number };
+
+/** The full-resolution render of a slide, for 1:1 zoom: loaded in `tile`-pixel squares. */
+export type FullInfo = { width: number; height: number; tile: number; key: string };
 
 export type AppState = {
   config: Config;
@@ -146,6 +154,10 @@ export const previewUrl = (sid: string, g: Group, size: number, before = false, 
 
 export const histogramUrl = (sid: string, g: Group) =>
   `/api/sessions/${sid}/groups/${g.id}/histogram?v=${g.tone_key}`;
+
+/** A square of the slide's full-resolution render (1:1 zoom), on a fixed grid of FullInfo.tile pixels. */
+export const tileUrl = (sid: string, g: Group, col: number, row: number) =>
+  `/api/sessions/${sid}/groups/${g.id}/tile.jpg?col=${col}&row=${row}&v=${g.key}`;
 
 export const scanThumbUrl = (sid: string, scan: string) => `/api/sessions/${sid}/scans/${scan}/thumb.jpg`;
 

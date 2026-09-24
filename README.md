@@ -106,6 +106,16 @@ can be re-rendered from the originals at any time).
    hold **B** for before, **C** copy colour from the previous slide, **X** skip (never uploaded),
    **M** merge with next, **1–9** leave a scan out of the stack, ✂ between stack scans splits a
    slide. Reviewed slides are rendered at full resolution in the background.
+   - **G** opens the review grid, every slide of the tray at once for the quick "all good" pass:
+     arrows move the cursor, **Space** develops and steps on, **X** skips, **R** turns, **Enter**
+     opens the slide, **G** or **Esc** goes back.
+   - **Z** (or double-click the photo) zooms to 100 % of the full-resolution render. Drag to look
+     around, **Z** or **Esc** to leave. **L** turns on a loupe that shows 100 % under the pointer.
+   - **Presets** (bookmark icon in Adjust, or ⌘K): save a slide's colour under a name and apply it
+     to a slide or to the rest of the tray. **Develop like…** copies the colour of any slide in
+     any tray. Crop and straighten are never copied, and **⌘Z** undoes it on each slide.
+   - **Stats** (chart icon in the top bar): slides per hour, trays left and a projected finish
+     date for your target (10,000 slides unless you change it).
 4. **Upload to Immich**. Editing a slide after uploading marks it "edited"; the next upload
    replaces the old copy in Immich (the old one goes to the Immich trash).
 5. **Clean scanner card** unlocks once every slide is uploaded or skipped. It only deletes files

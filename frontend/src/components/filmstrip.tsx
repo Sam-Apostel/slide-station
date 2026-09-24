@@ -15,8 +15,8 @@ import { cn } from "@/lib/utils";
 
 export type Filter = "all" | "todo" | "multi";
 
-/** A filmstrip thumbnail. The browser version renders only the ones scrolled into view. */
-function PreviewImg({ url, ...props }: { url: string } & Omit<React.ComponentProps<"img">, "src">) {
+/** A slide thumbnail (filmstrip, review grid). The browser version renders only the ones scrolled into view. */
+export function PreviewImg({ url, ...props }: { url: string } & Omit<React.ComponentProps<"img">, "src">) {
   const [el, setEl] = React.useState<HTMLElement | null>(null);
   const [seen, setSeen] = React.useState(!standalone);
   React.useEffect(() => {

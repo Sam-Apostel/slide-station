@@ -17,7 +17,8 @@ import { Kbd } from "@/components/ui/kbd";
 import { Label } from "@/components/ui/label";
 import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select";
 import { desktop, isMac } from "@/lib/desktop";
-import { api, sourceLabel, standalone, type AppState, type Config, type Group, type Source } from "@/lib/api";
+import { api, plural, sourceLabel, standalone, type AppState, type Config, type Group, type Source } from "@/lib/api";
+import type { Stats } from "@/lib/stats";
 import { cn } from "@/lib/utils";
 
 const primary = "bg-primary text-primary-foreground";
@@ -580,6 +581,20 @@ export const SHORTCUTS: [React.ReactNode, string][] = [
     "Show before",
   ],
   [<Kbd>Y</Kbd>, "Split view: before | after (drag the divider)"],
+  [
+    <>
+      <Kbd>Z</Kbd> / double-click
+    </>,
+    "1:1 zoom on the full-resolution render (drag to move, Z or Esc to leave)",
+  ],
+  [<Kbd>L</Kbd>, "Loupe: 100 % under the pointer"],
+  [<Kbd>G</Kbd>, "Review grid: every slide at once (G or Esc back)"],
+  [
+    <>
+      <Kbd>←</Kbd> <Kbd>→</Kbd> <Kbd>↑</Kbd> <Kbd>↓</Kbd>
+    </>,
+    "In the grid: move the cursor (Space develops and steps on, X skips, R turns, Enter opens)",
+  ],
   [<Kbd>C</Kbd>, "Copy colour from previous slide"],
   [<Kbd>0</Kbd>, "Reset all adjustments"],
   [<Kbd>W</Kbd>, "White balance: click a neutral spot on the photo"],
@@ -611,6 +626,127 @@ export const SHORTCUTS: [React.ReactNode, string][] = [
   [<Kbd>?</Kbd>, "This list"],
 ];
 
+// ------------------------------------------------------------------ stats
+
+/** Progress across every tray: slides per hour, trays left, when the target is reached. */
+export function StatsDialog({
+  open,
+  onOpenChange,
+  onSaved,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  /** The target was changed (it lives in the config). */
+  onSaved: () => void;
+}) {
+  const [stats, setStats] = React.useState<Stats | null>(null);
+  const [target, setTarget] = React.useState("");
+  const load = React.useCallback(async () => {
+    try {
+      const s = await api<Stats>("GET", "/api/stats");
+      setStats(s);
+      setTarget(String(s.target));
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : String(e));
+    }
+  }, []);
+  React.useEffect(() => {
+    if (open) load();
+  }, [open, load]);
+
+  const saveTarget = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const n = Number(target);
+    if (!Number.isInteger(n) || n < 1 || n === stats?.target) return;
+    try {
+      await api("POST", "/api/config", { stats_target: n });
+      onSaved();
+      load();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : String(err));
+    }
+  };
+
+  const s = stats;
+  const n = (x: number) => x.toLocaleString();
+  const finish = s?.finish
+    ? new Date(`${s.finish}T12:00:00`).toLocaleDateString(undefined, { dateStyle: "long" })
+    : null;
+  const tiles: [string, string, string?][] = s
+    ? [
+        [
+          "Slides per hour",
+          s.per_hour ? String(s.per_hour) : "–",
+          s.per_hour ? `over ${s.hours_worked} h of work` : "develop a few more",
+        ],
+        [
+          "Done",
+          `${n(s.slides.done)} of ${n(s.target)}`,
+          `${Math.min(100, Math.round((s.slides.done / s.target) * 100))} %`,
+        ],
+        [
+          "Projected finish",
+          s.remaining === 0 ? "Done!" : (finish ?? "–"),
+          s.remaining === 0
+            ? ""
+            : s.per_day
+              ? `at ${s.per_day} slides a day (last 2 weeks)`
+              : "no slides in the last 2 weeks",
+        ],
+        ["Work left", s.hours_left !== null ? `${s.hours_left} h` : "–", `${n(s.remaining)} slides`],
+        ["Trays", `${s.trays.open} open`, `${s.trays.finished} of ${s.trays.total} in Immich`],
+        [
+          "Still to scan",
+          s.trays_to_scan !== null ? plural(s.trays_to_scan, "tray") : "–",
+          `${n(Math.max(0, s.target - s.slides.total))} slides not imported yet`,
+        ],
+        ["Today", String(s.today), `${s.last_7_days} in the last 7 days`],
+        ["In the library", n(s.slides.total), `${n(s.slides.to_develop)} to develop · ${n(s.slides.skipped)} skipped`],
+      ]
+    : [];
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-[520px]">
+        <DialogHeader>
+          <DialogTitle>Stats</DialogTitle>
+          <DialogDescription>
+            Across every tray in the library. Time between slides counts up to 10 minutes; longer is a break.
+          </DialogDescription>
+        </DialogHeader>
+        <dl className="grid grid-cols-2 gap-2" aria-busy={!s}>
+          {tiles.map(([label, value, note]) => (
+            <div key={label} className="rounded-md border border-(--ss-line-soft) bg-(--ss-panel) px-3 py-2">
+              <dt className="text-[11px] text-muted-foreground">{label}</dt>
+              <dd className="text-[18px] leading-6 font-semibold tabular-nums">{value}</dd>
+              {note && <dd className="text-[11px] text-(--ss-dim)">{note}</dd>}
+            </div>
+          ))}
+        </dl>
+        <form onSubmit={saveTarget} className="flex items-end gap-1.5">
+          <Field className="min-w-0 flex-1">
+            <FieldLabel htmlFor="stats-target">Target: slides to digitise in all</FieldLabel>
+            <Input
+              id="stats-target"
+              inputMode="numeric"
+              value={target}
+              onChange={(e) => setTarget(e.target.value.replace(/\D/g, ""))}
+            />
+          </Field>
+          <Button type="submit" disabled={!s || !Number(target) || Number(target) === s.target}>
+            Set
+          </Button>
+        </form>
+        <DialogFooter>
+          <DialogClose asChild>
+            <Button className={primary}>Close</Button>
+          </DialogClose>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 export function HelpDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (open: boolean) => void }) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -618,16 +754,18 @@ export function HelpDialog({ open, onOpenChange }: { open: boolean; onOpenChange
         <DialogHeader>
           <DialogTitle>Keyboard</DialogTitle>
         </DialogHeader>
-        <table className="w-full text-[12px]">
-          <tbody>
-            {SHORTCUTS.map(([keys, what], i) => (
-              <tr key={i} className="border-b border-(--ss-line-soft) last:border-0">
-                <td className="py-1.5 pr-4 whitespace-nowrap">{keys}</td>
-                <td className="py-1.5 text-foreground/75">{what}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+        <div className="max-h-[65vh] overflow-y-auto scrollbar-thin">
+          <table className="w-full text-[12px]">
+            <tbody>
+              {SHORTCUTS.map(([keys, what], i) => (
+                <tr key={i} className="border-b border-(--ss-line-soft) last:border-0">
+                  <td className="py-1.5 pr-4 whitespace-nowrap">{keys}</td>
+                  <td className="py-1.5 text-foreground/75">{what}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
         <DialogFooter>
           <DialogClose asChild>
             <Button className={primary}>Close</Button>

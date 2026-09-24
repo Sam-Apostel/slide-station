@@ -37,6 +37,7 @@ slidestation/
   workflow.py             import, preview/export rendering, upload, card cleanup, job runner
   imaging.py              signatures/grouping, rotation guessing, HDR fusion, colour pipeline
   learning.py             learns colour settings from approved slides (§5)
+  stats.py                progress across the library: slides per hour, projected finish (§4)
   store.py                config + session persistence (JSON on disk)
   immich.py               minimal Immich client (v1/v2/v3 compatible)
   models/                 YuNet face detector (MIT, from opencv_zoo)
@@ -49,8 +50,8 @@ tests/                    API tests (pytest), synthetic scans, mock Immich, Play
 
 State lives outside the repo: `~/.slidestation/config.json` (settings, incl. the Immich API key,
 chmod 600) and the library folder (default `~/Pictures/Slide Station`), which holds
-`sessions/<id>/{session.json,originals,cache,export}`, `imported.json` (dedupe index) and
-`learning.json`.
+`sessions/<id>/{session.json,originals,cache,export}`, `imported.json` (dedupe index),
+`learning.json` and `presets.json`.
 
 ## 3. Architecture notes that matter
 
@@ -230,6 +231,64 @@ the local render). Marking it developed or skipping it is still allowed. Re-impo
 scans into the tray restores the originals (the dedupe index no longer skips a scan whose
 original this tray lost) and unlocks it.
 
+### Review grid, 1:1 zoom, presets, stats (ROADMAP §6)
+
+- **Review grid** (G, `components/review-grid.tsx`): replaces the stage with every slide of the
+  tray as a tile (`preview.jpg?size=400`, the quick small-render path), 2–6 columns by the stage's
+  width (≥ 230 px a tile; 4 on a laptop). Its cursor *is* the selection, so the keyboard map in
+  `App.tsx` drives it: ← → by one, ↑ ↓ by a row (the grid writes its column count into a ref the
+  map reads), Space = `developStep` (selects the next tile first, then marks the one it left
+  developed, so quick presses each move on), X / R / ⇧R / C / 0 / F / M act on the tile as usual,
+  Enter / Esc / G go back to the single slide. B, W, K, Y, Z, L and 1–9 need the stage and do
+  nothing in the grid. Double-click a tile opens it; right-click is the slide menu.
+- **1:1 zoom and loupe** (Z or double-click the photo at the spot; L; `components/zoom.tsx`):
+  the *full-resolution* render, not the 1600 px proxy. `GET …/groups/{gid}/full` →
+  `{width, height, tile: 512, key}` renders it once (seconds), then `GET …/tile.jpg?col&row&v=key`
+  hands out 512 px squares on a fixed grid (cached forever when `v` is the render key, like
+  previews). One image pixel is one device pixel. Drag pans (the window is clamped to the photo);
+  moving to another slide, Z, Esc or a double-click leave. The loupe is a 240 px circle of the same
+  tiles under the pointer. Server: `workflow.full_image` keeps **one** slide's render (uint8, ~65 MB
+  at 22 MP) keyed by (tray, slide, render key); it decodes the export when `g["export"]["key"]`
+  matches the render key and the file exists, else fuses the originals under `_export_lock` (the
+  one-full-render-at-a-time rule, §3). `_full_lock` makes concurrent tile requests wait for one
+  render. Originals gone and no export: 409. Browser version: the jobs worker keeps the zoomed
+  slide as RGBA (`zoomImage` / `tile` ops in `engine.worker.ts`), re-rendering on a miss; the
+  1:1 view shares the ~16 MP canvas ceiling of Safari noted in §4c.
+- **Presets** (library-wide `presets.json`: `{"presets": [{"name", "params", "created"}]}`): colour
+  only — `params` minus `angle` / `crop` (`server._colour`), trim and curves included, like "Copy
+  previous". `GET /api/presets`; `POST /api/presets` with `{"name", "params"}` or
+  `{"name", "session", "group"}` (the slide's *saved* params; the UI flushes pending slider
+  edits first); the same name replaces; `DELETE /api/presets/{name}`. UI: the bookmark icon in the
+  Adjust header (`PresetsDialog` in `components/looks.tsx`) and ⌘K ("Apply preset “…”", "… to this
+  and the rest").
+- **Develop like…** any slide of any tray (`DevelopLikeDialog`: tray → slide thumbnails). The tray
+  is read with `GET /api/sessions/{id}?peek=1`, which doesn't make it the background renderer's
+  `active_session`.
+- Both apply through `POST /api/sessions/{sid}/groups/{gid}/look` with `{"preset": name}` or
+  `{"like": {"session", "group"}}` and `scope` `"this"` (409 if locked) or `"rest"` (this slide and
+  every following one not yet developed; locked ones skipped). Each changed slide gets an undo
+  step (`_remember(g, "preset" | "like")`), keeps its own framing, is re-learned (`_learn`), and
+  gets `params_source` `preset:<name>` or `like:<slide number>:<tray name>` (the Adjust summary
+  says so). Answers the payload plus `"applied": n`.
+- **Stats** (`slidestation/stats.py`, mirrored in `frontend/src/lib/stats.ts` for the browser
+  version — keep them identical; `stats.test.ts` runs the same cases as `test_tool.py`):
+  `GET /api/stats?target=` across every tray. A slide's time is `g["developed_at"]` (set by
+  `PATCH …/groups/{gid}` when `reviewed` turns true, dropped when it turns false) or, for slides
+  uploaded without being developed, `g["immich"]["at"]` (set at upload). Trays from before either
+  field have no times and just don't count towards the rate — nothing else reads them. Slides per
+  hour = intervals between consecutive slide times, each capped at 10 min (longer is a break);
+  none below 5 min of work. The projected finish uses slides a day over the last 14 days (over the
+  days since the first of those when fewer, at least one day). `target` defaults to the config's
+  `stats_target` (10,000; `POST /api/config {"stats_target": n}`). `Session._scan_all` caches each
+  tray's summary and times by `session.json` mtime, shared with `list_all`. UI: the chart icon in
+  the top bar, and ⌘K.
+
+Tests: `tests/test_tool.py` (tiles and their cache headers, re-render on edit, export reuse,
+409 without originals, presets, looks with undo / scope / locked, peek, `developed_at`, upload
+time, the stats maths and endpoint). `tests/ui_flow.py` zooms, pans, uses the loupe, saves and
+applies a preset (and undoes it), drives the grid with the keyboard and opens the stats;
+`tests/web_flow.py` zooms, applies a preset to the rest and uses the grid in the browser version.
+
 ### Icons
 
 `desktop/build/icon.png` is generated by `desktop/build/make_icon.py` (mount in a tray, sunset in
@@ -389,6 +448,8 @@ undo), and consider learning rotation corrections per film type once enough exam
 
 `tests/` contains what was used during development:
 
+- `tests/test_tool.py` — pytest: zoom tiles, presets and "develop like", stats (§4, "Review grid,
+  1:1 zoom, presets, stats").
 - `tests/test_api.py` — pytest, the API under FastAPI's `TestClient` against a scratch library
   (`uv run --python 3.12 pytest tests -q`, ~15 s): bracket grouping and re-import dedupe; curves
   (`clean_curves`, `fit_curves` single / all, histogram caching, `render_key` ignoring neutral

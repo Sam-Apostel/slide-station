@@ -1,5 +1,5 @@
 import * as React from "react";
-import { Columns2, Lock, Redo2, Scissors, Undo2 } from "lucide-react";
+import { Columns2, LayoutGrid, Lock, Redo2, Scissors, Search, Undo2, ZoomIn } from "lucide-react";
 import { isMac } from "@/lib/desktop";
 import { Tip } from "@/components/tip";
 import { CropBar, CropOverlay, FULL, fitAspect, maxAspect, moveRect, resizeRect, type Rect } from "@/components/crop";
@@ -8,6 +8,7 @@ import { Spinner } from "@/components/ui/spinner";
 import { imageSrc, previewUrl, scanThumbUrl, useImageSrc, type Group, type SessionPayload } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { STATUS_DOT, STATUS_LABEL, STATUS_TEXT } from "@/components/filmstrip";
+import { Loupe, ZoomView } from "@/components/zoom";
 
 /** Loads the wanted preview off-screen and only swaps it in once decoded, so browsing never flashes. */
 function usePreloadedImage(url: string | null, warm: string | null) {
@@ -91,6 +92,11 @@ export function Stage({
   onRedo,
   compare,
   onCompare,
+  zoom,
+  onZoom,
+  loupe,
+  onLoupe,
+  onGrid,
 }: {
   session: SessionPayload;
   sessionId: string;
@@ -114,6 +120,14 @@ export function Stage({
   /** Split view: before on the left, after on the right, with a draggable divider. */
   compare: boolean;
   onCompare: () => void;
+  /** 1:1 zoom on the full-resolution render, opened at this spot (0..1 of the photo); null = off. */
+  zoom: [number, number] | null;
+  onZoom: (at: [number, number] | null) => void;
+  /** The loupe follows the pointer over the photo. */
+  loupe: boolean;
+  onLoupe: (on: boolean) => void;
+  /** Switch to the batch review grid. */
+  onGrid: () => void;
 }) {
   const g: Group | undefined = session.groups[sel];
   const next = session.groups[sel + 1];
@@ -129,6 +143,17 @@ export function Stage({
   const moveDivider = (e: React.PointerEvent) => {
     const r = imgEl?.getBoundingClientRect();
     if (r) setDivider(Math.min(100, Math.max(0, ((e.clientX - r.left) / r.width) * 100)));
+  };
+
+  // ---- loupe: where the pointer is, in the stage (px) and on the photo (0..1)
+  const [loupeAt, setLoupeAt] = React.useState<{ x: number; y: number; fx: number; fy: number } | null>(null);
+  const zooming = !!zoom && !cropping;
+  const looking = loupe && !zooming && !cropping && !picking;
+  const track = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (!looking || !imgEl) return;
+    const pt = photoPoint(imgEl, e.clientX, e.clientY);
+    const r = e.currentTarget.getBoundingClientRect();
+    setLoupeAt(pt && { x: e.clientX - r.left, y: e.clientY - r.top, fx: pt[0], fy: pt[1] });
   };
 
   // ---- crop tool state: a draft until Done
@@ -219,6 +244,32 @@ export function Stage({
                 </ProButton>
               </Tip>
             </div>
+            <Tip label="Review grid: every slide at once" keys="G">
+              <ProButton aria-label="Review grid" onClick={onGrid}>
+                <LayoutGrid />
+              </ProButton>
+            </Tip>
+            <Tip label="1:1 zoom on the full-resolution render (or double-click the photo)" keys="Z">
+              <ProButton
+                aria-label="Zoom to 100 %"
+                aria-pressed={zooming || undefined}
+                data-on={zooming || undefined}
+                disabled={cropping}
+                onClick={() => onZoom(zoom ? null : [0.5, 0.5])}
+              >
+                <ZoomIn />
+              </ProButton>
+            </Tip>
+            <Tip label="Loupe: 100 % under the pointer" keys="L">
+              <ProButton
+                aria-label="Loupe"
+                aria-pressed={loupe || undefined}
+                data-on={loupe || undefined}
+                onClick={() => onLoupe(!loupe)}
+              >
+                <Search />
+              </ProButton>
+            </Tip>
             <Tip label="Split view: before | after" keys="Y">
               <ProButton
                 aria-label="Split before and after"
@@ -243,7 +294,11 @@ export function Stage({
         )}
       </div>
 
-      <div className="relative min-h-0 flex-1 overflow-hidden">
+      <div
+        className={cn("relative min-h-0 flex-1 overflow-hidden", looking && "cursor-crosshair")}
+        onPointerMove={track}
+        onPointerLeave={() => setLoupeAt(null)}
+      >
         {g &&
           shown &&
           comparing &&
@@ -277,6 +332,10 @@ export function Stage({
                 const pt = photoPoint(e.currentTarget, e.clientX, e.clientY);
                 onPicked(pt?.[0] ?? null, pt?.[1] ?? null);
               }}
+              onDoubleClick={(e) => {
+                if (picking || cropping) return;
+                onZoom(photoPoint(e.currentTarget, e.clientX, e.clientY) ?? [0.5, 0.5]);
+              }}
             />,
           )}
         {comparing && beforeView.shown && (
@@ -299,6 +358,8 @@ export function Stage({
         {cropping && shown && (
           <CropOverlay img={imgEl} rect={rect} ratio={aspect.ratio} onChange={setRect} />
         )}
+        {g && zooming && <ZoomView key={g.id} sid={sessionId} g={g} start={zoom!} onClose={() => onZoom(null)} />}
+        {g && looking && <Loupe sid={sessionId} g={g} at={loupeAt} onFail={() => onLoupe(false)} />}
         {picking && !cropping && (
           <div className="ss-pick-hint" role="status">
             Click a spot that should be neutral grey or white · <kbd>Esc</kbd>

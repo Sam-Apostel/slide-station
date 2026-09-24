@@ -33,7 +33,9 @@ export type GroupData = {
   reviewed: boolean;
   skip: boolean;
   export: { file: string; key: string; ekey: string; sha1: string } | null;
-  immich: { asset_id: string; key: string; status?: string; meta?: string } | null;
+  immich: { asset_id: string; key: string; status?: string; meta?: string; at?: number } | null;
+  /** When it was marked developed (seconds), for the stats. */
+  developed_at?: number;
   params_source?: string;
   auto_excluded?: Record<string, string>;
   locked?: string;

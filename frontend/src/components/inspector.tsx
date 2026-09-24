@@ -3,7 +3,9 @@ import { toast } from "sonner";
 import {
   Aperture,
   ArrowRight,
+  Bookmark,
   CalendarRange,
+  Images,
   CheckCheck,
   Copy,
   Crop,
@@ -96,6 +98,8 @@ export function Inspector({
   onReimport,
   onSave,
   onDateRange,
+  onPresets,
+  onDevelopLike,
 }: {
   app: SlideStation;
   session: SessionPayload;
@@ -114,6 +118,9 @@ export function Inspector({
   onSave?: () => void;
   /** Opens the "date a range of slides" dialog. */
   onDateRange: () => void;
+  /** Opens the presets dialog, and the "develop like another slide" picker. */
+  onPresets: () => void;
+  onDevelopLike: () => void;
 }) {
   const { current: g, sel } = app;
   const sm = session.summary;
@@ -204,7 +211,7 @@ export function Inspector({
             <ProDisclosureGroup
               title="Adjust"
               summary={adjustSummary(g, session.defaults)}
-              right={<AdjustActions app={app} />}
+              right={<AdjustActions app={app} onPresets={onPresets} onDevelopLike={onDevelopLike} />}
               {...section("colour")}
             >
               <AdjustPanel app={app} session={session} picking={picking} onPick={onPick} />
@@ -317,10 +324,28 @@ export function Inspector({
   );
 }
 
-/** Use learned / copy previous / apply to rest, as icons in the Adjust header. */
-function AdjustActions({ app }: { app: SlideStation }) {
+/** Use learned / presets / develop like / copy previous / apply to rest, as icons in the Adjust header. */
+function AdjustActions({
+  app,
+  onPresets,
+  onDevelopLike,
+}: {
+  app: SlideStation;
+  onPresets: () => void;
+  onDevelopLike: () => void;
+}) {
   return (
     <span className="flex items-center gap-0.5">
+      <Tip label="Presets: save this colour, or apply a saved one">
+        <button type="button" aria-label="Presets" onClick={onPresets}>
+          <Bookmark />
+        </button>
+      </Tip>
+      <Tip label="Develop like another slide, from any tray">
+        <button type="button" aria-label="Develop like" onClick={onDevelopLike}>
+          <Images />
+        </button>
+      </Tip>
       <Tip label="Use what your developed slides suggest (⇧-click: every slide to develop)">
         <button type="button" aria-label="Use learned settings" onClick={(e) => app.resuggest(e.shiftKey)}>
           <Sparkles />
