@@ -186,6 +186,39 @@ final class ParityTests: XCTestCase {
         XCTAssertEqual(Develop.repairDust(dusty, amount: 0).data, dusty.data)
     }
 
+    // MARK: mould and Newton rings
+
+    struct Damage: Decodable {
+        var mould_amount: Double, mould_marked: Int, mould_r: Int
+        var newton_amount: Double, newton_weight_sum: Double, newton_weight_samples: [Double]
+    }
+
+    lazy var damage: Damage = try! JSONDecoder().decode(Damage.self, from: Data(contentsOf: Self.dir.appendingPathComponent("golden.json")))
+
+    func testMouldRepair() throws {
+        let mouldy = try image("mouldy.png")
+        let (mask, r) = Develop.mouldMask(mouldy, amount: damage.mould_amount)
+        XCTAssertEqual(r, damage.mould_r)
+        XCTAssertEqual(mask.reduce(0) { $0 + Int($1) }, damage.mould_marked)
+        let (mean, worst) = diff(Develop.repairMould(mouldy, amount: damage.mould_amount).data, try floats("mould.f32"))
+        XCTAssertLessThan(mean, 1e-5)
+        XCTAssertLessThan(worst, 1e-3)
+        XCTAssertEqual(Develop.repairMould(mouldy, amount: 0).data, mouldy.data)
+    }
+
+    func testNewtonRingRemoval() throws {
+        let ringed = try image("rings.png")
+        let (weight, _) = Develop.newtonWeight(ringed, amount: damage.newton_amount)
+        XCTAssertEqual(weight.reduce(0, +), damage.newton_weight_sum, accuracy: 1e-6 * Double(weight.count))
+        for (k, (y, x)) in [(100, 96), (40, 40), (170, 260), (200, 300)].enumerated() {
+            XCTAssertEqual(weight[y * ringed.width + x], damage.newton_weight_samples[k], accuracy: 1e-6)
+        }
+        let (mean, worst) = diff(Develop.repairNewton(ringed, amount: damage.newton_amount).data, try floats("newton.f32"))
+        XCTAssertLessThan(mean, 1e-5)
+        XCTAssertLessThan(worst, 1e-3)
+        XCTAssertEqual(Develop.repairNewton(ringed, amount: 0).data, ringed.data)
+    }
+
     struct Local: Decodable {
         struct MaskStats: Decodable { var shape: [Int], sum: Double, samples: [Double] }
         var params_local: Params, developed_local_shape: [Int]

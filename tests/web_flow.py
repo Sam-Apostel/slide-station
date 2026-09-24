@@ -296,6 +296,21 @@ def main() -> None:
             )
             print("mount and dust: straightened, trimmed, dust 40")
             pg.screenshot(path=str(SHOTS / "02b-mount-dust.png"))
+            # mould and Newton rings on the same slide: the photo re-renders with both (it is
+            # developed and exported later, so the full-resolution path runs in the page too)
+            t0 = time.time()
+            for label, value in (("Mould", "50"), ("Newton rings", "60")):
+                old = pg.locator("img.ss-photo[alt^='Slide']").get_attribute("src")
+                field = pg.get_by_label(f"{label} value")
+                field.fill(value)
+                field.press("Enter")
+                expect(field).to_have_value(value)
+                pg.wait_for_function(
+                    "(old) => { const i = document.querySelector('img.ss-photo[alt^=\"Slide\"]');"
+                    " return i && i.src !== old && i.naturalWidth > 0 }", arg=old, timeout=30_000)
+            expect(pg.get_by_role("button", name="Reset restore")).to_be_visible()
+            print(f"mould 50, Newton rings 60: re-rendered in {time.time() - t0:.1f}s")
+            pg.screenshot(path=str(SHOTS / "02c-mould-newton.png"))
 
             # ---- local adjustments: a radial dodges the middle, a graduated filter burns the top
             t0 = time.time()

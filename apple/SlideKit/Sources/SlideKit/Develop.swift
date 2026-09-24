@@ -188,7 +188,7 @@ public enum Develop {
         }
     }
 
-    /// The image the tone curve works on: auto-restored, trimmed, dust repaired, straightened and cropped.
+    /// The image the tone curve works on: auto-restored, trimmed, repaired (dust, mould, Newton rings), straightened and cropped.
     public static func toneBase(_ a: RGBImage, _ p: Params, crop: Bool = true) -> RGBImage {
         var out = a
         toneBaseInPlace(&out, p, crop: crop)
@@ -200,6 +200,8 @@ public enum Develop {
         if p.trim { let (t, b, l, r) = trimBounds(a); a.cropInPlace(top: t, bottom: b, left: l, right: r) }
         // after the trim, so the mount's edge is never taken for a scratch
         if p.dust > 0 { repairDustInPlace(&a, amount: p.dust) }
+        if p.mould > 0 { repairMouldInPlace(&a, amount: p.mould) }   // after the dust
+        if p.newton > 0 { repairNewtonInPlace(&a, amount: p.newton) }
         geometryInPlace(&a, p, crop: crop)
     }
 

@@ -28,7 +28,9 @@ export const COOL = "#4d8fe6";
 export const GREEN = "#4dbb72";
 export const MAGENTA = "#d25ad2";
 
-export const SPECS: Record<"strength" | "dust" | "brightness" | "contrast" | "saturation", Spec> = {
+type SpecKey = "strength" | "dust" | "mould" | "newton" | "brightness" | "contrast" | "saturation";
+
+export const SPECS: Record<SpecKey, Spec> = {
   strength: {
     key: "strength",
     label: "Auto restore",
@@ -45,6 +47,26 @@ export const SPECS: Record<"strength" | "dust" | "brightness" | "contrast" | "sa
     // specks on the left, gone to the right
     track:
       "radial-gradient(circle at 7% 40%, #101012 0 1.5px, transparent 2px), radial-gradient(circle at 16% 68%, #ecebe6 0 1px, transparent 1.5px), radial-gradient(circle at 27% 34%, #101012 0 1px, transparent 1.5px), linear-gradient(90deg, #5f6361, #8a8d8b)",
+    hint: ["off", "strong"],
+  },
+  mould: {
+    key: "mould",
+    label: "Mould",
+    min: 0,
+    max: 1,
+    // pale branching threads on the left, gone to the right
+    track:
+      "linear-gradient(62deg, transparent 45%, #d8d4c2 46% 52%, transparent 53%) 2% 0 / 9% 100% no-repeat, linear-gradient(-48deg, transparent 45%, #d8d4c2 46% 52%, transparent 53%) 9% 0 / 8% 100% no-repeat, linear-gradient(20deg, transparent 44%, #2a2d22 45% 53%, transparent 54%) 19% 0 / 8% 100% no-repeat, linear-gradient(90deg, #5f6361, #8a8d8b)",
+    hint: ["off", "strong"],
+  },
+  newton: {
+    key: "newton",
+    label: "Newton rings",
+    min: 0,
+    max: 1,
+    // faint rainbow rings on the left, gone to the right
+    track:
+      "repeating-radial-gradient(circle at 0 50%, #9a86b0 0 2px, #7fa58e 2px 4px, #b3a36e 4px 6px) 0 0 / 34% 100% no-repeat, linear-gradient(90deg, #5f6361, #8a8d8b)",
     hint: ["off", "strong"],
   },
   brightness: {
@@ -76,6 +98,8 @@ export const SPECS: Record<"strength" | "dust" | "brightness" | "contrast" | "sa
 };
 
 const LIGHT_KEYS = ["brightness", "contrast"] as const;
+/** Damage repair: dust & scratches, mould, Newton rings (imaging.repair_*). */
+const REPAIRS = ["dust", "mould", "newton"] as const;
 
 const fmt = (v: number, bipolar: boolean) => {
   const n = Math.round(v * 100);
@@ -376,9 +400,15 @@ const off = (v: number, d = 0) => Math.abs(v - d) > 0.004;
 export function adjustSummary(g: Group, defaults: Params) {
   const p = g.params;
   const n =
-    [off(p.brightness), off(p.contrast), off(p.saturation), off(p.warmth) || off(p.tint), off(p.dust ?? 0)].filter(Boolean)
-      .length +
-    (off(p.strength, defaults.strength) ? 1 : 0);
+    [
+      off(p.brightness),
+      off(p.contrast),
+      off(p.saturation),
+      off(p.warmth) || off(p.tint),
+      off(p.dust ?? 0),
+      off(p.mould ?? 0),
+      off(p.newton ?? 0),
+    ].filter(Boolean).length + (off(p.strength, defaults.strength) ? 1 : 0);
   const [kind, ...rest] = g.params_source.split(":");
   const src =
     kind === "learned"
@@ -420,15 +450,17 @@ export function AdjustPanel({
       <Section
         title="Restore"
         note={curvesOn && p.strength === 0 ? "by the tone curve" : undefined}
-        changed={off(p.strength, d.strength) || p.trim !== d.trim || off(p.dust ?? 0, d.dust ?? 0)}
+        changed={off(p.strength, d.strength) || p.trim !== d.trim || REPAIRS.some((k) => off(p[k] ?? 0, d[k] ?? 0))}
         onReset={() => {
           app.setParam("strength", d.strength, true);
           app.setParam("trim", d.trim, true);
-          app.setParam("dust", d.dust ?? 0, true);
+          REPAIRS.forEach((k) => app.setParam(k, d[k] ?? 0, true));
         }}
       >
         <AdjustSlider spec={SPECS.strength} value={p.strength} resetValue={d.strength} onChange={set("strength")} />
-        <AdjustSlider spec={SPECS.dust} value={p.dust ?? 0} resetValue={d.dust ?? 0} onChange={set("dust")} />
+        {REPAIRS.map((k) => (
+          <AdjustSlider key={k} spec={SPECS[k]} value={p[k] ?? 0} resetValue={d[k] ?? 0} onChange={set(k)} />
+        ))}
 
         <div className="flex items-center gap-2">
           <Checkbox id="trim" checked={p.trim} onCheckedChange={(v) => app.setParam("trim", v === true, true)} />

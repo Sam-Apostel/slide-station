@@ -37,6 +37,8 @@ export const DEFAULT_PARAMS: Params = {
   angle: 0,
   crop: null,
   dust: 0,
+  mould: 0,
+  newton: 0,
   local: [],
 };
 
@@ -50,7 +52,7 @@ export function cleanParams(d: Partial<Params> | Record<string, unknown> | null 
   if ("trim" in src) p.trim = !!src.trim;
   if ("curves" in src) p.curves = cleanCurves(src.curves);
   if ("crop" in src) p.crop = cleanCrop(src.crop);
-  if ("dust" in src) p.dust = clamp01(Number(src.dust) || 0);
+  for (const k of ["dust", "mould", "newton"] as const) if (k in src) p[k] = clamp01(Number(src[k]) || 0);
   if ("local" in src) p.local = cleanLocal(src.local);
   return p;
 }
@@ -325,11 +327,13 @@ export function geometry(a: RGB, p: Params, crop = true): RGB {
   return crop && p.crop ? cropped(out, ...cropBox(out.height, out.width, p.crop)) : out;
 }
 
-/** The image the tone curve works on: auto-restored, trimmed, dust repaired, straightened and cropped. */
+/** The image the tone curve works on: auto-restored, trimmed, repaired, straightened and cropped. */
 export function toneBase(a: RGB, p: Params, crop = true, inPlace = false): RGB {
   let out = autoRestore(a, p.strength, inPlace);
   if (p.trim) out = cropped(out, ...trimBounds(out));
   if ((p.dust ?? 0) > 0) out = repairDust(out, p.dust, inPlace || out !== a);
+  if ((p.mould ?? 0) > 0) out = repairMould(out, p.mould, inPlace || out !== a); // after the dust
+  if ((p.newton ?? 0) > 0) out = repairNewton(out, p.newton, inPlace || out !== a);
   return geometry(out, p, crop);
 }
 
@@ -619,11 +623,22 @@ export function repairDust(a: RGB, amount: number, inPlace = false): RGB {
   const f = Math.max(h, w) / Math.max(mh, mw);
   const off: number[] = [];
   for (let k = -r - 1; k <= r + 1; k++) off.push((k >= 0 ? 1 : -1) * Math.trunc(Math.abs(k) * f + 0.5));
-  let todo: number[] = [];
+  const todo: number[] = [];
   for (let i = 0; i < w * h; i++) if (!known[i]) todo.push(i);
+  medianFill(out, known, todo, off, DUST_PASSES);
+  return out;
+}
+
+/**
+ * Fill pixels `todo` of `out` in place with the per-channel median of the known pixels among the
+ * samples at off × off around each (imaging._median_fill); pixels with none wait for the next
+ * pass, which can use the ones filled before it. Returns the pixels still unfilled.
+ */
+function medianFill(out: RGB, known: Uint8Array, todo: number[], off: number[], passes: number): number[] {
+  const { width: w, height: h } = out;
   const o = out.data;
   const buf = [0, 1, 2].map(() => new Float32Array(off.length * off.length));
-  for (let pass = 0; pass < DUST_PASSES && todo.length; pass++) {
+  for (let pass = 0; pass < passes && todo.length; pass++) {
     const vals = new Float32Array(todo.length * 3);
     const done = new Uint8Array(todo.length);
     todo.forEach((i, j) => {
@@ -654,6 +669,423 @@ export function repairDust(a: RGB, amount: number, inPlace = false): RGB {
       known[i] = 1;
     });
     todo = todo.filter((_, j) => !done[j]);
+  }
+  return todo;
+}
+
+/** A proxy-scale mask at w × h: every pixel takes its proxy pixel's verdict (imaging._verdicts). */
+function verdicts(m: Uint8Array, mw: number, mh: number, w: number, h: number): Uint8Array {
+  if (mw === w && mh === h) return m;
+  const xs = Int32Array.from({ length: w }, (_, x) => Math.min(Math.trunc(((x + 0.5) * mw) / w), mw - 1));
+  const out = new Uint8Array(w * h);
+  for (let y = 0; y < h; y++) {
+    const my = Math.min(Math.trunc(((y + 0.5) * mh) / h), mh - 1) * mw;
+    for (let x = 0; x < w; x++) out[y * w + x] = m[my + xs[x]];
+  }
+  return out;
+}
+
+/**
+ * For each of n pixels, the two of sn grid centres around it and the weight of the second, the
+ * grid spanning the same length, clamped at the ends (imaging._bilinear_axis).
+ */
+function bilinearAxis(n: number, sn: number): { i0: Int32Array; i1: Int32Array; f: Float64Array } {
+  const i0 = new Int32Array(n);
+  const i1 = new Int32Array(n);
+  const f = new Float64Array(n);
+  for (let k = 0; k < n; k++) {
+    const u = ((k + 0.5) * sn) / n - 0.5;
+    i0[k] = Math.min(sn - 1, Math.max(0, Math.floor(u)));
+    i1[k] = Math.min(i0[k] + 1, sn - 1);
+    f[k] = Math.min(1, Math.max(0, u - i0[k]));
+  }
+  return { i0, i1, f };
+}
+
+// ------------------------------------------------------------------ mould
+
+const MOULD_CELLS = 9; // the picture under the mould: the median of this many cells (4r px each) across
+const MOULD_LONG = 40; // × r: the longest colony, in proxy pixels (120 at 1600 px, ~2.7 mm of the film)
+const MOULD_PASSES = 6;
+
+/**
+ * The picture without its mould, per channel and ×9 (imaging._mould_background): the lower median
+ * of the MOULD_CELLS² integer cell means around each cell, bilinear between cells. Interleaved RGB.
+ */
+function mouldBackground(q: Int32Array, w: number, h: number, cell: number): Float64Array {
+  const gw = Math.ceil(w / cell);
+  const gh = Math.ceil(h / cell);
+  const cells = new Float64Array(gw * gh * 3);
+  for (let gy = 0; gy < gh; gy++)
+    for (let gx = 0; gx < gw; gx++) {
+      const [y0, y1, x0, x1] = [gy * cell, Math.min(h, gy * cell + cell), gx * cell, Math.min(w, gx * cell + cell)];
+      const n = (y1 - y0) * (x1 - x0);
+      for (let c = 0; c < 3; c++) {
+        let sum = 0;
+        for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) sum += q[(y * w + x) * 3 + c];
+        cells[(gy * gw + gx) * 3 + c] = Math.floor((sum * 9) / n);
+      }
+    }
+  const k = MOULD_CELLS >> 1;
+  const med = new Float64Array(gw * gh * 3);
+  const win = new Float64Array(MOULD_CELLS * MOULD_CELLS);
+  for (let gy = 0; gy < gh; gy++)
+    for (let gx = 0; gx < gw; gx++)
+      for (let c = 0; c < 3; c++) {
+        let n = 0;
+        for (let y = Math.max(0, gy - k); y <= Math.min(gh - 1, gy + k); y++)
+          for (let x = Math.max(0, gx - k); x <= Math.min(gw - 1, gx + k); x++) win[n++] = cells[(y * gw + x) * 3 + c];
+        med[(gy * gw + gx) * 3 + c] = win.subarray(0, n).sort()[(n - 1) >> 1];
+      }
+  // bilinear between the cells' centres, rows first (imaging._upsample)
+  const ax = bilinearAxis(gw * cell, gw);
+  const ay = bilinearAxis(gh * cell, gh);
+  const across = new Float64Array(gh * w * 3);
+  for (let gy = 0; gy < gh; gy++)
+    for (let x = 0; x < w; x++)
+      for (let c = 0; c < 3; c++) {
+        const [a, b, f] = [med[(gy * gw + ax.i0[x]) * 3 + c], med[(gy * gw + ax.i1[x]) * 3 + c], ax.f[x]];
+        across[(gy * w + x) * 3 + c] = a * (1 - f) + b * f;
+      }
+  const bg = new Float64Array(w * h * 3);
+  for (let y = 0; y < h; y++) {
+    const [r0, r1, f] = [ay.i0[y] * w * 3, ay.i1[y] * w * 3, ay.f[y]];
+    for (let i = 0; i < w * 3; i++) bg[y * w * 3 + i] = across[r0 + i] * (1 - f) + across[r1 + i] * f;
+  }
+  return bg;
+}
+
+/** Max over the (2g + 1)² window, clipped to the image (cv2.dilate of a 0/1 mask). */
+function grow(m: Uint8Array, w: number, h: number, g: number): Uint8Array {
+  const across = new Uint8Array(w * h);
+  for (let y = 0; y < h; y++)
+    for (let x = 0; x < w; x++) {
+      let v = 0;
+      for (let k = Math.max(0, x - g); k <= Math.min(w - 1, x + g) && !v; k++) v = m[y * w + k];
+      across[y * w + x] = v;
+    }
+  const out = new Uint8Array(w * h);
+  for (let y = 0; y < h; y++)
+    for (let x = 0; x < w; x++) {
+      let v = 0;
+      for (let k = Math.max(0, y - g); k <= Math.min(h - 1, y + g) && !v; k++) v = across[k * w + x];
+      out[y * w + x] = v;
+    }
+  return out;
+}
+
+/**
+ * Mould (imaging._find_mould): candidates where a channel's 3×3 sum differs from the picture without
+ * its mould by more than `amount` asks, joined into 8-connected shapes (hysteresis: at half the
+ * threshold, with a pixel over it); shapes bigger than dust, at most MOULD_LONG × r long and filling
+ * little of their bounding box are mould, grown by r / 2. All in integers, so the same pixels as
+ * Python. Returns the mask, every candidate, the background (×9) and r.
+ */
+function findMould(a: RGB, amount: number): { mask: Uint8Array; busy: Uint8Array; bg: Float64Array; r: number } {
+  const { width: w, height: h } = a;
+  const f = Math.fround;
+  const q = new Int32Array(w * h * 3);
+  for (let i = 0; i < q.length; i++) q[i] = Math.trunc(f(f(Math.min(1, Math.max(0, a.data[i])) * 255) + 0.5));
+  const r = Math.max(1, Math.trunc((3 * Math.max(w, h)) / DUST_EDGE + 0.5));
+  const bg = mouldBackground(q, w, h, 4 * r);
+  const thr = 9 * (30 - 18 * amount);
+  // the 3×3 sums, the edge repeated: across, then down
+  const s3 = new Int32Array(w * h * 3);
+  for (let y = 0; y < h; y++)
+    for (let x = 0; x < w; x++) {
+      const [i, l, rt] = [(y * w + x) * 3, (y * w + Math.max(0, x - 1)) * 3, (y * w + Math.min(w - 1, x + 1)) * 3];
+      for (let c = 0; c < 3; c++) s3[i + c] = q[l + c] + q[i + c] + q[rt + c];
+    }
+  const dev = new Float64Array(w * h);
+  for (let y = 0; y < h; y++) {
+    const [up, down] = [Math.max(0, y - 1) * w * 3, Math.min(h - 1, y + 1) * w * 3];
+    for (let x = 0; x < w; x++) {
+      let d = 0;
+      for (let c = 0; c < 3; c++) {
+        const i = (y * w + x) * 3 + c;
+        const s9 = s3[up + x * 3 + c] + s3[i] + s3[down + x * 3 + c];
+        d = Math.max(d, Math.abs(s9 - bg[i]));
+      }
+      dev[y * w + x] = d;
+    }
+  }
+  // 8-connected shapes of the weak candidates, found by flood fill; their size, extent, strength
+  const label = new Int32Array(w * h);
+  const shapes: { area: number; x0: number; x1: number; y0: number; y1: number; strong: boolean }[] = [];
+  const stack: number[] = [];
+  for (let i = 0; i < w * h; i++) {
+    if (label[i] || !(dev[i] > thr / 2)) continue;
+    const s = { area: 0, x0: w, x1: 0, y0: h, y1: 0, strong: false };
+    shapes.push(s);
+    label[i] = shapes.length;
+    stack.push(i);
+    while (stack.length) {
+      const j = stack.pop()!;
+      const [y, x] = [Math.trunc(j / w), j % w];
+      s.area++;
+      [s.x0, s.x1, s.y0, s.y1] = [Math.min(s.x0, x), Math.max(s.x1, x), Math.min(s.y0, y), Math.max(s.y1, y)];
+      if (dev[j] > thr) s.strong = true;
+      for (let yy = Math.max(0, y - 1); yy <= Math.min(h - 1, y + 1); yy++)
+        for (let xx = Math.max(0, x - 1); xx <= Math.min(w - 1, x + 1); xx++) {
+          const k = yy * w + xx;
+          if (!label[k] && dev[k] > thr / 2) {
+            label[k] = shapes.length;
+            stack.push(k);
+          }
+        }
+    }
+  }
+  const fill = Math.trunc(35 + 20 * amount);
+  const keep = shapes.map(({ area, x0, x1, y0, y1, strong }) => {
+    const [bw, bh] = [x1 - x0 + 1, y1 - y0 + 1];
+    return strong && area >= 3 * r * r && Math.max(bw, bh) <= MOULD_LONG * r && area * 100 <= bw * bh * fill;
+  });
+  const kept = new Uint8Array(w * h);
+  const busy = new Uint8Array(w * h);
+  for (let i = 0; i < w * h; i++)
+    if (label[i]) {
+      busy[i] = 1;
+      if (keep[label[i] - 1]) kept[i] = 1;
+    }
+  return { mask: grow(kept, w, h, Math.max(1, Math.trunc(r / 2 + 0.5))), busy, bg, r };
+}
+
+/** The mould findMould keeps (imaging.mould_mask). */
+export function mouldMask(a: RGB, amount: number): { mask: Uint8Array; r: number } {
+  const { mask, r } = findMould(a, amount);
+  return { mask, r };
+}
+
+/**
+ * Find mould (at proxy scale) and paint it out without leaving flat patches (imaging.repair_mould):
+ * low frequencies from the median of the clean proxy pixels around (9 × 9 samples r apart, pass by
+ * pass), grain from the first clean spot 6r or 12r away round the compass (its pixel minus its local
+ * mean). At full resolution the low frequencies are the proxy's, bilinear. inPlace: the caller's
+ * pixels may be overwritten.
+ */
+export function repairMould(a: RGB, amount: number, inPlace = false): RGB {
+  if (amount <= 0) return a;
+  const { width: w, height: h } = a;
+  const small = shrink(a, DUST_EDGE);
+  const { mask: m, busy: busy0, bg, r } = findMould(small, amount);
+  if (!m.includes(1)) return a;
+  const [mw, mh] = [small.width, small.height];
+  // samples and grain come from clean picture only, not from mould left alone
+  const known = new Uint8Array(mw * mh);
+  const todo: number[] = [];
+  for (let i = 0; i < mw * mh; i++) {
+    if (m[i]) {
+      busy0[i] = 1;
+      todo.push(i);
+    }
+    known[i] = 1 - busy0[i];
+  }
+  const low = rgb(mw, mh, Float32Array.from(small.data));
+  const off = Array.from({ length: 9 }, (_, k) => (k - 4) * r);
+  for (const i of medianFill(low, known, todo, off, MOULD_PASSES))
+    for (let c = 0; c < 3; c++) low.data[i * 3 + c] = Math.fround(bg[i * 3 + c] / (9 * 255));
+  const mask = verdicts(m, mw, mh, w, h);
+  const busy = verdicts(busy0, mw, mh, w, h);
+  const ax = bilinearAxis(w, mw);
+  const ay = bilinearAxis(h, mh);
+  const f = Math.max(h, w) / Math.max(mh, mw);
+  const g = Math.max(1, Math.trunc(f + 0.5));
+  const n = (2 * g + 1) ** 2;
+  const shifts: [number, number][] = [];
+  for (const d of [6 * r, 12 * r]) {
+    const s = Math.trunc(d * f + 0.5);
+    for (const [sy, sx] of [
+      [0, 1],
+      [0, -1],
+      [1, 0],
+      [-1, 0],
+      [1, 1],
+      [-1, -1],
+      [1, -1],
+      [-1, 1],
+    ])
+      shifts.push([sy * s, sx * s]);
+  }
+  const src = a.data;
+  const L = low.data;
+  let count = 0;
+  for (let i = 0; i < w * h; i++) count += mask[i];
+  const at = new Int32Array(count); // written once every value is known: `out` may be `a`
+  const vals = new Float64Array(count * 3);
+  let j = 0;
+  for (let y = 0; y < h; y++)
+    for (let x = 0; x < w; x++) {
+      if (!mask[y * w + x]) continue;
+      const v = vals.subarray(j * 3, j * 3 + 3);
+      at[j++] = y * w + x;
+      const [x0, x1, fx, y0, y1, fy] = [ax.i0[x], ax.i1[x], ax.f[x], ay.i0[y], ay.i1[y], ay.f[y]];
+      for (let c = 0; c < 3; c++)
+        v[c] =
+          (L[(y0 * mw + x0) * 3 + c] * (1 - fx) + L[(y0 * mw + x1) * 3 + c] * fx) * (1 - fy) +
+          (L[(y1 * mw + x0) * 3 + c] * (1 - fx) + L[(y1 * mw + x1) * 3 + c] * fx) * fy;
+      const shift = shifts.find(([dy, dx]) => {
+        const [yy, xx] = [y + dy, x + dx];
+        return yy >= 0 && yy < h && xx >= 0 && xx < w && !busy[yy * w + xx];
+      });
+      if (!shift) continue;
+      // the grain: that pixel minus the mean of the (2g + 1)² around it, g a proxy pixel
+      const [qy, qx] = [y + shift[0], x + shift[1]];
+      const mean = [0, 0, 0];
+      for (let dy = -g; dy <= g; dy++) {
+        const yy = Math.min(h - 1, Math.max(0, qy + dy));
+        for (let dx = -g; dx <= g; dx++) {
+          const s = (yy * w + Math.min(w - 1, Math.max(0, qx + dx))) * 3;
+          for (let c = 0; c < 3; c++) mean[c] += src[s + c];
+        }
+      }
+      for (let c = 0; c < 3; c++) v[c] += src[(qy * w + qx) * 3 + c] - mean[c] / n;
+    }
+  const out = inPlace ? a : rgb(w, h, Float32Array.from(src));
+  at.forEach((i, k) => {
+    for (let c = 0; c < 3; c++) out.data[i * 3 + c] = Math.min(1, Math.max(0, vals[k * 3 + c]));
+  });
+  return out;
+}
+
+// ------------------------------------------------------------------ Newton rings
+
+export const NEWTON_EDGE = 1600;
+
+/**
+ * Mean over the (2r + 1)² window clipped to the image, in place, in float64 from running sums:
+ * along rows, then down columns (imaging._box; OpenCV adds in another order there, ~1e-15 apart).
+ * `run` is scratch space for (h + 1) × w values.
+ */
+function box(a: Float64Array, w: number, h: number, r: number, run: Float64Array): void {
+  if (r <= 0) return;
+  for (let y = 0; y < h; y++) {
+    const row = y * w;
+    for (let x = 0; x < w; x++) run[x + 1] = run[x] + a[row + x];
+    for (let x = 0; x < w; x++) {
+      const lo = Math.max(x - r, 0);
+      const hi = Math.min(x + r + 1, w);
+      a[row + x] = (run[hi] - run[lo]) / (hi - lo);
+    }
+  }
+  // down the columns: every column's running sum at once, a row at a time (memory in order)
+  for (let x = 0; x < w; x++) run[x] = 0;
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) run[(y + 1) * w + x] = run[y * w + x] + a[y * w + x];
+  for (let y = 0; y < h; y++) {
+    const lo = Math.max(y - r, 0) * w;
+    const hi = Math.min(y + r + 1, h) * w;
+    const n = (hi - lo) / w;
+    for (let x = 0; x < w; x++) a[y * w + x] = (run[hi + x] - run[lo + x]) / n;
+  }
+}
+
+/** Two box means, in place: close to a Gaussian (imaging._blur). */
+function blur(a: Float64Array, w: number, h: number, r: number, run: Float64Array): Float64Array {
+  box(a, w, h, r, run);
+  box(a, w, h, r, run);
+  return a;
+}
+
+const smoothstep = (x: number, e0: number, e1: number) => {
+  const t = Math.min(1, Math.max(0, (x - e0) / (e1 - e0)));
+  return t * t * (3 - 2 * t);
+};
+
+/**
+ * Newton rings (imaging.newton_weight): where the band between two blurs is narrow-band (one
+ * frequency: gradient energy² ≈ energy × Laplacian energy), oriented (structure tensor) and faint.
+ * Returns the weight 0..1 per pixel and the band per channel (planar), float64.
+ */
+export function newtonWeight(a: RGB, amount: number): { weight: Float64Array; band: Float64Array[] } {
+  const { width: w, height: h } = a;
+  const s = Math.max(h, w) / NEWTON_EDGE;
+  const r1 = Math.trunc(s + 0.5); // 0: no blur
+  const r2 = Math.max(2, Math.trunc(14 * s + 0.5));
+  const r3 = Math.max(3, Math.trunc(20 * s + 0.5));
+  const run = new Float64Array((h + 1) * w + 1);
+  const sums = [0, 1, 2, 3, 4].map(() => new Float64Array(w * h)); // e0, e2, jxx, jyy, jxy
+  const hi = new Float64Array(w * h);
+  const b = new Float64Array(w * h);
+  const band = [0, 1, 2].map((c) => {
+    const lo = new Float64Array(w * h);
+    for (let i = 0; i < w * h; i++) lo[i] = hi[i] = a.data[i * 3 + c];
+    blur(lo, w, h, r1, run);
+    blur(hi, w, h, r2, run);
+    for (let i = 0; i < w * h; i++) b[i] = lo[i] -= hi[i];
+    blur(b, w, h, Math.max(1, 2 * r1), run);
+    for (let y = 0; y < h; y++)
+      for (let x = 0; x < w; x++) {
+        const i = y * w + x;
+        const xp = b[y * w + Math.min(x + 1, w - 1)];
+        const xm = b[y * w + Math.max(x - 1, 0)];
+        const yp = b[Math.min(y + 1, h - 1) * w + x];
+        const ym = b[Math.max(y - 1, 0) * w + x];
+        const gx = (xp - xm) * 0.5;
+        const gy = (yp - ym) * 0.5;
+        const lap = xp + xm + yp + ym - 4 * b[i];
+        // summed over the channels in order, as (c0 + c1) + c2
+        sums[0][i] += b[i] * b[i];
+        sums[1][i] += lap * lap;
+        sums[2][i] += gx * gx;
+        sums[3][i] += gy * gy;
+        sums[4][i] += gx * gy;
+      }
+    return lo;
+  });
+  const [e0, e2, jxx, jyy, jxy] = sums.map((v) => blur(v, w, h, r3, run));
+  const [n0, c0, a1] = [0.6 - 0.15 * amount, 0.5 - 0.25 * amount, 0.02 + 0.04 * amount];
+  const weight = new Float64Array(w * h);
+  for (let i = 0; i < w * h; i++) {
+    const e1 = jxx[i] + jyy[i];
+    const narrow = (e1 * e1) / (e0[i] * e2[i] + 1e-30);
+    const coh = ((jxx[i] - jyy[i]) * (jxx[i] - jyy[i]) + 4 * jxy[i] * jxy[i]) / (e1 * e1 + 1e-30);
+    const amp = Math.sqrt(e0[i]);
+    weight[i] =
+      smoothstep(narrow, n0, n0 + 0.15) *
+      smoothstep(coh, c0, c0 + 0.25) *
+      smoothstep(amp, 0.001, 0.003) *
+      (1 - smoothstep(amp, a1, 2 * a1));
+  }
+  return { weight, band };
+}
+
+/**
+ * Take the ring band out where newtonWeight finds rings, at proxy scale; at full resolution the
+ * proxy's correction is laid on bilinear (imaging.repair_newton). inPlace: the caller's pixels may
+ * be overwritten.
+ */
+export function repairNewton(a: RGB, amount: number, inPlace = false): RGB {
+  if (amount <= 0) return a;
+  const { width: w, height: h } = a;
+  const small = shrink(a, NEWTON_EDGE);
+  const [mw, mh] = [small.width, small.height];
+  const { weight, band } = newtonWeight(small, amount);
+  const corr = new Float64Array(mw * mh * 3);
+  for (let i = 0; i < mw * mh; i++) for (let c = 0; c < 3; c++) corr[i * 3 + c] = -weight[i] * band[c][i];
+  const out = inPlace ? a : rgb(w, h, new Float32Array(a.data.length));
+  const ax = bilinearAxis(w, mw);
+  const ay = bilinearAxis(h, mh);
+  // bilinear, along rows first, then down (imaging._upsample); two proxy rows brought across at a time
+  const rows = new Map<number, Float64Array>();
+  const across = (y: number) => {
+    let row = rows.get(y);
+    if (!row) {
+      row = new Float64Array(w * 3);
+      for (let x = 0; x < w; x++)
+        for (let c = 0; c < 3; c++) {
+          const [p, q, f] = [corr[(y * mw + ax.i0[x]) * 3 + c], corr[(y * mw + ax.i1[x]) * 3 + c], ax.f[x]];
+          row[x * 3 + c] = p * (1 - f) + q * f;
+        }
+      for (const k of rows.keys()) if (k < y - 1) rows.delete(k);
+      rows.set(y, row);
+    }
+    return row;
+  };
+  for (let y = 0; y < h; y++) {
+    const [r0, r1, f] = [across(ay.i0[y]), across(ay.i1[y]), ay.f[y]];
+    for (let i = 0; i < w * 3; i++) {
+      const k = y * w * 3 + i;
+      out.data[k] = Math.min(1, Math.max(0, a.data[k] + (r0[i] * (1 - f) + r1[i] * f)));
+    }
   }
   return out;
 }

@@ -45,6 +45,14 @@ describe("keys match the Python app", () => {
     expect(renderKey(dusty)).toBe("c6fde1de427f");
     expect(toneKey(dusty)).toBe("c23f13e25b53");
   });
+  it("mould and Newton rings count only when on", () => {
+    const mouldy = { ...g, params: { ...g.params, mould: 0.3 } };
+    expect(renderKey(mouldy)).toBe("fb89612b5fb2");
+    expect(toneKey(mouldy)).toBe("61ce3ec785e2");
+    const both = { ...g, params: { ...g.params, dust: 0.25, newton: 0.45 } };
+    expect(renderKey(both)).toBe("b73d49ba65a5");
+    expect(toneKey(both)).toBe("2d417148d3f4");
+  });
   it("local adjustments count only when there are some, and not in the tone key", () => {
     expect(renderKey({ ...g, params: { ...g.params, local: [] } })).toBe("3279595dadce");
     const local = cleanParams({
@@ -111,7 +119,7 @@ describe("keys match the Python app", () => {
   });
   it("session.json writes params as floats, like json.dumps(indent=1)", () => {
     expect(dumpSession({ params: cleanParams({ tint: 0.00001 }), n: 3, f: 1.5 })).toBe(
-      '{\n "params": {\n  "strength": 0.6,\n  "brightness": 0.0,\n  "contrast": 0.0,\n  "warmth": 0.0,\n  "tint": 1e-05,\n  "saturation": 0.0,\n  "trim": true,\n  "curves": {},\n  "angle": 0.0,\n  "crop": null,\n  "dust": 0.0,\n  "local": []\n },\n "n": 3,\n "f": 1.5\n}',
+      '{\n "params": {\n  "strength": 0.6,\n  "brightness": 0.0,\n  "contrast": 0.0,\n  "warmth": 0.0,\n  "tint": 1e-05,\n  "saturation": 0.0,\n  "trim": true,\n  "curves": {},\n  "angle": 0.0,\n  "crop": null,\n  "dust": 0.0,\n  "mould": 0.0,\n  "newton": 0.0,\n  "local": []\n },\n "n": 3,\n "f": 1.5\n}',
     );
   });
 });

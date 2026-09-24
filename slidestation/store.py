@@ -277,22 +277,23 @@ def active_scans(g: dict) -> list[str]:
     return s or g["scans"][:1]
 
 
-NEUTRAL_EXTRAS = {"curves": {}, "angle": 0.0, "crop": None, "dust": 0.0, "local": []}
+NEUTRAL_EXTRAS = {"curves": {}, "angle": 0.0, "crop": None, "dust": 0.0, "mould": 0.0, "newton": 0.0, "local": []}
 
 
 def render_key(g: dict) -> str:
     """Identifies the exact output of a group; changes whenever the result would change."""
     # settings still at their neutral value are left out, so slides uploaded before a setting
-    # existed (curves, straighten, crop, dust, local adjustments) don't become "changed"
+    # existed (curves, straighten, crop, dust, mould, Newton rings, local adjustments) don't become "changed"
     params = {k: v for k, v in g["params"].items() if not (k in NEUTRAL_EXTRAS and v == NEUTRAL_EXTRAS[k])}
     k = json.dumps([active_scans(g), g["rotation"], params], sort_keys=True)
     return hashlib.sha1(k.encode()).hexdigest()[:12]
 
 
 def tone_key(g: dict) -> str:
-    """Identifies the tone curve's input (what its histogram shows): scans, restore, trim, dust, geometry."""
+    """Identifies the tone curve's input (what its histogram shows): scans, restore, trim, repairs, geometry."""
     p = g["params"]
     extra = [p["dust"]] if p.get("dust") else []  # only when on, so existing keys stay the same
+    extra += [[k, p[k]] for k in ("mould", "newton") if p.get(k)]  # likewise, named: never a dust value
     k = json.dumps([active_scans(g), g["rotation"], p.get("strength"), p.get("trim"), p.get("angle", 0.0),
                     p.get("crop"), *extra])
     return hashlib.sha1(k.encode()).hexdigest()[:12]

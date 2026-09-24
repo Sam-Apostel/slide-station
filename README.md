@@ -8,7 +8,7 @@ locally in your browser, keyboard-first, built for working through thousands of 
 - Guesses rotation from faces and skies, and leaves slides alone when it isn't sure
 - Restores faded film, and **learns your corrections** to pre-set the next slides
 - Optionally recognises people across all your trays: name someone once, Immich gets it as a tag
-- Straightens slides that sit crooked in their mount, and takes out dust and scratches
+- Straightens slides that sit crooked in their mount, and takes out dust, scratches, mould and Newton rings
 - Local adjustments: graduated filters, radials and a brush to dodge and burn one part of a slide
 - Uploads to a per-tray Immich album (works with Immich v1.118 → v3)
 - Deletes scans from the card only after they are verified and uploaded
@@ -182,7 +182,12 @@ can be re-rendered from the originals at any time).
    app is sure; otherwise the Frame section says how far the mount is turned and offers
    **Straighten to mount** (the frame button next to it also crops to the inside of the mount).
    **Dust** in Adjust → Restore takes out specks and thin scratches (off by default; turn it up
-   until they're gone — it leaves texture and fine detail alone).
+   until they're gone — it leaves texture and fine detail alone). Next to it, **Mould** paints out
+   fungus grown on the film (pale or dark blotches and branching threads, keeping the grain), and
+   **Newton rings** evens out the faint rainbow rings where the film touched the mount's glass.
+   Both are off by default. Mould leaves shapes that join up into something larger (a tree's twigs
+   reach its branches) alone; it can take a lone bird or a small scribble for mould, so check
+   those slides. Newton rings can also soften faint, fine stripes in the picture (corduroy, ripples).
 
    **Local adjustments** (the Local section, or **A** for the tool on the photo) fix one part of a
    slide: a **graduated** filter burns a blown sky back in from the edge you drag from, a

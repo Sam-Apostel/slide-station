@@ -220,13 +220,13 @@ const isNeutral = (k: string, v: unknown) =>
   (k === "curves" && v && typeof v === "object" && !Object.keys(v).length) ||
   (k === "angle" && v === 0) ||
   (k === "crop" && v === null) ||
-  (k === "dust" && v === 0) ||
+  ((k === "dust" || k === "mould" || k === "newton") && v === 0) ||
   (k === "local" && Array.isArray(v) && !v.length);
 
 /** Identifies the exact output of a slide; changes whenever the result would change. */
 export function renderKey(g: GroupData): string {
   // settings still at their neutral value are left out, so slides uploaded before a setting
-  // existed (curves, straighten, crop, dust, local adjustments) don't become "changed"
+  // existed (curves, straighten, crop, dust, mould, Newton rings, local adjustments) don't become "changed"
   const params = Object.fromEntries(Object.entries(g.params).filter(([k, v]) => !isNeutral(k, v)));
   return sha1Hex(pyDumps([activeScans(g), new PyInt(g.rotation), params], true)).slice(0, 12);
 }
@@ -243,6 +243,7 @@ export function toneKey(g: GroupData): string {
       p.angle ?? 0,
       p.crop ?? null,
       ...(p.dust ? [p.dust] : []), // only when on, so existing keys stay the same
+      ...(["mould", "newton"] as const).filter((k) => p[k]).map((k) => [k, p[k]]), // likewise, named
     ]),
   ).slice(0, 12);
 }
