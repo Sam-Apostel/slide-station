@@ -86,8 +86,7 @@ def wait_job(api: TestClient, timeout: float = 60) -> dict:
 
 def new_tray(api: TestClient, folder: Path, slides: int = 4, name: str = "Test tray") -> tuple[str, dict]:
     """Create a tray and import `slides` fresh synthetic slides (bracketed every other one)."""
-    # new bytes and names each time: the dedupe index skips repeats (by content, and by a quick
-    # name + size + mtime fingerprint, which two same-named synthetic scans can share)
+    # new bytes and names each time: the dedupe index skips repeats by content
     salt = next(_salts)
     make_scans(folder, slides, salt=salt, first=salt * 10)
     sid = api.post("/api/sessions", json={"name": name}).json()["id"]

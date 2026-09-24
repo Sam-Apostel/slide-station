@@ -402,8 +402,9 @@ undo), and consider learning rotation corrections per film type once enough exam
   `immich.httpx.Client` for a `TestClient`.
 - `tests/synthetic.py` — made-up scans (smooth colour field + shapes + grain, a faded cast, scanner
   EXIF), every other slide a bracketed pair. `python tests/synthetic.py <folder> 8` writes a card's
-  worth for the browser test. Each tray in the tests gets new bytes *and* new file names: the
-  dedupe index also skips by a name + size + mtime fingerprint.
+  worth for the browser test. Each tray in the tests gets new bytes: the dedupe index skips by
+  content (SHA-1). The name + size + mtime fingerprint only counts "new" scans on a card; import
+  hashes every file (`test_dedupe.py`: a different scan sharing all three is still imported).
 - `tests/fake_immich.py` — FastAPI mock implementing version/users/albums/assets, with a `/debug`
   endpoint; set `MOCK_IMMICH_MAJOR=3` to exercise the v3 field rules.
 - `tests/ui_flow.py` — Playwright script: import from a fake card, browse, rotate, edit warmth and

@@ -147,11 +147,6 @@ def _taken(path: Path) -> str:
     return dt or datetime.fromtimestamp(path.stat().st_mtime).strftime("%Y:%m:%d %H:%M:%S")
 
 
-def _lost_here(s: Session, sha: str) -> bool:
-    """This tray has a scan with that content whose original was deleted."""
-    return any(r.get("sha1") == sha and not s.original_path(k).exists() for k, r in s.data["scans"].items())
-
-
 def import_scans(job: Job, sid: str, source: str) -> None:
     s = Session(sid)
     root = Path(source).expanduser()
@@ -168,9 +163,8 @@ def import_scans(job: Job, sid: str, source: str) -> None:
     new_ids, skipped, restored, fp_index, sha_index, records = [], 0, 0, {}, {}, {}
     for f in files:
         job.done += 1
-        if _quick_fp(f) in idx.get("_fp", {}) and not _lost_here(s, idx["_fp"][_quick_fp(f)]):
-            skipped += 1
-            continue
+        # always by content: the quick fingerprint (name+size+mtime) only estimates "new" on the
+        # card, and a different scan can share it (the scanner restarting its numbering)
         sha = sha1_file(f)
         if sha in idx or sha in sha_index:
             # already imported - but if this tray lost that original (deleted after upload), put

@@ -412,12 +412,6 @@ async function readCache(sid: string, name: string): Promise<File> {
   return f;
 }
 
-const lostHere = async (d: SessionData, sha: string) => {
-  for (const [k, r] of Object.entries(d.scans))
-    if (r.sha1 === sha && !(await lib.exists(originalPath(d, k)))) return true;
-  return false;
-};
-
 async function importScans(job: Job, sid: string, sourceId: string) {
   const src = sources.get(sourceId);
   if (!src) throw new Error("That folder is no longer available - drop or pick it again.");
@@ -437,11 +431,9 @@ async function importScans(job: Job, sid: string, sourceId: string) {
   let restored = 0;
   for (const f of withTaken) {
     job.done++;
+    // always by content: the quick fingerprint (name+size+mtime) only estimates "new" in the
+    // folder, and a different scan can share it (the scanner restarting its numbering)
     const fp = quickFp(f.file);
-    if (idx._fp?.[fp] && !(await lostHere(d, idx._fp[fp]))) {
-      skipped++;
-      continue;
-    }
     const sha = await sha1Blob(f.file);
     if (sha in idx || sha in shaIndex) {
       // already imported - but if this tray lost that original (deleted after upload), put it

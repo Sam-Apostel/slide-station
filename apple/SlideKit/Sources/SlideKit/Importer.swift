@@ -47,15 +47,12 @@ public struct Importer: Sendable {
         try fm.createDirectory(at: originals, withIntermediateDirectories: true)
         try fm.createDirectory(at: library.cacheDir(trayID), withIntermediateDirectories: true)
 
-        func lostHere(_ sha: String) -> Bool {
-            tray.scans.contains { id, r in r.sha1 == sha && !fm.fileExists(atPath: originals.appendingPathComponent(r.file).path) }
-        }
-
         for (n, f) in files.enumerated() {
             progress(JobProgress("Copying \(files.count) scans", done: n, total: files.count))
             try Task.checkCancellation()
+            // always by content: the quick fingerprint (name+size+mtime) only estimates "new" on
+            // the card, and a different scan can share it (the scanner restarting its numbering)
             let fp = CardSource.quickFingerprint(f)
-            if let fp, let known = index.fp[fp], !lostHere(known) { result.skipped += 1; continue }
             let sha = try sha1(of: f)
             if index.sha[sha] != nil || shaIndex[sha] != nil {
                 // already imported — but if this tray lost that original, put it back (unlocks it)
