@@ -20,6 +20,9 @@ Captions come from a small vision-language model (`captions.py`, Florence-2), op
 (`captions_enabled`); the same worker runs it on the same upright proxy, for slides without a
 caption of their own.
 
+Places: once the text reader and the place names are downloaded (`places.ocr_ready`), each slide's
+text is read too and a place it names is suggested (`places.place_from_text`); see places.py.
+
 Learning: every accept / dismiss is counted per label in the library's `insights.json`; a label
 dismissed more often than accepted needs a higher confidence before it is suggested again.
 """
@@ -39,6 +42,7 @@ from PIL import Image
 from . import captions
 from . import similar
 from . import imaging as im
+from . import places
 from . import workflow as wf
 from .store import Session, _atomic_write, active_scans, library, load_config, lock
 
@@ -369,12 +373,24 @@ def threshold(label: str, stats: dict | None = None) -> float:
 # ------------------------------------------------------------------------------------ per slide
 
 
+_ocr_state = [0.0, False]  # (checked at, ready): asked for every slide on every poll, so cached briefly
+
+
+def ocr_on() -> bool:
+    """Signs are read for places once the text reader and the place names are downloaded."""
+    if time.time() - _ocr_state[0] > 2:
+        _ocr_state[:] = [time.time(), places.ocr_ready()]
+    return _ocr_state[1]
+
+
 def active_models() -> list[str]:
     """What analyses a slide now: the models turned on and downloaded (tags, captions). Part of
     every slide's key, so turning a model on (or its download finishing) analyses the trays again."""
     out = [MODEL_ID, LABELS_KEY] if enabled() and model_ready() else []
     if captions.enabled() and captions.model_ready():
         out.append(captions.MODEL_ID)
+    if ocr_on():  # signs are read for places
+        out.append(places.OCR_ID)
     return out
 
 
@@ -415,14 +431,24 @@ def _analyse(s, g: dict, models: list[str]) -> tuple[dict, np.ndarray | None, np
         if text:
             out["caption"] = {"value": text, "confidence": round(conf, 3), "source": captions.MODEL_ID,
                               "state": "suggested"}
+    if places.OCR_ID in models:  # signs: the text in the photo, and a place it names
+        lines = places.read_text(rgb)
+        gaz = places.gazetteer()
+        if lines is not None and gaz is not None:
+            out["text"] = lines[:20]
+            hit = places.place_from_text(lines, gaz)
+            if hit:
+                out["place"] = places.suggestion(hit["place"], hit["confidence"], places.OCR_ID, hit["text"])
     return out, emb, rgb
 
 
-def merge(old: dict | None, new: dict, own_tags: list[str], own_caption: str = "") -> dict:
+def merge(old: dict | None, new: dict, own_tags: list[str], own_caption: str = "",
+          own_place: dict | None = None) -> dict:
     """New suggestions with the decisions already made kept: accepted and dismissed entries stay
     (confidence refreshed), a new suggestion for a tag the slide already has counts as accepted.
     A caption suggestion that was decided keeps its state while the model says the same; an open
-    one goes away once the slide has a caption of its own (it is never offered over one)."""
+    one goes away once the slide has a caption of its own (it is never offered over one).
+    Places: `places.merge`."""
     old = old or {}
     if "tags" in new:
         kept = {e["value"]: e for e in old.get("tags", []) if e.get("state") in ("accepted", "dismissed")}
@@ -436,8 +462,12 @@ def merge(old: dict | None, new: dict, own_tags: list[str], own_caption: str = "
     else:  # the tag model is off: leave the tags as they were
         tags = old.get("tags", [])
     out = {"key": new["key"], "tags": tags}
-    for k in ("caption", "date", "place", "stock"):
+    for k in ("caption", "date", "stock"):
         out[k] = new.get(k) if new.get(k) is not None else old.get(k)
+    out["place"] = places.merge(old.get("place"), new.get("place"), own_place)
+    text = new.get("text", old.get("text"))
+    if text is not None:
+        out["text"] = text
     cap, was = new.get("caption"), old.get("caption")
     if cap and was and was.get("state") != "suggested" and was.get("value") == cap["value"]:
         out["caption"] = {**cap, "state": was["state"]}
@@ -464,7 +494,7 @@ def analyse_slide(sid: str, gid: str, models: list[str] | None = None) -> bool:
         except KeyError:
             return
         if insights_key(fg, models) == new["key"] and (fg.get("insights") or {}).get("key") != new["key"]:
-            fg["insights"] = merge(fg.get("insights"), new, fg.get("tags", []), fg.get("caption", ""))
+            fg["insights"] = merge(fg.get("insights"), new, fg.get("tags", []), fg.get("caption", ""), fg.get("place"))
 
     wf.update_session(sid, commit)
     return True
@@ -518,7 +548,8 @@ def step() -> bool:
                 except KeyError:
                     return
                 if insights_key(fg, models) == key:
-                    fg["insights"] = {**merge(fg.get("insights"), {"key": key}, fg.get("tags", []), fg.get("caption", "")),
+                    fg["insights"] = {**merge(fg.get("insights"), {"key": key}, fg.get("tags", []), fg.get("caption", ""),
+                                            fg.get("place")),
                                       "error": err}
 
             wf.update_session(sid, failed)

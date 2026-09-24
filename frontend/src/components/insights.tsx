@@ -22,12 +22,14 @@ import { Tip } from "@/components/tip";
 import { rangeEnd } from "@/components/dialogs";
 import {
   plural,
+  placeLabel,
   previewUrl,
   standalone,
   STOCK_NAMES,
   STOCKS,
   type Group,
   type InsightKind,
+  type Place,
   type SessionPayload,
   type Suggestion,
   type SuggestionModel,
@@ -40,6 +42,12 @@ const pct = (c: number) => `${Math.round(c * 100)}%`;
 /** Film stock and date guesses need no model: the Details section shows them, in both versions. */
 const MODEL_FREE = (kind: InsightKind, e: Suggestion) =>
   kind === "stock" || (kind === "date" && e.source === "neighbours+stock");
+
+/** Where a suggestion comes from, in words. */
+export function whySuggested(e: Suggestion) {
+  const from = e.source === "tray" ? "neighbours" : e.source.startsWith("ppocr") ? "text in the photo" : e.source;
+  return e.text ? `${from}: ${e.source === "tray" ? e.text : `“${e.text}”`}` : from;
+}
 
 /** A slide's open suggestions, tags first; `models`: only what the models suggested. A caption is
  *  never offered over the slide's own. */
@@ -78,6 +86,7 @@ export function InsightsPanel({
   session,
   sessionId,
   downloading,
+  ocrDownloading,
   onAccepted,
   onReview,
   onSettings,
@@ -87,6 +96,8 @@ export function InsightsPanel({
   sessionId: string;
   /** The model download job is running. */
   downloading: boolean;
+  /** The text reader download (place suggestions from signs) is running. */
+  ocrDownloading?: boolean;
   /** A suggestion was accepted on slide `index`: offer it to the neighbours (`groups`: the tray after). */
   onAccepted: (kind: InsightKind, value: string, groups: Group[], index: number) => void;
   onReview: () => void;
@@ -155,7 +166,7 @@ export function InsightsPanel({
                   {kind !== "tags" && <span className="text-muted-foreground">{kind}: </span>}
                   {e.value}
                 </span>
-                <Tip label={`${pct(e.confidence)} sure (${e.source})`}>
+                <Tip label={`${pct(e.confidence)} sure (${whySuggested(e)})`}>
                   <span className="ss-confidence" style={{ "--c": e.confidence } as React.CSSProperties}>
                     {pct(e.confidence)}
                   </span>
@@ -188,6 +199,20 @@ export function InsightsPanel({
             </button>
           )}
         </p>
+      )}
+      {session.places && !session.places.ocr && !g.skip && (
+        <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
+          {ocrDownloading ? (
+            "Downloading the text reader — progress is at the top."
+          ) : (
+            <>
+              <span>Suggest places from signs in the photo (~{session.places.ocr_mb} MB).</span>
+              <ProButton plain onClick={() => app.downloadPlaces(true)}>
+                <Download /> Download
+              </ProButton>
+            </>
+          )}
+        </div>
       )}
       <div className="flex items-center gap-1.5">
         <ProButton onClick={onReview}>
@@ -591,10 +616,13 @@ export function ReviewDialog({
 
 // ------------------------------------------------------------------ tray-level propagation
 
-/** `pick`: the user chooses what to apply (a scene of the tray: "give slides 12–31 …"), `label` names the run. */
+/** A value confirmed on one slide, offered to slides from..to (0-based). A place's `value` is how it
+ *  reads, `place` the place itself. `pick`: the user chooses what to apply (a scene of the tray: "give
+ *  slides 12–31 …"), `label` names the run. */
 export type Offer = {
-  kind: "tags" | "caption" | "date" | "stock";
+  kind: "tags" | "caption" | "date" | "stock" | "place";
   value: string;
+  place?: Place;
   from: number;
   to: number;
   pick?: boolean;
@@ -608,7 +636,9 @@ const holds = (g: Group, kind: Offer["kind"], value: string) =>
       ? g.date === value
       : kind === "stock"
         ? g.stock === value
-        : g.caption === value;
+        : kind === "place"
+          ? !!g.place && placeLabel(g.place) === value
+          : g.caption === value;
 
 const suggests = (g: Group, kind: Offer["kind"], value: string) => {
   const ins = g.insights;
@@ -623,7 +653,13 @@ const suggests = (g: Group, kind: Offer["kind"], value: string) => {
  * like "Date a range"). With nothing around saying so, just the next slide. Null when every slide
  * in the run has it.
  */
-export function propagationOffer(groups: Group[], i: number, kind: Offer["kind"], value: string): Offer | null {
+export function propagationOffer(
+  groups: Group[],
+  i: number,
+  kind: Offer["kind"],
+  value: string,
+  place?: Place,
+): Offer | null {
   let a = i;
   let b = i;
   if (kind === "date") {
@@ -636,7 +672,7 @@ export function propagationOffer(groups: Group[], i: number, kind: Offer["kind"]
   if (a === b) b = Math.min(i + 1, groups.length - 1);
   if (a === b) a = Math.max(0, i - 1);
   const missing = groups.slice(a, b + 1).filter((g) => !g.locked && !holds(g, kind, value)).length;
-  return missing ? { kind, value, from: a, to: b } : null;
+  return missing ? { kind, value, place, from: a, to: b } : null;
 }
 
 /** "Apply 'beach' to slides 12–31?" — the date-range dialog's pattern, for a tag, caption or date. */
@@ -649,7 +685,7 @@ export function PropagateDialog({
   offer: Offer | null;
   onOpenChange: (open: boolean) => void;
   count: number;
-  onApply: (kind: Offer["kind"], value: string, fromIndex: number, toIndex: number) => Promise<boolean>;
+  onApply: (kind: Offer["kind"], value: string | Place, fromIndex: number, toIndex: number) => Promise<boolean>;
 }) {
   const [from, setFrom] = React.useState("");
   const [to, setTo] = React.useState("");
@@ -669,14 +705,16 @@ export function PropagateDialog({
   const what =
     kind === "tags"
       ? `the tag “${value}”`
-      : kind === "date"
+      : kind === "date" || kind === "place"
         ? value
         : kind === "stock"
           ? shown("stock", value)
           : "this caption";
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (offer && valid && (await onApply(kind, value.trim(), a - 1, b - 1))) onOpenChange(false);
+    // a place goes as the place itself (its value is only how it reads)
+    const v = kind === "place" ? (offer?.place ?? value) : value.trim();
+    if (offer && valid && (await onApply(kind, v, a - 1, b - 1))) onOpenChange(false);
   };
   return (
     <Dialog open={!!offer} onOpenChange={onOpenChange}>
@@ -697,7 +735,9 @@ export function PropagateDialog({
                     ? "Every slide in the range gets this date as its own."
                     : kind === "stock"
                       ? "Every slide in the range gets this film stock as its own."
-                      : `“${value}” replaces the captions of the slides in the range.`}
+                      : kind === "place"
+                        ? "Every slide in the range gets this place (their map position in Immich)."
+                        : `“${value}” replaces the captions of the slides in the range.`}
             </DialogDescription>
           </DialogHeader>
           <FieldGroup className="gap-4">

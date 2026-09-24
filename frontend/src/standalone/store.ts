@@ -23,8 +23,8 @@ export type ImmichRecord = {
   key: string;
   status?: string;
   meta?: string;
-  /** What Immich was told besides the pixels: the day and the caption. */
-  pushed?: { date: string; caption: string };
+  /** What Immich was told besides the pixels: the day, the caption and the place's coordinates. */
+  pushed?: { date: string; caption: string; place?: [number, number] | null };
   /** The untouched scans stacked under it: scan -> asset, the stack, and which ones this app uploaded. */
   stack_id?: string;
   originals?: Record<string, string>;
@@ -69,6 +69,8 @@ export type GroupData = {
   /** Stored suggestions (the desktop app's models write more; the browser version only decides film
    *  stock and date guesses, which it computes itself). */
   insights?: { stock?: Suggestion | null; date?: Suggestion | null; [k: string]: unknown };
+  /** Where it was taken (places.clean_place): Immich latitude / longitude, EXIF GPS. */
+  place?: Place;
   feat?: number[];
   history?: { undo: Snapshot[]; redo: Snapshot[] };
   /** The slide mount found on these (active) scans (imaging.detect_mount). */
@@ -324,7 +326,50 @@ export function slideDates(d: SessionData): DateEst[] {
 
 /** What besides the pixels goes to Immich with a slide: its date, caption and tags (left out when none). */
 export const metaKey = (g: GroupData, date: DateEst) =>
-  sha1Hex(pyDumps([date.value ?? "", g.caption ?? "", ...(g.tags?.length ? [[...g.tags].sort()] : [])])).slice(0, 12);
+  sha1Hex(
+    pyDumps([
+      date.value ?? "",
+      g.caption ?? "",
+      ...(g.tags?.length ? [[...g.tags].sort()] : []),
+      // store.meta_key formats the coordinates to 5 decimals, so both apps hash the same string
+      ...(g.place ? [{ gps: [g.place.lat.toFixed(5), g.place.lon.toFixed(5)] }] : []),
+    ]),
+  ).slice(0, 12);
+
+export type Place = { name: string; lat: number; lon: number; country: string; admin?: string; id?: number };
+
+/** places.clean_place: a slide's place as the UI sends it, or null to clear; throws on junk. */
+export function cleanPlace(v: unknown): Place | null {
+  if (!v || (typeof v === "object" && !Object.keys(v).length)) return null;
+  if (typeof v !== "object") throw new Error("A place is {name, lat, lon, country}");
+  const o = v as Record<string, unknown>;
+  const lat = Number(o.lat);
+  const lon = Number(o.lon);
+  if (o.lat == null || o.lon == null || !Number.isFinite(lat) || !Number.isFinite(lon))
+    throw new Error("A place needs its latitude and longitude");
+  if (Math.abs(lat) > 90 || Math.abs(lon) > 180)
+    throw new Error("Latitude goes from -90 to 90, longitude from -180 to 180");
+  const r5 = (x: number) => Math.round(x * 1e5) / 1e5;
+  const words = (x: unknown, n: number) =>
+    String(x ?? "")
+      .split(/\s+/)
+      .filter(Boolean)
+      .join(" ")
+      .slice(0, n);
+  const p: Place = {
+    name: words(o.name, 200) || `${r5(lat).toFixed(4)}, ${r5(lon).toFixed(4)}`,
+    lat: r5(lat),
+    lon: r5(lon),
+    country: words(o.country, 100),
+  };
+  if (o.admin) p.admin = words(o.admin, 100);
+  if (o.id) p.id = Math.trunc(Number(o.id));
+  return p;
+}
+
+/** places.same: the same name within ~100 m. */
+export const samePlace = (a?: Place | null, b?: Place | null) =>
+  !!a && !!b && a.name === b.name && Math.abs(a.lat - b.lat) < 1e-3 && Math.abs(a.lon - b.lon) < 1e-3;
 
 export function groupStatus(g: GroupData, meta?: string): GroupStatus {
   if (g.skip) return "skipped";

@@ -20,7 +20,14 @@ export type Asset = {
   isFavorite?: boolean;
   isTrashed?: boolean;
   localDateTime?: string;
-  exifInfo?: { description?: string | null } | null;
+  exifInfo?: {
+    description?: string | null;
+    latitude?: number | null;
+    longitude?: number | null;
+    city?: string | null;
+    state?: string | null;
+    country?: string | null;
+  } | null;
 };
 
 type Found = Record<string, { asset_id: string; trashed: boolean }>;

@@ -24,7 +24,16 @@ import { PeopleDialog } from "@/components/people";
 import { LOCAL_CLOSED, LocalOverlay, useLocalKeys, type LocalTool } from "@/components/local";
 import { useSlideStation, type SlideStation } from "@/hooks/use-slide-station";
 import { useDesktop, useFolderDrop, type DesktopHandlers } from "@/hooks/use-desktop";
-import { needsReview, plural, standalone, STOCK_NAMES, type Group, type InsightKind, type Source } from "@/lib/api";
+import {
+  needsReview,
+  placeLabel,
+  plural,
+  standalone,
+  STOCK_NAMES,
+  type Group,
+  type InsightKind,
+  type Source,
+} from "@/lib/api";
 import { desktop, isMac } from "@/lib/desktop";
 
 type Panels = { filmstrip: boolean; inspector: boolean };
@@ -227,12 +236,36 @@ function SlideStationApp() {
   /** A suggestion accepted on one slide: offer it to the run of neighbours ("Apply 'beach' to 12–31?"). */
   const offerNeighbours = (kind: InsightKind, value: string, groups: Group[], index: number) => {
     const what =
-      kind === "tags" ? `“${value}”` : kind === "date" ? value : kind === "stock" ? STOCK_NAMES[value] : "the caption";
-    const o = kind === "place" ? null : propagationOffer(groups, index, kind, value);
+      kind === "tags"
+        ? `“${value}”`
+        : kind === "date" || kind === "place"
+          ? value
+          : kind === "stock"
+            ? STOCK_NAMES[value]
+            : "the caption";
+    const place = kind === "place" ? groups[index]?.place : undefined;
+    const o = kind === "place" && !place ? null : propagationOffer(groups, index, kind, value, place ?? undefined);
     toast(`Accepted ${what}`, {
       action: o ? { label: `Apply to ${o.from + 1}–${o.to + 1}…`, onClick: () => setOffer(o) } : undefined,
       duration: o ? 8000 : 2000,
     });
+  };
+
+  /** "Apply this place to 12–31…": the slide's place offered to its neighbours (the propagation dialog). */
+  const placeRange = () => {
+    const g = app.current;
+    if (!g?.place || !session) return;
+    const label = placeLabel(g.place);
+    const n = session.groups.length;
+    setOffer(
+      propagationOffer(session.groups, g.index, "place", label, g.place) ?? {
+        kind: "place",
+        value: label,
+        place: g.place,
+        from: g.index,
+        to: Math.min(g.index + 1, n - 1),
+      },
+    );
   };
 
   const clean = async () => {
@@ -479,6 +512,10 @@ function SlideStationApp() {
                     onReimport={reimport}
                     onSave={standalone ? save : undefined}
                     onDateRange={() => setDateRangeOpen(true)}
+                    onPlaceRange={placeRange}
+                    placesDownloading={
+                      (state?.job?.kind === "places" || state?.job?.kind === "ocr") && !state.job.finished
+                    }
                     onPresets={views.presets}
                     onDevelopLike={views.developLike}
                     onAccepted={offerNeighbours}
@@ -490,6 +527,7 @@ function SlideStationApp() {
                         ? undefined // needs its models in the page (onnxruntime-web): a follow-up
                         : {
                             downloading: state?.job?.kind === "model" && !state.job.finished,
+                            ocrDownloading: state?.job?.kind === "ocr" && !state.job.finished,
                             onAccepted: offerNeighbours,
                             onReview: () => setReviewOpen(true),
                             onSettings: () => setSettingsOpen(true),
@@ -587,7 +625,8 @@ function SlideStationApp() {
         />
       )}
       {session && (
-        // in the browser version: film stock and date guesses only (no models there)
+        // in the browser version: film stock and date guesses only (no models there); propagation also
+        // carries places, captions and dates there
         <>
           <ReviewDialog
             open={reviewOpen}
@@ -723,22 +762,18 @@ function useKeyboard(
       else if (k === "0") a.resetColour();
       else if (k === "w" || k === "W") {
         if (!a.current?.locked) latest.current.setPicking((v) => !v);
-      }
-      else if (k === "k" || k === "K") {
+      } else if (k === "k" || k === "K") {
         if (!a.current?.locked) latest.current.setCropping(true);
-      }
-      else if (k === "y" || k === "Y") latest.current.setCompare((v) => !v);
+      } else if (k === "y" || k === "Y") latest.current.setCompare((v) => !v);
       else if (k === "z" || k === "Z") latest.current.view.setZoom((z) => (z ? null : [0.5, 0.5]));
       else if (k === "l" || k === "L") latest.current.view.setLoupe((on) => !on);
       else if (k === "a" || k === "A") {
         if (!a.current?.locked) setLocal((t) => ({ ...t, open: !t.open }));
-      }
-      else if (k === "Escape") {
+      } else if (k === "Escape") {
         latest.current.setPicking(false);
         latest.current.view.setZoom(null);
         latest.current.view.setLoupe(false);
-      }
-      else if (k === "f") a.fitCurves();
+      } else if (k === "f") a.fitCurves();
       else if (k === "F") a.fitCurves(true);
       else if (k === "b" || k === "B") {
         if (!e.repeat) sb(true);

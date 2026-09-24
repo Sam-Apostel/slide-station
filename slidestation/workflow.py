@@ -21,6 +21,7 @@ from . import imaging as im
 from .imaging import Params
 from . import filmstock, learning
 from . import people
+from . import places
 from .immich import Immich, ImmichError
 from .store import (Session, active_scans, add_to_index, group_status, imported_index, load_config, lock,
                     meta_key, parse_date, render_key, sha1_file, slide_dates, slugify, statuses)
@@ -413,6 +414,16 @@ def xmp_subjects(tags: list[str]) -> bytes:
             '<?xpacket end="w"?>').encode("utf-8")
 
 
+def gps_ifd(lat: float, lon: float) -> dict:
+    """EXIF GPS tags for a place: version 2.3, N/S + degrees, minutes, seconds, E/W + the same."""
+    def dms(v: float) -> tuple:
+        v = abs(v)
+        d, m = int(v), int(v * 60) % 60
+        return (float(d), float(m), round((v * 3600) % 60, 4))
+
+    return {0: b"\x02\x03\x00\x00", 1: "N" if lat >= 0 else "S", 2: dms(lat), 3: "E" if lon >= 0 else "W", 4: dms(lon)}
+
+
 def originals_missing(s: Session, g: dict) -> bool:
     """With "keep originals" off they're deleted after upload: such a slide can still be previewed
     (from the cached proxies) but not rendered at full resolution again."""
@@ -446,6 +457,9 @@ def render_export(sid: str, gid: str, quality: int) -> Path | None:
     sub = exif.get_ifd(0x8769)
     sub[36867] = when  # DateTimeOriginal (what Immich uses for the timeline)
     sub[36868] = when
+    exif.pop(0x8825, None)  # a photo pulled in from Immich may carry GPS: the slide's place decides
+    if g.get("place"):
+        exif.get_ifd(0x8825).update(gps_ifd(g["place"]["lat"], g["place"]["lon"]))
     name = f"{slugify(s.data['name'])}_{scans[0]}.jpg"
     s.export_dir.mkdir(exist_ok=True)
     tmp = s.export_dir / (name + ".part")
@@ -547,10 +561,17 @@ def _immich_time(t: datetime) -> str:
     return t.strftime("%Y-%m-%dT%H:%M:%S")
 
 
+def _gps(g: dict) -> list[float] | None:
+    p = g.get("place")
+    return [p["lat"], p["lon"]] if p else None
+
+
 def _pushed(s: Session, g: dict, index: int) -> dict:
-    """What Immich was told about a slide besides its pixels: the day and the caption. Pulling edits
-    back compares against this, so only what someone changed in Immich comes back."""
-    return {"date": _photo_datetime(s, g, index).strftime("%Y-%m-%d"), "caption": g.get("caption", "")}
+    """What Immich was told about a slide besides its pixels: the day, the caption and the place's
+    coordinates. Pulling edits back compares against this, so only what someone changed in Immich
+    comes back."""
+    return {"date": _photo_datetime(s, g, index).strftime("%Y-%m-%d"), "caption": g.get("caption", ""),
+            "place": _gps(g)}
 
 
 def _meta_only(g: dict) -> bool:
@@ -697,7 +718,7 @@ def finish_session(job: Job, sid: str, only_ready: bool = False) -> None:
     """Export every slide that is not skipped and upload new/changed ones to the session's Immich album.
 
     only_ready: just the slides marked developed; the others stay behind to keep working on.
-    Slides whose pixels Immich already has only get their date / caption updated there."""
+    Slides whose pixels Immich already has only get their date / caption / place updated there."""
     cfg = load_config()
     s = Session(sid)
     redate = s.data.get("date_key") != s.data.get("date")  # tray date changed: every slide may have a new date
@@ -727,7 +748,7 @@ def finish_session(job: Job, sid: str, only_ready: bool = False) -> None:
         sent: dict[str, str] = {}  # slide -> asset uploaded now, for the names of the people on it
 
         for n, gid in enumerate(meta_only, 1):
-            job.message = f"Updating date and caption {n} of {len(meta_only)}"
+            job.message = f"Updating date, caption and place {n} of {len(meta_only)}"
             job.done += 1
             s = Session(sid)
             try:
@@ -738,9 +759,16 @@ def finish_session(job: Job, sid: str, only_ready: bool = False) -> None:
             meta, asset = slide_meta(s, g, idx), g["immich"]["asset_id"]
             if g["immich"].get("meta") == meta:
                 continue  # only the tray date moved, and not this slide's
+            fields = {"dateTimeOriginal": _immich_time(_photo_datetime(s, g, idx)), "description": g.get("caption", "")}
+            if g.get("place"):
+                fields.update(latitude=g["place"]["lat"], longitude=g["place"]["lon"])
+            elif (g["immich"].get("pushed") or {}).get("place") and not g.get("locked") and not originals_missing(s, g):
+                # Immich's API can set a location but not remove one: a new copy without GPS goes up
+                todo.append(gid)
+                job.total += 2
+                continue
             try:
-                client.update_asset(asset, dateTimeOriginal=_immich_time(_photo_datetime(s, g, idx)),
-                                    description=g.get("caption", ""))
+                client.update_asset(asset, **fields)
             except ImmichError as e:
                 # a key without asset.update: upload it again with the new EXIF, as before
                 print("metadata update:", e)
@@ -890,8 +918,9 @@ def finish_session(job: Job, sid: str, only_ready: bool = False) -> None:
         if not cfg.get("keep_originals", True):
             _drop_local_originals(Session(sid))
         job.message = f"Done - {uploaded} slides uploaded to '{s.data['album']}'" + (
-            f"; {synced} updated in place (date, caption)" if synced else "") + (
-            "; dates / captions went up as new copies: give the API key asset.update to change them in place"
+            f"; {synced} updated in place (date, caption, place)" if synced else "") + (
+            "; dates / captions / places went up as new copies: give the API key asset.update to change them "
+            "in place"
             if no_update else "") + (
             f"; {duplicates} were in Immich already, not sent again" if duplicates else "") + (
             "; original scans not stacked: this Immich has no stacks, or the API key lacks stack.read / "
@@ -1056,16 +1085,18 @@ def pull_in(job: Job, sid: str, asset_ids: list[str]) -> None:
             }
             day = local[:10] if parse_date(local[:10]) else ""
             caption = ((a.get("exifInfo") or {}).get("description") or "").strip()[:2000]
-            new.append((scan_id, aid, rotation, day, caption))
+            new.append((scan_id, aid, rotation, day, caption, immich_place(a.get("exifInfo") or {})))
             have.add(aid)
         s = update_session(sid, lambda fresh: fresh.data["scans"].update(records))
 
         job.message = "Analysing photos"
         job.done, job.total = 0, len(new)
-        for scan_id, aid, rotation, day, caption in new:
+        for scan_id, aid, rotation, day, caption, place in new:
             make_proxies(s, scan_id)
             g = s.new_group([scan_id], rotation, "exif" if rotation else "")
             g.update(date=day, caption=caption, source_asset={"id": aid})
+            if place:
+                g["place"] = place
             feats = learning.features(fused_proxy(s, g), 1)
             suggestion, neighbours = (None, 0)
             if cfg.get("learning_enabled", True):
@@ -1089,9 +1120,21 @@ def pull_in(job: Job, sid: str, asset_ids: list[str]) -> None:
         f"; left out {unusable} that aren't JPEG or PNG photos" if unusable else "")
 
 
+def immich_place(exif: dict) -> dict | None:
+    """A place from an Immich asset's exifInfo (its GPS and reverse-geocoded city / country)."""
+    lat, lon = exif.get("latitude"), exif.get("longitude")
+    if lat is None or lon is None:
+        return None
+    try:
+        return places.clean_place({"name": exif.get("city") or "", "lat": lat, "lon": lon,
+                                   "country": exif.get("country") or "", "admin": exif.get("state") or ""})
+    except ValueError:
+        return None
+
+
 def pull_metadata(sid: str) -> dict:
-    """Bring edits made in Immich back: each uploaded slide's description and date, where they
-    differ from what this app last sent (so only what someone changed in Immich comes back).
+    """Bring edits made in Immich back: each uploaded slide's description, date and location, where
+    they differ from what this app last sent (so only what someone changed in Immich comes back).
     Immich wins over an unsent local edit of the same field."""
     cfg = load_config()
     s = Session(sid)
@@ -1100,7 +1143,7 @@ def pull_metadata(sid: str) -> dict:
         found = {g["id"]: client.asset(g["immich"]["asset_id"]) for g in s.data["groups"] if g.get("immich")}
     finally:
         client.close()
-    out = {"checked": len(found), "captions": 0, "dates": 0, "gone": 0}
+    out = {"checked": len(found), "captions": 0, "dates": 0, "places": 0, "gone": 0}
 
     def commit(fresh: Session):
         touched = []
@@ -1114,6 +1157,8 @@ def pull_metadata(sid: str) -> dict:
             if a.get("id") != g["immich"]["asset_id"] or not a.get("exifInfo"):
                 continue  # uploaded again meanwhile, or Immich hasn't read the file yet
             pushed = g["immich"].get("pushed") or _pushed(fresh, g, i)
+            if "place" not in pushed:  # uploaded before places: what the slide has stands in
+                pushed = {**pushed, "place": _gps(g)}
             caption = (a["exifInfo"].get("description") or "").strip()[:2000]
             day = (a.get("localDateTime") or "")[:10]
             new = dict(pushed)
@@ -1125,6 +1170,12 @@ def pull_metadata(sid: str) -> dict:
                 g["date"] = day
                 new["date"] = day
                 out["dates"] += 1
+            place = immich_place(a["exifInfo"])
+            was = pushed.get("place")
+            if place and not (was and abs(place["lat"] - was[0]) < 1e-4 and abs(place["lon"] - was[1]) < 1e-4):
+                g["place"] = place  # moved (or placed) on Immich's map
+                new["place"] = [place["lat"], place["lon"]]
+                out["places"] += 1
             if new != pushed:
                 g["immich"]["pushed"] = new
                 touched.append(g)
@@ -1135,7 +1186,7 @@ def pull_metadata(sid: str) -> dict:
             if _photo_datetime(fresh, g, i).strftime("%Y-%m-%d") == g["immich"]["pushed"]["date"]:
                 g["immich"]["meta"] = slide_meta(fresh, g, i)
         if touched:
-            fresh.log(f"Pulled {out['captions']} captions and {out['dates']} dates from Immich")
+            fresh.log(f"Pulled {out['captions']} captions, {out['dates']} dates and {out['places']} places from Immich")
 
     update_session(sid, commit)
     return out

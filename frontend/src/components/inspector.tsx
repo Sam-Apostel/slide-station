@@ -39,6 +39,7 @@ import { AdjustPanel, adjustSummary } from "@/components/adjust";
 import { LocalPanel, localNote, type LocalTool } from "@/components/local";
 import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select";
 import { InsightsPanel, StockField, SuggestionRow, TagsField, insightsNote } from "@/components/insights";
+import { PlaceField } from "@/components/place";
 import {
   MOUNT_SUGGEST,
   needsReview,
@@ -153,6 +154,8 @@ export function Inspector({
   onReimport,
   onSave,
   onDateRange,
+  onPlaceRange,
+  placesDownloading,
   onPresets,
   onDevelopLike,
   onAccepted,
@@ -179,6 +182,10 @@ export function Inspector({
   onSave?: () => void;
   /** Opens the "date a range of slides" dialog. */
   onDateRange: () => void;
+  /** Offers the slide's place to a run of slides (the propagation dialog). */
+  onPlaceRange: () => void;
+  /** The place names (or the text reader) are being downloaded. */
+  placesDownloading: boolean;
   /** Opens the presets dialog, and the "develop like another slide" picker. */
   onPresets: () => void;
   onDevelopLike: () => void;
@@ -189,6 +196,7 @@ export function Inspector({
   /** The Insights section (desktop app only; the browser version has no models yet). */
   insights?: {
     downloading: boolean;
+    ocrDownloading?: boolean;
     onAccepted: (kind: InsightKind, value: string, groups: Group[], index: number) => void;
     onReview: () => void;
     onSettings: () => void;
@@ -314,6 +322,8 @@ export function Inspector({
                 onDateRange={onDateRange}
                 onAccepted={onAccepted}
                 onStockRange={onStockRange}
+                onPlaceRange={onPlaceRange}
+                placesDownloading={placesDownloading}
               />
             </ProDisclosureGroup>
 
@@ -489,6 +499,7 @@ function detailsNote(g: Group, trayStock: string) {
   return [
     date,
     stock && stock !== "unknown" ? STOCK_NAMES[stock] : "",
+    g.place?.name ?? "",
     g.caption,
     g.tags.length ? g.tags.join(", ") : "",
   ]
@@ -501,19 +512,23 @@ function eraText(era: EraHint) {
   return `${STOCK_NAMES[era.stock]} ${era.from}–${era.to ?? "today"}`;
 }
 
-/** The slide's own date (or where its estimate comes from), film stock, caption and tags. */
+/** The slide's own date (or where its estimate comes from), film stock, place, caption and tags. */
 function SlideDetails({
   app,
   session,
   onDateRange,
   onAccepted,
   onStockRange,
+  onPlaceRange,
+  placesDownloading,
 }: {
   app: SlideStation;
   session: SessionPayload;
   onDateRange: () => void;
   onAccepted: (kind: InsightKind, value: string, groups: Group[], index: number) => void;
   onStockRange: (stock: string) => void;
+  onPlaceRange: () => void;
+  placesDownloading: boolean;
 }) {
   const g = app.current!;
   const est = g.date_est;
@@ -572,6 +587,16 @@ function SlideDetails({
         onChange={(stock) => app.patchGroup({ stock })}
         onDecide={(action, value) => decide("stock", action, value)}
         onRange={onStockRange}
+      />
+      <PlaceField
+        key={`${g.id}-place`}
+        place={g.place}
+        suggestion={g.insights?.place}
+        onDecide={(action, value) => decide("place", action, value)}
+        onChange={app.setPlace}
+        onRange={onPlaceRange}
+        downloading={placesDownloading}
+        onDownload={() => app.downloadPlaces()}
       />
       <TrayField
         key={`${g.id}-caption`}

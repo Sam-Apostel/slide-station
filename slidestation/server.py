@@ -13,7 +13,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from . import captions, filmstock, insights, learning
-from . import people
+from . import people, places
 from . import similar
 from . import workflow as wf
 from . import imaging as im
@@ -232,6 +232,7 @@ def _session_payload(s: Session) -> dict:
             "insights": _slide_insights(g, live[i], models),
             # after upload: photos already in Immich that look like this one (similar.check_lookalikes)
             "lookalike": similar.lookalike_view(g),
+            "place": g.get("place"),  # {"name", "lat", "lon", "country"} or None
             "date_est": dates[i],  # {"value", "source": own|between|near|tray|scan, "from": [indices]}
             "active": active_scans(g),
             "key": render_key(g),  # preview cache key: the UI must use this, not its own guess
@@ -251,6 +252,9 @@ def _session_payload(s: Session) -> dict:
         "log": d.get("log", [])[-20:],
         "stock": d.get("stock", ""),  # the tray's film stock, for slides without their own
         **_insights_payload(s, models),
+        # place suggestions from signs: the text reader + place names are there (else ocr_mb to download)
+        "places": {"ocr": insights.ocr_on(),
+                   "ocr_mb": places.OCR_MB + (0 if places.gazetteer_ready() else places.GAZETTEER_MB)},
     }
 
 
@@ -420,6 +424,9 @@ def patch_group(sid: str, gid: str, body: dict = Body(...)):
             _set_stock(g, _clean_stock(body["stock"]))
         if "stock" in body or "skip" in body:
             filmstock.label(s.data, g, s.id)
+        if "place" in body:
+            _set_place(g, _clean_place(body["place"]))
+            places.suggest_between(s.data)
         _learn(s, g)
         if "excluded" in body:
             g["excluded"] = [x for x in body["excluded"] if x in g["scans"]]
@@ -486,6 +493,25 @@ def _set_tags(g: dict, tags: list[str]) -> None:
         g.pop("tags", None)
 
 
+def _clean_place(v) -> dict | None:
+    try:
+        return places.clean_place(v)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+def _set_place(g: dict, p: dict | None) -> None:
+    """Set (or clear) a slide's place. An open place suggestion is settled by it: the same place
+    accepted, another one dismissed (you chose)."""
+    if p:
+        g["place"] = p
+    else:
+        g.pop("place", None)
+    e = (g.get("insights") or {}).get("place")
+    if p and e and e.get("state") == "suggested":
+        e["state"] = "accepted" if places.same(e.get("place"), p) else "dismissed"
+
+
 def _set_stock(g: dict, v: str) -> None:
     if v:
         g["stock"] = v
@@ -516,6 +542,7 @@ def _slide_insights(g: dict, live: dict, models: list[str]) -> dict | None:
     if not ins and not live["stock"] and not live["date"]:
         return None
     return {**{k: ins.get(k) for k in insights.KINDS}, **live, "tags": ins.get("tags", []),
+            "text": [t["text"] for t in ins.get("text") or []],  # what the text reader read in the photo
             "stale": bool(ins) and ins.get("key") != insights.insights_key(g, models), "error": ins.get("error", "")}
 
 
@@ -543,6 +570,10 @@ def insights_state():
         "labels": insights.TAGS,
         "learned": insights.learned().get("labels", {}),
         "captions": {"enabled": captions.enabled(), "ready": captions.model_ready(), "model_mb": captions.MODEL_MB},
+        # place suggestions from signs: the text reader + the place names
+        "ocr_ready": places.ocr_ready(),
+        "ocr_mb": places.OCR_MB + (0 if places.gazetteer_ready() else places.GAZETTEER_MB),
+        "ocr_downloading": bool(job and job.kind == "ocr" and not job.finished),
     }
 
 
@@ -622,8 +653,10 @@ def _decide(g: dict, kind: str, action: str, value: str | None, text: str | None
             e["state"] = "accepted"
             _set_caption(g, caption)
             return True
+        elif kind == "stock":
+            _set_stock(g, e["value"])
         else:
-            g[kind] = e["value"]  # place: kept on the slide, not sent to Immich yet
+            g["place"] = places.clean_place(e["place"])  # value is how it reads; place the place
     e["state"] = "accepted" if action == "accept" else "dismissed"
     return True
 
@@ -662,6 +695,8 @@ def insights_decide(sid: str, body: dict = Body(...)):
                 n += 1
                 if kind == "stock":
                     _stock_changed(s, [g])
+        if kind == "place":
+            places.suggest_between(s.data)
         s.save()
     return {**_session_payload(s), "decided": n}
 
@@ -751,13 +786,16 @@ def lookalikes(sid: str, body: dict = Body(default={})):
 @app.post("/api/sessions/{sid}/insights/propagate")
 def insights_propagate(sid: str, body: dict = Body(...)):
     """Give a run of slides what one of them was confirmed to have ("Apply 'beach' to 12-31"):
-    `kind` tags / caption / date, `value`, `from` .. `to` (slide ids, either order, both included).
-    A tag is added to each slide's own tags (and marks the same suggestion there accepted); a caption
-    or date replaces theirs. Locked slides are left as they are."""
+    `kind` tags / caption / date / place, `value`, `from` .. `to` (slide ids, either order, both
+    included). A tag is added to each slide's own tags (and marks the same suggestion there
+    accepted); a caption, date or place ({name, lat, lon, country}; null clears) replaces theirs.
+    Locked slides are left as they are."""
     kind = body.get("kind")
-    if kind not in ("tags", "caption", "date", "stock"):
-        raise HTTPException(400, "kind must be tags, caption, date or stock")
-    if kind == "date":
+    if kind not in ("tags", "caption", "date", "stock", "place"):
+        raise HTTPException(400, "kind must be tags, caption, date, stock or place")
+    if kind == "place":
+        value = _clean_place(body.get("value"))
+    elif kind == "date":
         value = _clean_date(body.get("value", ""))
     elif kind == "stock":
         value = _clean_stock(body.get("value", ""))
@@ -789,6 +827,9 @@ def insights_propagate(sid: str, body: dict = Body(...)):
                 if value not in g.get("tags", []):
                     _set_tags(g, g.get("tags", []) + [value])
                     n += 1
+            elif kind == "place":
+                _set_place(g, value)
+                n += 1
             else:
                 e = (g.get("insights") or {}).get(kind)
                 if e and e.get("value") == value:
@@ -798,8 +839,41 @@ def insights_propagate(sid: str, body: dict = Body(...)):
                 else:
                     g[kind] = value[:2000]
                 n += 1
+        if kind == "place":
+            places.suggest_between(s.data)
         s.save()
     return {**_session_payload(s), "applied": n}
+
+
+# --------------------------------------------------------------------------- places
+
+
+@app.get("/api/places")
+def places_search(q: str = "", limit: int = 8):
+    """The place field: whether the place names are downloaded, and what matches `q` (a name,
+    "Venice, Italy", or "45.43, 12.33")."""
+    job = wf.current_job
+    ready = places.gazetteer_ready()
+    return {
+        "ready": ready,
+        "downloading": bool(job and job.kind in ("places", "ocr") and not job.finished),
+        "mb": places.GAZETTEER_MB,
+        "results": places.search(q, max(1, min(limit, 20))) if q.strip() else [],
+    }
+
+
+@app.post("/api/places/download")
+def places_download(body: dict = Body(default={})):
+    """Download the place names (job `places`), or with `"ocr": true` the text reader too (job
+    `ocr`: place suggestions from signs), unless they're there already."""
+    ocr = bool(body.get("ocr"))
+    if places.ocr_ready() if ocr else places.gazetteer_ready():
+        return {"ok": True, "ready": True}
+    try:
+        wf.start_job("ocr" if ocr else "places", None, places.download_ocr if ocr else places.download_gazetteer)
+    except RuntimeError as e:
+        return _err(e, 409)
+    return {"ok": True, "ready": False}
 
 
 @app.post("/api/sessions/{sid}/groups/{gid}/split")

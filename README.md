@@ -52,10 +52,9 @@ Nothing leaves your computer except what you send to your own Immich.
 - **Large scans** that are more than a browser can hold in one canvas (Safari on iPad and iPhone
   stops at about 16 megapixels) are read and written in strips instead: slower, but they work.
 - **Not in the browser version:** scanner detection (pick the card's folder instead), eject,
-  rotation from faces (the sky rule still runs), "show in Finder".
-
-  recognising people, background pre-rendering, "show in Finder". Rotation from faces does run: the
-  face detector (about 15 MB with its runtime) loads the first time you import.
+  recognising people, the suggestion models (tags, captions, look-alikes, places from signs),
+  "show in Finder". Rotation from faces does run: the face detector (about 15 MB with its runtime)
+  loads the first time you import. Film stock and date guesses need no model and work there too.
 
 **Connecting Immich.** Immich only answers requests from its own web address (it allows other
 origins in development builds only), so the page has to reach it in one of two ways:
@@ -210,10 +209,8 @@ suggestions) as suggestions you accept with one click or dismiss:
   leaves them. Immich needs a moment to index a new upload; slides it hasn't yet are checked again
   with "Check". The API key needs `asset.read` and `asset.view` for this.
 
-Look-alikes aren't in the browser version either. The thresholds were set on synthetic pictures, so
-expect to dismiss the odd suggestion; dismissing "same shot" often makes it stricter.
-
-Not in the browser version yet.
+The thresholds were set on synthetic pictures, so expect to dismiss the odd suggestion; dismissing
+"same shot" often makes it stricter. Tag suggestions and look-alikes aren't in the browser version yet.
 
 ## Film stock
 
@@ -246,6 +243,29 @@ background — a few seconds a slide ("A woman in an orange space suit with a he
 neighbours, and **Review tray…** lists every suggested caption to accept or dismiss together.
 A slide that already has a caption — typed by you or pulled from Immich — is never captioned or
 overwritten. Not in the browser version yet.
+## Places
+
+Every slide can have a **place** (Details → Place), so it shows up on Immich's map.
+
+- **Type a town or city** and pick it from the list ("Venice" offers Venice, Italy before Venice,
+  California; "Venice, Florida" narrows it; "Venezia" and "München" work too). The list comes from
+  GeoNames' cities with 15,000+ people, downloaded once (~3 MB, the Download button under the field)
+  into the library's `data` folder; searching needs no internet after that. Or type **coordinates**
+  (`45.4371, 12.3326`, optionally after a name: `Our campsite 45.61, 13.70`).
+- **Apply to a range** (the pin icon next to the place) gives a run of slides the same place, like
+  "Date a range".
+- **Suggestions** (with tag suggestions on, Insights section): the app can read **signs in the
+  photo** — "WELCOME TO VENICE", "Benvenuti a Firenze", a station name — and suggest that place
+  (Insights → "Suggest places from signs", a ~10 MB text reader, runs on this computer). A slide
+  between two slides with the same place (say 11 and 14) gets that place suggested too. Nothing is
+  applied until you accept it; the tooltip on the confidence says why it was suggested.
+- **In Immich**: the place goes into the JPEG as GPS, and a place changed after upload is updated
+  in place (latitude / longitude, no new upload; needs `asset.update`). Immich's API can't remove a
+  location, so removing a place uploads the slide again without one. **Pull from Immich** brings back
+  places moved on Immich's map, and photos pulled in from Immich keep theirs.
+
+In the browser version you type coordinates (GeoNames doesn't allow downloads from other web pages)
+and there are no suggestions; places still go to Immich and into saved JPEGs.
 
 ## People
 
@@ -280,9 +300,8 @@ Face detection uses OpenCV's YuNet model (MIT licence, from opencv_zoo), bundled
 `slidestation/models`. Tag suggestions download OpenAI's CLIP (MIT licence) into the library's
 `models` folder when turned on; `insights.json` in the library remembers which tags you accept and dismiss.
 `stocks.json` in the library holds the slides whose film stock you set (for the film stock guess).
-
-`slidestation/models`. Recognising people uses OpenCV's SFace model (Apache 2.0), downloaded when
-you turn it on.
+Places use GeoNames' `cities15000` (CC BY 4.0, <https://www.geonames.org>), downloaded into the
+library's `data/geonames` folder, and reading signs uses PaddleOCR's models (Apache 2.0) in `models/ppocr`.
 
 Caption suggestions download Microsoft's Florence-2 (MIT licence) the same way. Recognising people
 uses OpenCV's SFace model (Apache 2.0), downloaded when you turn it on.

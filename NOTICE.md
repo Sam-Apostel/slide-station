@@ -52,6 +52,20 @@ When "Suggest captions" is turned on, the app downloads Microsoft's Florence-2 b
 as 8-bit ONNX files converted by onnx-community
 (<https://huggingface.co/onnx-community/Florence-2-base-ft>, a pinned revision), plus its BART
 vocabulary, into the library's `models/` folder. Nothing of it is committed or bundled.
+## GeoNames place names (places) — downloaded, not in the repo
+
+The place field searches GeoNames' `cities15000.zip`, `countryInfo.txt` and `admin1CodesASCII.txt`
+from <https://download.geonames.org/export/dump/>, downloaded on first use into the library's
+`data/geonames/` folder. GeoNames data is licensed under Creative Commons Attribution 4.0
+(<https://creativecommons.org/licenses/by/4.0/>): **place names and coordinates © GeoNames
+(<https://www.geonames.org>)**. The data is used unmodified; nothing of it is committed or bundled.
+
+## PaddleOCR text detection and recognition (place suggestions) — downloaded, not in the repo
+
+When "Suggest places from signs" is downloaded, the app fetches PaddleOCR's PP-OCRv3 mobile text
+detector and PP-OCRv5 Latin-script recogniser (Apache 2.0, <https://github.com/PaddlePaddle/PaddleOCR>)
+as ONNX files converted by monkt (<https://huggingface.co/monkt/paddleocr-onnx>, a pinned revision,
+Apache 2.0) into the library's `models/ppocr/` folder. Nothing of it is committed or bundled.
 
 ## Python and JavaScript dependencies
 

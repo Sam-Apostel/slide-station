@@ -11,6 +11,7 @@ import {
   type Group,
   type InsightKind,
   type Params,
+  type Place,
   type Preset,
   type Pulled,
   type SessionPayload,
@@ -124,7 +125,7 @@ export function useSlideStation() {
     if (j?.finished && jobKey !== lastJobKey.current && lastJobKey.current) {
       if (j.error) toast.error(j.error, { duration: 8000 });
       else if (j.message) toast.success(j.message);
-      if (j.session === sid || j.kind === "model") await loadSession(sid, true);
+      if (j.session === sid || j.kind === "model" || j.kind === "ocr") await loadSession(sid, true);
     }
     lastJobKey.current = jobKey;
     const ins = ref.current.session?.insights;
@@ -615,14 +616,13 @@ export function useSlideStation() {
     }
   };
 
-  /** Give slides fromIndex..toIndex (0-based, either order) a tag, caption, date or film stock confirmed on one of them. */
+  /** Give slides fromIndex..toIndex (0-based, either order) a tag, caption, date, film stock or place confirmed on one of them. */
   const propagate = async (
-    kind: "tags" | "caption" | "date" | "stock",
-    value: string,
+    kind: "tags" | "caption" | "date" | "stock" | "place",
+    value: string | Place,
     fromIndex: number,
     toIndex: number,
   ) => {
-
     const { sessionId: sid, session: s } = ref.current;
     const a = s?.groups[fromIndex];
     const b = s?.groups[toIndex];
@@ -638,13 +638,15 @@ export function useSlideStation() {
       const lo = Math.min(fromIndex, toIndex) + 1;
       const hi = Math.max(fromIndex, toIndex) + 1;
       const what =
-        kind === "tags"
-          ? `Tagged “${value}”`
-          : kind === "date"
-            ? `Dated ${value}`
-            : kind === "stock"
-              ? `Film stock ${STOCK_NAMES[value] ?? "cleared"}`
-              : "Captioned";
+        typeof value !== "string"
+          ? `Placed in ${value.name}`
+          : kind === "tags"
+            ? `Tagged “${value}”`
+            : kind === "date"
+              ? `Dated ${value}`
+              : kind === "stock"
+                ? `Film stock ${STOCK_NAMES[value] ?? "cleared"}`
+                : "Captioned";
       toast(`${what}: ${plural(p.applied, "slide")} (${lo}–${hi})`);
       return true;
     } catch (e) {
@@ -656,6 +658,19 @@ export function useSlideStation() {
   /** The slide's own tags; removing a suggested tag counts as dismissing it. */
   const setTags = (tags: string[]) => {
     if (editable()) patchGroup({ tags });
+  };
+
+  /** Where the slide was taken (null clears it); settles an open place suggestion. */
+  const setPlace = (place: Place | null) => (editable() ? patchGroup({ place }) : Promise.resolve(undefined));
+
+  /** Fetch the place names (GeoNames) or, with `ocr`, the text reader for place suggestions too (a job). */
+  const downloadPlaces = async (ocr = false) => {
+    try {
+      await api("POST", "/api/places/download", { ocr });
+      refreshState();
+    } catch (e) {
+      fail(e);
+    }
   };
 
   /** Analyse the tray in the background (again, with `force`: keeps what was accepted or dismissed). */
@@ -758,13 +773,17 @@ export function useSlideStation() {
     try {
       const p = await api<SessionPayload & { pulled: Pulled }>("POST", `/api/sessions/${sid}/pull`);
       applyPayload(p);
-      const { checked, captions, dates, gone } = p.pulled;
-      const what = [captions && plural(captions, "caption"), dates && plural(dates, "date")].filter(Boolean);
+      const { checked, captions, dates, places = 0, gone } = p.pulled;
+      const what = [
+        captions && plural(captions, "caption"),
+        dates && plural(dates, "date"),
+        places && plural(places, "place"),
+      ].filter(Boolean);
       toast(
         !checked
           ? "Nothing in this tray is in Immich yet"
           : what.length
-            ? `Pulled ${what.join(" and ")} from Immich`
+            ? `Pulled ${what.join(", ").replace(/, ([^,]*)$/, " and $1")} from Immich`
             : `No changes in Immich (${plural(checked, "slide")} checked)`,
         gone ? { description: `${plural(gone, "slide")} no longer in Immich (deleted or in its trash)` } : undefined,
       );
@@ -850,6 +869,8 @@ export function useSlideStation() {
     checkLookalikes,
     propagate,
     setTags,
+    setPlace,
+    downloadPlaces,
     analyseTray,
     downloadModel,
     undo,

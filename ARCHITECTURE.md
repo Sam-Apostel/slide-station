@@ -39,10 +39,11 @@ slidestation/
   learning.py             learns colour settings from approved slides (§5)
   stats.py                progress across the library: slides per hour, projected finish (§4)
   insights.py             suggestions per slide: scene tags from CLIP, background analysis (§5a)
-  filmstock.py            film stock per slide: fade-signature guess / k-NN, eras for dating (§5b)
-  similar.py              look-alikes from the CLIP embeddings: duplicates, split / merge, scenes, Immich (§5b)
+  filmstock.py            film stock per slide: fade-signature guess / k-NN, eras for dating (§5d)
+  similar.py              look-alikes from the CLIP embeddings: duplicates, split / merge, scenes, Immich (§5e)
   captions.py             a caption per slide from Florence-2 (ONNX), for the insights (§5b)
-  people.py               faces -> people: SFace embeddings, clustering, names (§5a)
+  people.py               faces -> people: SFace embeddings, clustering, names (§5c)
+  places.py               places: GeoNames gazetteer, sign OCR, tray neighbours (§5f)
   store.py                config + session persistence (JSON on disk)
   immich.py               minimal Immich client (v1/v2/v3 compatible)
   models/                 YuNet face detector (MIT, from opencv_zoo)
@@ -55,11 +56,9 @@ tests/                    API tests (pytest), synthetic scans, mock Immich, Play
 
 State lives outside the repo: `~/.slidestation/config.json` (settings, incl. the Immich API key,
 chmod 600) and the library folder (default `~/Pictures/Slide Station`), which holds
-`sessions/<id>/{session.json,originals,cache,export}`, `imported.json` (dedupe index),
-`learning.json` and `presets.json`.
-
-`sessions/<id>/{session.json,faces.json,originals,cache,export}`, `imported.json` (dedupe index),
-`learning.json`, `people.json` and `models/` (downloaded models, §5a).
+`sessions/<id>/{session.json,faces.json,embeddings.json,originals,cache,export}`, `imported.json`
+(dedupe index), `learning.json`, `presets.json`, `people.json` (§5c), `insights.json` (§5a),
+`stocks.json` (§5d), `models/` (downloaded models, §5a–§5f) and `data/geonames/` (place names, §5f).
 
 ## 3. Architecture notes that matter
 
@@ -494,8 +493,10 @@ standalone/
   strips.ts          scans bigger than a canvas: strip decode, JPEG encoder in JS (§4d)
   library.ts         the library: a folder on disk (File System Access) or the browser's OPFS
   boot.tsx, pick.ts  start-up (re-allowing a disk folder takes a click) and picking / dropping folders
-  exif.ts, npy.ts,   reading scan EXIF / writing the export's; the .sig.npy signature cache;
+  exif.ts, npy.ts,   reading scan EXIF / writing the export's (incl. GPS); the .sig.npy signature cache;
   zip.ts, immich.ts  the save-to-disk zip; the Immich client (fetch)
+  filmstock.ts       filmstock.py: the fade guess, k-NN, eras (§5d)
+  yunet.ts           rotation from faces: YuNet on onnxruntime-web (below)
 ```
 
 - **Same library, same keys.** The library layout is the Python app's (`sessions/<id>/...`,
@@ -522,7 +523,11 @@ standalone/
 - **Card cleanup** keeps the safety rules: only folders picked or dropped as a directory with
   `DCIM` at the root are removable (their handle is remembered in IndexedDB), write access is asked
   for at cleanup time, and each file is re-hashed before it is deleted.
-- **Not ported:** YuNet faces (the sky rule runs), scanner detection and eject, reveal in Finder.
+- **Ported without a model:** film stock and its date hints (`filmstock.ts`, §5d; the Review dialog
+  shows those guesses), places typed as coordinates, propagated, sent to Immich and written as EXIF
+  GPS (§5f). Rotation from faces runs too (`yunet.ts`, below).
+- **Not ported:** people (faces → names, §5c), the suggestion models (scene tags, captions,
+  look-alikes, reading signs), the GeoNames search, scanner detection and eject, reveal in Finder.
   The background renderer and scans bigger than a canvas are in §4d.
 - Config (Immich URL and key, keep originals, learning) is in `localStorage` of that browser only.
 
@@ -553,11 +558,6 @@ standalone/
   (XTEST under Xvfb, headed Chromium on Linux) Alt+← goes back outside the crop tool and resizes
   the frame inside it. Playwright's `keyboard.press` never reaches the browser's own shortcuts, so
   `web_flow.py` only checks the page side. Firefox and Edge on Windows untested.
-
-- **Not ported:** people (faces → names, §5a), scanner detection and eject, the background
-  renderer, reveal in Finder. Full resolution decodes and encodes through one canvas, so Safari on
-  iPad / iPhone tops out around 16 MP (ROADMAP §0).
-- Config (Immich URL and key, keep originals, learning) is in `localStorage` of that browser only.
 
 ### Rotation from faces in the browser (`standalone/yunet.ts`)
 
@@ -653,11 +653,10 @@ g["insights"] = {"key": "<active scans + rotation + model + labels>",
                  "error": "..."}          # only when the slide couldn't be analysed
 ```
 
-`state` is `suggested`, `accepted` (the value became the slide's own tag / caption / date; a place
-is kept as `g["place"]`, not sent anywhere yet) or `dismissed`. A stale `key` (other scans, a
-rotation) means "analyse again": `insights.merge` keeps every accepted / dismissed entry, so a
-dismissed suggestion never comes back for that slide, and a fresh suggestion of a tag the slide
-already has counts as accepted. Removing a tag in the Details section dismisses its suggestion.
+`state` is `suggested`, `accepted` (the value became the slide's own tag / caption / date / place,
+§5f; a film stock, §5d) or `dismissed`. A stale `key` (other scans, a rotation) means "analyse
+again": `insights.merge` keeps every accepted / dismissed entry, so a dismissed suggestion never
+comes back for that slide, and a fresh suggestion of a tag the slide already has counts as accepted. Removing a tag in the Details section dismisses its suggestion.
 
 **Background analysis.** A daemon thread like the background renderer (§3): `insights.step()`
 analyses one slide at a time — the open tray (`wf.active_session`) first, then trays queued with
@@ -845,7 +844,7 @@ preprocessing, and the download endpoint. `SS_REAL_CAPTIONS=1` adds a smoke test
 the real model into the scratch library and captions the synthetic beach and snow scenes (verified:
 "A blue and yellow background with a blue sky.", "A white mountain with trees on it and a blue sky.").
 
-## 5a. People: faces → names (`people.py`)
+## 5c. People: faces → names (`people.py`)
 
 Opt-in (`people_enabled`, Settings → "Recognise people"), desktop / server app only.
 
@@ -899,7 +898,7 @@ Opt-in (`people_enabled`, Settings → "Recognise people"), desktop / server app
   faces per person, 6 faces on their own (mostly people in the background) and one two-face cluster
   mixing two of those.
 
-## 5b. Film stock (ROADMAP §1 "Film-stock profiles", "Date estimation")
+## 5d. Film stock (ROADMAP §1 "Film-stock profiles", "Date estimation")
 
 `filmstock.py`, mirrored function by function in `standalone/filmstock.ts` (no model, so the
 browser version has all of it). Three parts: a stock per slide with a guess, per-stock learning,
@@ -1001,7 +1000,7 @@ version and gives it to the whole tray. **Not done:** the Swift app keeps `stock
 trays and learns per stock, but has no stock UI, guess or era hint; the heuristic's thresholds and
 confidences are uncalibrated against real scans (the owner's trays are the first real test).
 
-## 5b. Look-alikes: near-duplicates, grouping safety net, scenes, Immich (`similar.py`)
+## 5e. Look-alikes: near-duplicates, grouping safety net, scenes, Immich (`similar.py`)
 
 ROADMAP §1 "Smart grouping 2.0" / "Best-of-burst" and §2's CLIP-match against Immich. Built on the
 scene-tag model (§5a Insights): on with `insights_enabled` and the CLIP download, nothing extra to
@@ -1130,6 +1129,120 @@ tags and look-alikes, bracket scans agree after normalising); look-alikes agains
 and replaced (albums, favourite, trash), pending → checked by the job, dismiss kept across checks,
 the date fallback, a slide without a date, off by default. `SS_REAL_CLIP=1` runs the real model:
 bracket scans ≥ `MERGE`, beach vs snow < `SPLIT` / `DUPLICATE`.
+## 5f. Places (ROADMAP §1 "Location recognition")
+
+`places.py`. A slide's place is `g["place"] = {"name", "lat", "lon", "country"}` (+ `"admin"`, the
+region, and `"id"`, the GeoNames id, when picked from the gazetteer). `places.clean_place` validates
+it (lat ±90, lon ±180, finite; rounded to 5 decimals; no name → "lat, lon" to 4 decimals); `same(a,
+b)` = same name within 1e-3°.
+
+**Gazetteer.** GeoNames `cities15000.zip` (~34k places, 3.4 MB) + `countryInfo.txt` +
+`admin1CodesASCII.txt`, CC BY 4.0 (NOTICE, and a credit line under the autocomplete), downloaded by
+`POST /api/places/download` (job `places`) into `<library>/data/geonames/`, never committed.
+GeoNames rebuilds them daily, so there is no checksum: each goes to `.part`, must parse as a
+tab-separated table with ≥ `MIN_ROWS` rows of the right width, then `os.replace`. `Gazetteer` loads
+the zip in ~2 s (lazily, again when the file's mtime changes) and indexes every place under its
+folded name, ASCII name and Latin-script alternate names (`fold`: NFKD without accents, ß→ss, ø/ł/đ,
+lower case, non-alphanumerics → space; alternates in other scripts and ≤ 4-letter all-caps codes like
+IATA "VCE" are left out). `search(q)`: prefix match over the sorted keys, ranked exact name before
+longer, a city's own name before an alternate (GeoNames lists "Venice" among *Dayton*'s names), then
+population; `"Venice, flor"` narrows by country / region prefix. Typed coordinates come back first,
+named after the nearest city within 25 km (haversine over all of them). `GET /api/places?q=` →
+`{ready, downloading, mb, results}`.
+
+**Setting it.** `PATCH …/groups/{gid} {"place": {...} | null}` (400 on junk; locked → 409 like every
+edit). An open place suggestion is settled by it: the same place → accepted, another → dismissed.
+`POST …/insights/propagate {"kind": "place", "value": {...}}` gives a range the place (locked
+skipped). UI: `components/place.tsx` (combobox + listbox, debounced search, "Name lat, lon" parsed
+client-side so a typed name wins over the nearest city), the pin icon → `PropagateDialog` with an
+`Offer` whose `value` is the label and `place` the place.
+
+**Suggestions** go through the insights plumbing (§5a); a place entry is `{"value": "Venice, Italy",
+"place": {...}, "confidence", "source", "state", "text"}` — `value` is the label accept / dismiss /
+review piles use, `place` what accepting stores, `text` why (the OCR'd line or "slides 11 and 14").
+`places.merge` replaces `insights.merge`'s old "newest wins" for places: a decision on the same
+place stands, an accepted place is never replaced, a slide with its own place gets nothing new
+(or `accepted` when it names that place).
+
+- *Text in the photo* (`OCR_ID = "ppocr-v5-latin"`): PaddleOCR's PP-OCRv3 mobile detector (2.4 MB)
+  + PP-OCRv5 Latin recogniser (7.9 MB) + its 502-character dict, ONNX from `monkt/paddleocr-onnx` at a
+  pinned revision, checksummed like CLIP's files (`insights.fetch_files`, the CLIP downloader made
+  generic). `POST /api/places/download {"ocr": true}` (job `ocr`) fetches them into
+  `<library>/models/ppocr/`, plus the gazetteer if missing. `places.Ocr` is PaddleOCR's pipeline in
+  ~80 lines on onnxruntime CPU: DB detection on the upright proxy shrunk to ≤ 960 px (multiples of
+  32, BGR, ImageNet mean/std as Paddle feeds it), threshold 0.3, contours → `minAreaRect`, box score
+  = mean probability inside ≥ 0.6, unclip = grow the rectangle by area × 1.5 / perimeter (what
+  pyclipper's offset does to a rectangle); each box is perspective-cropped from the 1600 px proxy
+  (turned when taller than 1.5× wide), resized to height 48, (x/255 − 0.5)/0.5, CTC greedy decode
+  (blank 0, dict, then space). ~0.2–0.5 s a slide. It runs inside `insights.analyse` only when
+  `ocr_on()` (text reader + gazetteer present; cached 2 s since `pending()` asks per slide); the
+  OCR id then joins `insights_key`, so downloading it re-analyses the trays (decisions kept). The
+  lines are kept as `insights.text` (the payload shows the strings).
+- *Matching* (`place_from_text`): every 1–3-word run of each line, and of each pair of consecutive
+  lines ("WELCOME TO" / "VENICE"), looked up by exact folded name, longest first. After a cue
+  (`CUES`: "welcome to", "bienvenue à", "grüsse aus", "benvenuti a" …, folded) base 0.9. Without
+  one it must have ≥ 4 letters, not be a sign word that is also some town's name (`COMMON`: bar,
+  nice, split, marina, kodak, fuji, europa …), not follow a street / business word (`NOT_AFTER`: via,
+  rue, hotel …) nor precede one (`NOT_BEFORE`: road, airlines, station …), and be a city's own name
+  or an alternate of a city ≥ 100k (`BIG`: "Wien", "Nizza" yes; GeoNames' alternates of small places
+  are full of words: "Coca", "Plage", "Metro"); base 0.6 (≥ 6 letters) or 0.45. Homonyms go to the
+  most populous city *called* that (own names first), and confidence = base × OCR confidence ×
+  (0.5 + 0.5 × its share of the homonyms' population): "WELCOME TO VENICE" → Venice, Italy at 0.65,
+  "Benvenuti a Firenze" → Florence at 0.90. Below 0.3 nothing is suggested. Checked on 163
+  everyday sign texts (against the real cities15000): no suggestion for sign words, streets, hotels, brands; what's left are real
+  place names (Verona, Wien, Brugge) and a few region / landmark names that are also some town's name
+  (Andalucia → a town in Colombia, Alhambra → Arizona, Florida → Cuba) at 0.4–0.6.
+- *Tray neighbours* (`suggest_between`, run after every place change: PATCH, decide, propagate): a
+  slide without a place between two slides with the same place and no other place between them
+  gets it suggested (source `tray`, 0.9, text "slides 11 and 14"). Tray suggestions that no longer
+  hold are withdrawn; a dismissed one stays dismissed; an open text suggestion is never overwritten.
+  It needs no model, so an open place suggestion is also shown (✓ / ×) in the Place field itself,
+  not only in the Insights section (which needs the tag model).
+- *Landmarks via CLIP*: **not done.** Zero-shot CLIP over a closed list of landmarks is softmax over
+  that list, so any tower or cathedral comes out as *some* landmark with a high share; keeping that
+  honest needs a calibration set of real slides (landmark and not) that the repo can't hold. Sign
+  text and neighbours carry the suggestions; a landmark list is the obvious next step once real
+  trays exist to calibrate against.
+
+**Where it goes.**
+- `store.meta_key` appends `{"gps": ["45.43713", "12.33265"]}` (coordinates formatted to 5
+  decimals, so `store.ts` hashes the same string; the name isn't sent anywhere) only when there is a
+  place, so slides uploaded before stay `uploaded`; a place edit after upload makes the slide
+  `changed`.
+- Export: EXIF GPS IFD (`workflow.gps_ifd`: version 2.3, N/S/E/W refs, degrees / minutes / seconds as
+  rationals); a pulled-in photo's own GPS is dropped first, so the slide's place decides. Immich reads
+  it on upload.
+- Metadata-only sync (§6a): `PUT /api/assets/{id}` gets `latitude` / `longitude` (UpdateAssetDto in
+  v3.2, also v1/v2) with the date and description. The API can't *remove* a location (the fields
+  aren't nullable), so a slide whose place was removed after upload is rendered and uploaded again
+  (replacing the old asset as usual). `pushed` gained `"place": [lat, lon] | null`.
+- Pull from Immich: `exifInfo.latitude / longitude` differing from `pushed.place` by > 1e-4° become
+  the slide's place (named after `exifInfo.city`, else its coordinates; `country`, `state` as admin);
+  records from before places compare against the slide's own. `pulled.places` counts them. Pull
+  back in: a photo with GPS starts with that place.
+
+**Browser version.** download.geonames.org sends no CORS headers, so the page can't fetch the
+gazetteer: `GET /api/places` answers `ready: false` and only typed coordinates; the field says so.
+Places are set, propagated (`/insights/propagate` for place / caption / date), keyed
+(`metaKey`), written as EXIF GPS (`exifSegment(…, gps)`, checked with Pillow), synced to Immich,
+pulled back and kept on pull-in exactly like the desktop app; `tests/web_flow.py` types a place,
+applies it to a range and checks the uploaded JPEGs' GPS. OCR and neighbour suggestions are not in
+the browser (no Insights there). **Swift app:** not ported (its `Slide` Codable drops `place`, and
+its meta key has no place).
+
+**Tests:** `tests/test_places.py` — a made-up GeoNames extract in the scratch library: search
+(ranking, narrowing, alternates, coordinates), the endpoint with / without the gazetteer, set /
+clear / validate, meta key, propagation, neighbours (suggest, accept, dismiss, withdraw), a typed
+place settling a suggestion, `place_from_text` rules, OCR through insights with a fake reader
+(suggested, re-analysis keeping decisions, stale without the reader, accept all), EXIF GPS + Immich
+lat / lon on upload, in-place update, removal re-uploading, no `asset.update` → re-upload, pull and
+pull-in, the gazetteer and text-reader downloads through `httpx.MockTransport`. `SS_REAL_OCR=1`
+downloads the real text reader and GeoNames and reads four rendered signs (verified: all four
+read word for word, Venice / Annecy / Florence found, "OPEN BAR" nothing). By hand, on 13
+synthetic 1600 px sign photos (faded, grainy, blurred, tilted ±6°): 13/13 right, including
+"Hotel Zürich" and "Via Roma 12" → nothing; and in the server app with the real CLIP + text
+reader: a "WELCOME TO VENICE" slide got Venice at 0.65 and, after placing slides 1 and 3 in Venice,
+slide 2 got the tray suggestion.
 
 ## 6. Immich integration facts (hard-won)
 
@@ -1178,7 +1291,7 @@ and a pulled-in slide has `g["source_asset"] = {"id"}` (its scan record `immich_
    those bytes, that asset is used (restored from the trash if it's there: undoing an edit renders
    the same bytes as the trashed copy) and nothing is sent. Servers without the endpoint (404) just
    upload. Only byte-identical files are recognised here; look-alikes ("a scan you uploaded in
-   2021") are an optional check *after* the upload (§5b).
+   2021") are an optional check *after* the upload (§5e).
 4. *Stacks* (`upload_originals_stacked`, Settings, default off): the slide's scans — all of
    `g["scans"]`, brackets included, never edited — are checked with bulk-upload-check (reusing any
    Immich has, e.g. a pulled-in photo's own asset or raw scans uploaded some other way) and the
@@ -1230,7 +1343,7 @@ album listing with search paging (`PAGE`), and `DENY` for a key missing permissi
 version. **Not ported to the Swift app** (`apple/`): stacks, metadata-only sync, pull from Immich,
 duplicate check, pull back in, carrying albums / favourites over.
 
-  With people on, also `tag.create` and `tag.asset` (names go as tags, §5a).
+  With people on, also `tag.create` and `tag.asset` (names go as tags, §5c).
 
 ## 7. Testing
 
@@ -1254,15 +1367,10 @@ duplicate check, pull back in, carrying albums / favourites over.
   worth for the browser test. Each tray in the tests gets new bytes: the dedupe index skips by
   content (SHA-1). The name + size + mtime fingerprint only counts "new" scans on a card; import
   hashes every file (`test_dedupe.py`: a different scan sharing all three is still imported).
-- `tests/fake_immich.py` — FastAPI mock implementing version/users/albums/assets, with a `/debug`
-  endpoint; set `MOCK_IMMICH_MAJOR=3` to exercise the v3 field rules. It also covers the round-trip
-  endpoints (§6a), tested in `tests/test_immich_roundtrip.py`.
-
-  worth for the browser test. Each tray in the tests gets new bytes *and* new file names: the
-  dedupe index also skips by a name + size + mtime fingerprint.
-- `tests/fake_immich.py` — FastAPI mock implementing version/users/albums/assets/tags, with a `/debug`
-  endpoint; set `MOCK_IMMICH_MAJOR=3` to exercise the v3 field rules, `TAGS = False` for a server
-  without the tags API.
+- `tests/fake_immich.py` — FastAPI mock implementing version/users/albums/assets/tags, with a
+  `/debug` endpoint; set `MOCK_IMMICH_MAJOR=3` to exercise the v3 field rules, `TAGS = False` for a
+  server without the tags API. It reads an upload's EXIF GPS into latitude / longitude like Immich,
+  and covers the round-trip endpoints (§6a), tested in `tests/test_immich_roundtrip.py`.
 - `tests/ui_flow.py` — Playwright script: import from a fake card, browse, rotate, edit warmth and
   saturation, toggle a scan, hold-B before, Fit the tone curve (F), crop and straighten (K, 1:1,
   Enter), undo / redo (Ctrl/⌘Z), split view (Y), Develop (Space), upload, clean the card; asserts
@@ -1283,9 +1391,10 @@ duplicate check, pull back in, carrying albums / favourites over.
 - `tests/web_flow.py` — the browser version end to end in headless Chromium: it serves
   `frontend/dist-web` (build it first) and the mock Immich with CORS on (`MOCK_IMMICH_CORS=1`), and
   stands in folders in the page's OPFS for the pickers, so import, develop (rotate, fit, crop,
-  undo), date a range, upload, save to disk (EXIF checked), card cleanup and a reload all run
-  through the real code. `SS_NO_FS_ACCESS=1` hides the picker API, as in Firefox and Safari: a
-  folder `<input>`, a zip download, cleaning locked. Command in its docstring.
+  undo), local adjustments, date a range, a film stock guess accepted and given to the tray, a
+  place typed as coordinates and given to a range, upload (GPS checked), save to disk (EXIF
+  checked), card cleanup and a reload all run through the real code. `SS_NO_FS_ACCESS=1` hides the
+  picker API, as in Firefox and Safari: a folder `<input>`, a zip download, cleaning locked. Command in its docstring.
 
 Things to re-check after changes: grouping across two imports (a bracket set split over two card
 reads must merge), rotation suggestions, upload of a `changed` slide, skip-after-upload, and that
