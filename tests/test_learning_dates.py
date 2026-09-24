@@ -1,35 +1,29 @@
 """Learning tone curves, and dating a range of slides (POST /api/sessions/{sid}/dates).
 
-Self-contained: SLIDESTATION_HOME and the library point at temporary folders before any
-slidestation module is imported, so the real library is never touched.
-Run: uv run --python 3.12 --with pytest pytest tests/test_learning_dates.py -q
+The scratch home and library come from conftest.py, so the real library is never touched.
+Run: uv run --python 3.12 --with pytest pytest tests -q
 """
 from __future__ import annotations
 
 import json
-import os
-import sys
-import tempfile
 from pathlib import Path
 
+import numpy as np
 import pytest
+from fastapi.testclient import TestClient
 
-_HOME = Path(tempfile.mkdtemp(prefix="ss-home-"))
-_LIB = Path(tempfile.mkdtemp(prefix="ss-lib-"))
-os.environ["SLIDESTATION_HOME"] = str(_HOME)
-(_HOME / "config.json").write_text(json.dumps({"library": str(_LIB)}))
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-
-import numpy as np  # noqa: E402
-from fastapi.testclient import TestClient  # noqa: E402
-
-from slidestation import imaging as im  # noqa: E402
-from slidestation import learning, store  # noqa: E402
-from slidestation.server import app  # noqa: E402
-
-assert store.library() == _LIB, "tests must never run against the real library"
+from slidestation import imaging as im
+from slidestation import learning, store
+from slidestation.server import app
 
 client = TestClient(app)
+
+
+@pytest.fixture(autouse=True)
+def _learning_on(_config):
+    """conftest's scratch config turns learning off; these tests are about it."""
+    store.save_config({**store.load_config(), "learning_enabled": True})
+    yield
 FIT = [[0.1, 0.0], [0.8, 1.0]]  # a "Fit to data"-like red curve
 
 
