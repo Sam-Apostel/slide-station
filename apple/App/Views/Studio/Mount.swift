@@ -15,7 +15,7 @@ enum SS {
 
 /// A filmstrip tile is a slide mount (`.ss-mount`): a raised plastic frame, the photo sunk into
 /// its window dead centre (3:2 in a square; turned slides keep the square and the window stands
-/// up), the number and year printed in the margin, always upright. Developed slides are gilded
+/// up), the number and year printed in the margin, always upright; HDR pressed in above the window. Developed slides are gilded
 /// (and stay gold when edited after upload, until that version goes up); slides in Immich are green.
 struct MountTile: View {
     let tray: Tray
@@ -41,6 +41,7 @@ struct MountTile: View {
             ZStack {
                 window.frame(width: s * (portrait ? 0.55 : 0.82), height: s * (portrait ? 0.82 : 0.55))
                 foot(s)
+                if slide.activeScans.count > 1 { hdr(s) }
                 badges.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing).padding(5)
             }
             .frame(width: s, height: s)
@@ -69,10 +70,10 @@ struct MountTile: View {
     @ViewBuilder private var frame: some View {
         if finished {
             ZStack {
-                LinearGradient(stops: zip(metal.stops, [0, 0.35, 0.55, 1]).map { .init(color: Color(proHex: $0), location: $1) },
+                LinearGradient(stops: metal.stops.map { .init(color: Color(proHex: $0.0), location: $0.1) },
                                startPoint: .topLeading, endPoint: .bottomTrailing)
                 BrushedLines().fill(.white.opacity(0.03))
-                LinearGradient(colors: [.white.opacity(0.18), .clear], startPoint: .topLeading, endPoint: UnitPoint(x: 0.45, y: 0.45))
+                LinearGradient(colors: [.white.opacity(metal.gloss), .clear], startPoint: .topLeading, endPoint: UnitPoint(x: 0.45, y: 0.45))
             }
             .overlay(alignment: .top) { Rectangle().fill(metal.light.opacity(0.55)).frame(height: 1) }
             .overlay(alignment: .bottom) { Rectangle().fill(metal.shade.opacity(0.6)).frame(height: 1) }
@@ -124,6 +125,19 @@ struct MountTile: View {
         }
     }
 
+    /// HDR, pressed into the margin above the window (`.ss-mount-hdr`): one frame per merged
+    /// exposure, fanned out. It belongs to the picture, so on a turned slide it turns with it.
+    private func hdr(_ s: CGFloat) -> some View {
+        let n = slide.activeScans.count
+        return HDRMark(frames: min(n, 4))
+            .foregroundStyle(numberColor)
+            .shadow(color: finished ? metal.light.opacity(0.45) : .white.opacity(0.07), radius: 0, y: 1)
+            .rotationEffect(.degrees(portrait ? 90 : 0))
+            .frame(width: portrait ? s * 0.225 : s * 0.82, height: portrait ? s * 0.82 : s * 0.225)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: portrait ? .trailing : .top)
+            .accessibilityLabel("HDR ×\(n)")
+    }
+
     private var dot: some View {
         Circle().fill(status.dotFill).frame(width: 8, height: 8)
             .overlay { Circle().strokeBorder(status == .skipped ? Color(proHex: 0x666666) : .black.opacity(0.5), lineWidth: 1.5) }
@@ -133,7 +147,6 @@ struct MountTile: View {
     @ViewBuilder private var badges: some View {
         HStack(spacing: 3) {
             if slide.locked != nil { badge { Image(systemName: "lock.fill").font(.system(size: 8, weight: .bold)) } }
-            if slide.activeScans.count > 1 { badge { Text("HDR ×\(slide.activeScans.count)") } }
         }
     }
 
@@ -206,21 +219,46 @@ private struct BrushedLines: Shape {
     }
 }
 
+/// The HDR mark: stacked exposures, the ones behind showing only the edge the front one leaves.
+private struct HDRMark: View {
+    let frames: Int
+
+    var body: some View {
+        let k = CGFloat(frames)
+        ZStack(alignment: .topLeading) {
+            ForEach(0..<frames - 1, id: \.self) { i in
+                let x = CGFloat(i) * 2.5, y = (k - 1 - CGFloat(i)) * 2
+                Path { p in
+                    p.move(to: CGPoint(x: x + 2.5, y: y)); p.addLine(to: CGPoint(x: x, y: y))
+                    p.addLine(to: CGPoint(x: x, y: y + 7)); p.addLine(to: CGPoint(x: x + 11, y: y + 7))
+                    p.addLine(to: CGPoint(x: x + 11, y: y + 5))
+                }
+                .stroke(style: StrokeStyle(lineWidth: 1.2, lineJoin: .round))
+            }
+            RoundedRectangle(cornerRadius: 1).frame(width: 11, height: 7).offset(x: (k - 1) * 2.5)
+        }
+        .frame(width: 11 + (k - 1) * 2.5, height: 7 + (k - 1) * 2, alignment: .topLeading)
+    }
+}
+
 /// A mount's finish (`FINISH` in filmstrip.tsx): gold once developed, green once in Immich.
 enum MountFinish {
     case gold, green
 
     struct Palette {
-        let stops: [UInt32]
+        let stops: [(UInt32, CGFloat)]
+        var gloss: Double = 0.18
         let light, shade, print, ring, glow: Color
     }
 
     var palette: Palette {
         switch self {
-        case .gold: Palette(stops: [0xd9ae55, 0xa8792a, 0xe6c173, 0x8d6220], light: Color(proHex: 0xfff0c8), shade: Color(proHex: 0x3c2300),
+        case .gold: Palette(stops: [(0xd9ae55, 0), (0xa8792a, 0.35), (0xe6c173, 0.55), (0x8d6220, 1)], light: Color(proHex: 0xfff0c8), shade: Color(proHex: 0x3c2300),
                             print: Color(proHex: 0x5a3c0c), ring: Color(proHex: 0xfff3d0), glow: Color(proHex: 0xf5c86e))
-        case .green: Palette(stops: [0x6fbf8a, 0x3f8a5a, 0x86d3a0, 0x2c6a44], light: Color(proHex: 0xd7ffe4), shade: Color(proHex: 0x002d14),
-                             print: Color(proHex: 0x123d22), ring: Color(proHex: 0xdcffe8), glow: Color(proHex: 0x78d79b))
+        // polished emerald with its printing inlaid in pale gold
+        case .green: Palette(stops: [(0x1ecb7b, 0), (0x07804a, 0.3), (0x2fe092, 0.5), (0x06703f, 0.68), (0x034428, 1)], gloss: 0.3,
+                             light: Color(proHex: 0xc8ffe1), shade: Color(proHex: 0x001e0e),
+                             print: Color(proHex: 0xf3d98f), ring: Color(proHex: 0xd6ffe9), glow: Color(proHex: 0x28e68c))
         }
     }
 }
@@ -295,7 +333,7 @@ extension SlideStatus {
         switch self {
         case .new: return g(0x3b3b44, 0x2c2c33)
         case .reviewed: return g(0xf5c26a, 0xc98d2c)
-        case .uploaded: return g(0x86d6a1, 0x4b9a67)
+        case .uploaded: return g(0x3ee39a, 0x07804a)
         case .changed: return g(0xf5c26a, 0xc98d2c)  // developed again, gold like its mount
         case .skipped: return AnyShapeStyle(Color(proHex: 0x1e1e23))
         }
