@@ -44,6 +44,32 @@ describe("keys match the Python app", () => {
     expect(renderKey(dusty)).toBe("c6fde1de427f");
     expect(toneKey(dusty)).toBe("c23f13e25b53");
   });
+  it("local adjustments count only when there are some, and not in the tone key", () => {
+    expect(renderKey({ ...g, params: { ...g.params, local: [] } })).toBe("3279595dadce");
+    const local = cleanParams({
+      ...g.params,
+      local: [
+        { kind: "radial", exposure: 0.35, center: [0.3, 0.61234], rx: 0.2, ry: 0.1, angle: -30, invert: true },
+        { kind: "graduated", exposure: -0.5, warmth: 0.25 },
+        {
+          kind: "brush",
+          saturation: -1,
+          strokes: [
+            {
+              points: [
+                [0.1, 0.1],
+                [0.5, 0.6],
+              ],
+              radius: 0.05,
+              erase: true,
+            },
+          ],
+        },
+      ],
+    });
+    expect(renderKey({ ...g, params: local })).toBe("744719c8a4e4");
+    expect(toneKey({ ...g, params: local })).toBe("dabc64eacdd4");
+  });
   it("meta key", () => {
     expect(metaKey(g, { value: "1978-08", source: "own" })).toBe("468575a4ce75");
     const tagged = { ...g, tags: ["snow", "beach", "café"] };
@@ -65,7 +91,7 @@ describe("keys match the Python app", () => {
   });
   it("session.json writes params as floats, like json.dumps(indent=1)", () => {
     expect(dumpSession({ params: cleanParams({ tint: 0.00001 }), n: 3, f: 1.5 })).toBe(
-      '{\n "params": {\n  "strength": 0.6,\n  "brightness": 0.0,\n  "contrast": 0.0,\n  "warmth": 0.0,\n  "tint": 1e-05,\n  "saturation": 0.0,\n  "trim": true,\n  "curves": {},\n  "angle": 0.0,\n  "crop": null,\n  "dust": 0.0\n },\n "n": 3,\n "f": 1.5\n}',
+      '{\n "params": {\n  "strength": 0.6,\n  "brightness": 0.0,\n  "contrast": 0.0,\n  "warmth": 0.0,\n  "tint": 1e-05,\n  "saturation": 0.0,\n  "trim": true,\n  "curves": {},\n  "angle": 0.0,\n  "crop": null,\n  "dust": 0.0,\n  "local": []\n },\n "n": 3,\n "f": 1.5\n}',
     );
   });
 });

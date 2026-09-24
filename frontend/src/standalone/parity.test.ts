@@ -6,6 +6,7 @@ import { describe, expect, it } from "vitest";
 import * as im from "./imaging";
 import { fuse, mtbShift, materialise, rgbSource, shiftedSource } from "./fusion";
 import { features, Model } from "./learning";
+import { localMask } from "@/lib/local";
 import { cropped, gray, rotated, type RGB } from "./pixels";
 
 const DIR = new URL("../../../apple/SlideKit/Tests/SlideKitTests/Golden/", import.meta.url);
@@ -208,6 +209,44 @@ describe("parity with imaging.py", () => {
     expect(worst).toBeLessThan(1e-3);
     expect(dusty.data).toEqual(before); // not in place unless asked
     expect(im.repairDust(dusty, 0)).toBe(dusty);
+  });
+
+  it("local adjustment masks", () => {
+    const local = im.cleanParams(golden.params_local).local!;
+    expect(local).toEqual(golden.params_local.local); // clean_local keeps what Python kept
+    const [w, h] = golden.local_mask_size;
+    local.forEach((adj, n) => {
+      const want = golden.local_masks[n];
+      const m = localMask(adj, w, h);
+      expect([m.height, m.width]).toEqual(want.shape);
+      expect(Math.abs(m.data.reduce((s, v) => s + v, 0) - want.sum) / Math.max(1, want.sum)).toBeLessThan(1e-5);
+      const at = [
+        [0, 0],
+        [300, 400],
+        [500, 200],
+        [100, 900],
+        [600, 1000],
+        [437, 409],
+        [437, 609],
+        [156, 859],
+        [156, 767],
+      ];
+      at.forEach(([j, i], k) => expect(Math.abs(m.data[j * m.width + i] - want.samples[k])).toBeLessThan(1e-6));
+    });
+    expect(im.turnLocal(local, 90)).toEqual(golden.local_turned);
+    expect(im.turnLocal(im.turnLocal(local, 180), 180)).toEqual(local);
+  });
+
+  it("develop with local adjustments", () => {
+    const out = im.develop(png("local.png"), im.cleanParams(golden.params_local));
+    expect([out.height, out.width]).toEqual(golden.developed_local_shape);
+    const [mean, worst] = diff(out.data, floats("developed_local.f32"));
+    expect(mean).toBeLessThan(0.003);
+    expect(worst).toBeLessThan(0.06);
+    // no local adjustments: exactly the develop from before
+    const plain = im.cleanParams({ ...golden.params_local, local: [] });
+    const withNone = im.develop(png("local.png"), plain);
+    expect(diff(withNone.data, out.data)[0]).toBeGreaterThan(0.01);
   });
 
   it("learning features and k-NN", () => {

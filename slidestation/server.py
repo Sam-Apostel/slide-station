@@ -170,7 +170,9 @@ def pull_from_immich(sid: str):
 # --------------------------------------------------------------------------- sessions
 
 
-FRAMING = {"angle": 0.0, "crop": None}
+# each slide's own: Copy previous, Apply to rest, presets, "develop like" and learning never carry
+# these over (local adjustments are drawn on this picture, like a crop)
+FRAMING = {"angle": 0.0, "crop": None, "local": []}
 
 
 def _learn(s: Session, g: dict) -> None:
@@ -386,7 +388,10 @@ def patch_group(sid: str, gid: str, body: dict = Body(...)):
         if what:
             _remember(g, what)
         if "rotation" in body:
-            g["rotation"] = int(body["rotation"]) % 360
+            rot = int(body["rotation"]) % 360
+            if g["params"].get("local"):  # the masks turn with the picture
+                g["params"]["local"] = im.turn_local(g["params"]["local"], rot - g["rotation"])
+            g["rotation"] = rot
             g["rot_reason"] = "manual"
         if "params" in body:
             g["params"] = Params.from_dict({**g["params"], **body["params"]}).to_dict()
@@ -821,7 +826,7 @@ def apply_params(sid: str, body: dict = Body(...)):
 
 
 def _colour(params: dict) -> dict:
-    """A slide's look without its framing: crop and straighten are each slide's own."""
+    """A slide's look without its framing: crop, straighten and local adjustments are each slide's own."""
     p = Params.from_dict(params).to_dict()
     for k in FRAMING:
         p.pop(k)

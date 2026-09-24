@@ -348,7 +348,10 @@ final class AppModel {
     func turn(clockwise: Bool = true) { rotate(clockwise ? 90 : 270) }
     func rotate(_ degrees: Int) {
         guard let s = slide else { return }
-        edit(s.id, what: "rotation") { $0.rotation = ($0.rotation + degrees) % 360; $0.rotReason = "manual" }
+        edit(s.id, what: "rotation") {
+            $0.rotation = ($0.rotation + degrees) % 360; $0.rotReason = "manual"
+            $0.params.local = LocalAdjustment.turned($0.params.local, by: degrees)   // masks turn with the picture
+        }
     }
 
     /// "Develop" / keep: mark ready and move on.

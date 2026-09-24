@@ -21,6 +21,7 @@ import { DevelopLikeDialog, PresetsDialog } from "@/components/looks";
 import { PanelToggles, WindowTitlebar } from "@/components/window-titlebar";
 import { PropagateDialog, ReviewDialog, propagationOffer, type Offer } from "@/components/insights";
 import { PeopleDialog } from "@/components/people";
+import { LOCAL_CLOSED, LocalOverlay, useLocalKeys, type LocalTool } from "@/components/local";
 import { useSlideStation, type SlideStation } from "@/hooks/use-slide-station";
 import { useDesktop, useFolderDrop, type DesktopHandlers } from "@/hooks/use-desktop";
 import { needsReview, plural, standalone, STOCK_NAMES, type Group, type InsightKind, type Source } from "@/lib/api";
@@ -84,9 +85,13 @@ function SlideStationApp() {
   const [loupe, setLoupe] = React.useState(false);
   const [grid, setGrid] = React.useState(false);
   const gridCols = React.useRef(4);
+  // the Local tool: local adjustments shaped on the photo (A), with the Local section
+  const [local, setLocal] = React.useState<LocalTool>(LOCAL_CLOSED);
+  useLocalKeys(local.open, app, setLocal, local.sel);
   React.useEffect(() => {
     setPicking(false);
     setCropping(false);
+    setLocal((t) => ({ ...t, open: false, sel: 0 }));
     setZoom(null); // the full-resolution render is per slide: moving on leaves the zoom
   }, [app.sel, sessionId]);
   const [settingsOpen, setSettingsOpen] = React.useState(false);
@@ -267,8 +272,10 @@ function SlideStationApp() {
     setCropping,
     setCompare,
     view,
+    setLocal,
   );
   const views = {
+    toggleLocal: () => app.current?.locked || setLocal((t) => ({ ...t, open: !t.open })),
     toggleGrid: () => {
       setGrid((v) => !v);
       setZoom(null);
@@ -421,6 +428,11 @@ function SlideStationApp() {
                   onRedo={app.redo}
                   slideMenu={slideMenu}
                   cropping={cropping}
+                  localOverlay={
+                    local.open && !app.current?.locked
+                      ? (img) => <LocalOverlay img={img} app={app} tool={local} />
+                      : null
+                  }
                   onAngle={(a) => app.setParam("angle", Math.round(a * 10) / 10)}
                   onCropEnd={(rect, restoreAngle) => {
                     setCropping(false);
@@ -462,6 +474,8 @@ function SlideStationApp() {
                     onPick={() => setPicking((v) => !v)}
                     cropping={cropping}
                     onCrop={() => app.current?.locked || setCropping((v) => !v)}
+                    local={local}
+                    setLocal={setLocal}
                     onReimport={reimport}
                     onSave={standalone ? save : undefined}
                     onDateRange={() => setDateRangeOpen(true)}
@@ -616,7 +630,8 @@ type ViewKeys = {
 /**
  * The keyboard map is the reason the app is fast for 10,000 slides — keep it identical to the
  * original. Shortcuts win over whatever has focus, except text entry (and open dialogs).
- * Added since: G (review grid, with its own arrows / Space / Enter), Z (1:1 zoom), L (loupe).
+ * Added since: G (review grid, with its own arrows / Space / Enter), Z (1:1 zoom), L (loupe), A (local
+ * adjustments; the Local tool then takes Esc, O, ⌫ and Tab itself, components/local.tsx).
  */
 function useKeyboard(
   app: SlideStation,
@@ -627,6 +642,7 @@ function useKeyboard(
   setCropping: React.Dispatch<React.SetStateAction<boolean>>,
   setCompare: React.Dispatch<React.SetStateAction<boolean>>,
   view: ViewKeys,
+  setLocal: React.Dispatch<React.SetStateAction<LocalTool>>,
 ) {
   const latest = React.useRef({ app, setBefore, openHelp, openPalette, setPicking, setCropping, setCompare, view });
   latest.current = { app, setBefore, openHelp, openPalette, setPicking, setCropping, setCompare, view };
@@ -658,8 +674,8 @@ function useKeyboard(
       }
       if (e.metaKey || e.ctrlKey || e.altKey) return;
       if (isTextEntry(e.target) || modalOpen()) return;
-      // the crop tool takes Enter / Esc itself; nothing else may change the slide under it
-      if (document.querySelector(".ss-crop")) return;
+      // the crop and Local tools take their keys themselves; nothing else may change the slide under them
+      if (document.querySelector(".ss-crop, .ss-local")) return;
       const { app: a, setBefore: sb, openHelp: help } = latest.current;
       const k = e.key;
       if (k === "?") {
@@ -687,8 +703,8 @@ function useKeyboard(
         else if (k === "ArrowUp") a.select(a.sel >= cols ? a.sel - cols : a.sel);
         else if (k === " ") a.developStep();
         else if (k === "Enter" || k === "Escape") v.setGrid(false);
-        else if (/^[bwkyzl1-9]$/i.test(k)) {
-          /* before, eyedropper, crop, split, zoom, loupe, scans: they need the single-slide view */
+        else if (/^[bwkyzla1-9]$/i.test(k)) {
+          /* before, eyedropper, crop, split, zoom, loupe, local, scans: they need the single-slide view */
         } else handled = false; // R, X, M, C, 0, F act on the slide under the cursor as usual
         if (handled) {
           e.preventDefault();
@@ -714,6 +730,9 @@ function useKeyboard(
       else if (k === "y" || k === "Y") latest.current.setCompare((v) => !v);
       else if (k === "z" || k === "Z") latest.current.view.setZoom((z) => (z ? null : [0.5, 0.5]));
       else if (k === "l" || k === "L") latest.current.view.setLoupe((on) => !on);
+      else if (k === "a" || k === "A") {
+        if (!a.current?.locked) setLocal((t) => ({ ...t, open: !t.open }));
+      }
       else if (k === "Escape") {
         latest.current.setPicking(false);
         latest.current.view.setZoom(null);

@@ -710,6 +710,13 @@ export const SHORTCUTS: [React.ReactNode, string][] = [
     </>,
     `While cropping: move the frame (${isMac ? "⌥" : "Alt"}: resize from the bottom-right, ⇧: bigger steps)`,
   ],
+  [<Kbd>A</Kbd>, "Local adjustments on the photo: graduated, radial, brush (Esc closes)"],
+  [
+    <>
+      <Kbd>O</Kbd> <Kbd>⌫</Kbd>
+    </>,
+    "In the Local tool: show the mask, delete the selected adjustment",
+  ],
   [
     <>
       <Kbd>⌘ Z</Kbd> / <Kbd>⇧ ⌘ Z</Kbd>

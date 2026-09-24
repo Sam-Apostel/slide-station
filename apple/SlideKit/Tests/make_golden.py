@@ -191,5 +191,42 @@ for st in ("kodachrome", "ektachrome", "fujichrome", ""):
 meta["learning_stock"] = {"examples": stock_ex, "cases": stock_cases}
 # --- stock fixture end
 
+# local adjustments: a graduated filter burning the sky, a turned radial lifting the hill, a brush
+# desaturating a stripe (with an erase stroke through it), on a straightened and cropped slide
+local = [
+    {"kind": "graduated", "exposure": -0.6, "warmth": 0.3, "start": [0.5, 0.05], "end": [0.45, 0.5]},
+    {"kind": "radial", "exposure": 0.7, "contrast": 0.3, "tint": -0.2, "center": [0.4, 0.7], "rx": 0.3, "ry": 0.12,
+     "angle": 20, "feather": 0.6},
+    {"kind": "radial", "saturation": 0.5, "contrast": -0.4, "center": [0.75, 0.25], "rx": 0.1, "ry": 0.1,
+     "feather": 0.2, "invert": True},
+    {"kind": "brush", "saturation": -0.8, "exposure": -0.2, "strokes": [
+        {"points": [[0.1, 0.9], [0.3, 0.6], [0.55, 0.62], [0.9, 0.3]], "radius": 0.06, "hardness": 0.3, "flow": 0.9},
+        {"points": [[0.4, 0.5], [0.45, 0.8]], "radius": 0.03, "hardness": 0.8, "flow": 0.7, "erase": True},
+        {"points": [[0.2, 0.2]], "radius": 0.08, "hardness": 0.0, "flow": 0.5}]},
+]
+# its own picture without noise (so it comes out the same on any numpy), kept apart from scene.png
+LW, LH = 210, 140
+y, x = np.mgrid[0:LH, 0:LW].astype(np.float32)
+hill = np.clip((y - 80 - 14 * np.sin(x / 19)) / 3, 0, 1)[..., None]
+sky = np.stack([0.55 + 0.35 * y / LH, 0.6 + 0.3 * y / LH, 0.95 - 0.1 * y / LH], -1)
+ground = np.stack([0.12 + 0.08 * np.sin(x / 11), 0.15 + 0.06 * np.cos(y / 6), 0.08 + 0.05 * np.sin((x + y) / 7)], -1)
+lscene = sky * (1 - hill) + ground * hill
+lscene[:4] = lscene[-4:] = lscene[:, :5] = lscene[:, -4:] = 0.03  # mount
+lscene = save_png(lscene, "local.png")
+lp = im.Params(strength=0.6, brightness=0.1, angle=-2.5, crop=[0.05, 0.1, 0.9, 0.95], local=im.clean_local(local))
+dl = im.develop(lscene, lp)
+save_f32(dl, "developed_local.f32")
+meta["developed_local_shape"] = list(dl.shape[:2])
+meta["params_local"] = lp.to_dict()
+masks = []
+cells = ((0, 0), (300, 400), (500, 200), (100, 900), (600, 1000), (437, 409), (437, 609), (156, 859), (156, 767))
+for adj in lp.local:
+    m = im.local_mask(adj, 180, 110)
+    masks.append({"shape": list(m.shape), "sum": float(m.sum(dtype=np.float64)),
+                  "samples": [float(m[j, i]) for j, i in cells]})
+meta["local_masks"] = masks
+meta["local_mask_size"] = [180, 110]
+meta["local_turned"] = im.turn_local(lp.local, 90)
+
 (OUT / "golden.json").write_text(json.dumps(meta, indent=1))
 print("wrote", OUT)

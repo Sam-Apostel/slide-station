@@ -8,6 +8,7 @@ import {
   Images,
   LayoutGrid,
   Search,
+  SunDim,
   ZoomIn,
   Wand2,
   ArrowLeft,
@@ -93,6 +94,8 @@ export function CommandPalette({
     toggleGrid: () => void;
     toggleZoom: () => void;
     toggleLoupe: () => void;
+    /** The Local tool (local adjustments on the photo). */
+    toggleLocal: () => void;
     stats: () => void;
     presets: () => void;
     developLike: () => void;
@@ -286,6 +289,14 @@ export function CommandPalette({
         },
         { id: "zoom", label: "Zoom to 100 %", icon: <ZoomIn />, keys: "Z", hidden: !g || grid, run: views.toggleZoom },
         { id: "loupe", label: "Loupe", icon: <Search />, keys: "L", hidden: !g || grid, run: views.toggleLoupe },
+        {
+          id: "local",
+          label: "Local adjustments (graduated, radial, brush)",
+          icon: <SunDim />,
+          keys: "A",
+          hidden: !g || grid || !!g.locked,
+          run: views.toggleLocal,
+        },
       ],
     ],
     [

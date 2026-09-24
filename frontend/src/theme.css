@@ -1223,6 +1223,92 @@ body {
   accent-color: var(--ss-accent);
 }
 
+/* ------------------------------------------------------------------ local adjustments */
+
+.ss-local {
+  position: absolute;
+  overflow: hidden;
+  touch-action: none;
+}
+.ss-local[data-kind="brush"] {
+  cursor: crosshair;
+}
+/* the picture's own frame: turned and zoomed like the straighten, shifted by the crop */
+.ss-local-frame {
+  position: absolute;
+  transform-origin: 50% 50%;
+  pointer-events: none;
+}
+.ss-local-mask {
+  position: absolute;
+  left: 0;
+  top: 0;
+}
+.ss-local-svg {
+  position: absolute;
+  inset: 0;
+  overflow: visible;
+}
+.ss-local-line {
+  fill: none;
+  stroke: rgb(255 255 255 / 85%);
+  stroke-width: 1.25px;
+  vector-effect: non-scaling-stroke;
+  filter: drop-shadow(0 0 1px rgb(0 0 0 / 90%));
+}
+.ss-local-axis {
+  stroke: rgb(255 255 255 / 35%);
+}
+.ss-local-erase {
+  stroke-dasharray: 3 3;
+}
+.ss-local-handle {
+  fill: #fff;
+  stroke: rgb(0 0 0 / 70%);
+  stroke-width: 1px;
+  vector-effect: non-scaling-stroke;
+  cursor: grab;
+  pointer-events: all;
+}
+.ss-local-handle[data-h="line"],
+.ss-local-handle[data-h="center"] {
+  fill: var(--ss-accent);
+  cursor: move;
+}
+.ss-local[data-active] .ss-local-handle {
+  cursor: grabbing;
+}
+.ss-local-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 6px;
+  border-radius: 6px;
+  font-size: 12px;
+  cursor: default;
+}
+.ss-local-item > svg {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+  color: var(--ss-muted);
+}
+.ss-local-item:hover {
+  background: rgb(255 255 255 / 4%);
+}
+.ss-local-item-on {
+  background: rgb(242 179 75 / 12%);
+  box-shadow: inset 0 0 0 1px rgb(242 179 75 / 35%);
+}
+.ss-local-item button {
+  color: var(--ss-muted);
+  opacity: 0.6;
+}
+.ss-local-item button:hover {
+  color: var(--ss-text);
+  opacity: 1;
+}
+
 /* ------------------------------------------------------------------ split compare */
 
 .ss-compare {

@@ -14,6 +14,7 @@ import {
   Frame,
   Layers,
   Sparkles,
+  SunDim,
   FolderOpen,
   HardDriveDownload,
   Lock,
@@ -35,6 +36,7 @@ import { Kbd } from "@/components/ui/kbd";
 import { Tip } from "@/components/tip";
 import { ToneCurve } from "@/components/tone-curve";
 import { AdjustPanel, adjustSummary } from "@/components/adjust";
+import { LocalPanel, localNote, type LocalTool } from "@/components/local";
 import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select";
 import { InsightsPanel, StockField, SuggestionRow, TagsField, insightsNote } from "@/components/insights";
 import {
@@ -59,7 +61,7 @@ function rotationNote(rotation: number, reason: string) {
   return `${rotation}°`;
 }
 
-type SectionId = "rotation" | "curve" | "colour" | "details" | "insights" | "tray";
+type SectionId = "rotation" | "curve" | "colour" | "local" | "details" | "insights" | "tray";
 
 function storedSections(): Record<string, boolean> {
   try {
@@ -146,6 +148,8 @@ export function Inspector({
   onPick,
   cropping,
   onCrop,
+  local,
+  setLocal,
   onReimport,
   onSave,
   onDateRange,
@@ -166,6 +170,9 @@ export function Inspector({
   onPick: () => void;
   cropping: boolean;
   onCrop: () => void;
+  /** The Local tool (local adjustments), shared with the stage overlay. */
+  local: LocalTool;
+  setLocal: React.Dispatch<React.SetStateAction<LocalTool>>;
   /** Import the tray's scans again (brings deleted originals back and unlocks their slides). */
   onReimport?: () => void;
   /** Browser version: save the finished JPEGs to disk (replaces "show the finished files"). */
@@ -277,6 +284,27 @@ export function Inspector({
               {...section("colour")}
             >
               <AdjustPanel app={app} session={session} picking={picking} onPick={onPick} />
+            </ProDisclosureGroup>
+
+            <ProDisclosureGroup
+              title="Local"
+              summary={localNote(g)}
+              right={
+                <Tip label={local.open ? "Close the Local tool" : "Shape them on the photo"} keys="A">
+                  <ProButton
+                    plain
+                    aria-label="Local tool"
+                    aria-pressed={local.open || undefined}
+                    data-on={local.open || undefined}
+                    onClick={() => g.locked || setLocal((t) => ({ ...t, open: !t.open }))}
+                  >
+                    <SunDim />
+                  </ProButton>
+                </Tip>
+              }
+              {...section("local")}
+            >
+              <LocalPanel app={app} tool={local} setTool={setLocal} />
             </ProDisclosureGroup>
 
             <ProDisclosureGroup title="Details" summary={detailsNote(g, session.stock ?? "")} {...section("details")}>

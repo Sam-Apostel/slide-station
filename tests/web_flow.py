@@ -114,6 +114,25 @@ async () => {
 }
 """
 
+# How light the shown photo is: mean of the top fifth, and of a box around the middle (0..1)
+PHOTO_LIGHT = """
+() => {
+  const img = document.querySelector('img.ss-photo[alt^="Slide"]');
+  const c = document.createElement("canvas");
+  [c.width, c.height] = [img.naturalWidth, img.naturalHeight];
+  const x = c.getContext("2d");
+  x.drawImage(img, 0, 0);
+  const mean = (l, t, w, h) => {
+    const d = x.getImageData(Math.round(l * c.width), Math.round(t * c.height),
+                             Math.round(w * c.width), Math.round(h * c.height)).data;
+    let s = 0;
+    for (let i = 0; i < d.length; i += 4) s += d[i] + d[i + 1] + d[i + 2];
+    return s / (d.length / 4) / 3 / 255;
+  };
+  return [mean(0, 0, 1, 0.2), mean(0.4, 0.4, 0.2, 0.2)];
+}
+"""
+
 
 def free_port() -> int:
     with socket.socket() as s:
@@ -277,6 +296,70 @@ def main() -> None:
             )
             print("mount and dust: straightened, trimmed, dust 40")
             pg.screenshot(path=str(SHOTS / "02b-mount-dust.png"))
+
+            # ---- local adjustments: a radial dodges the middle, a graduated filter burns the top
+            t0 = time.time()
+            look = lambda: pg.evaluate(PHOTO_LIGHT)  # noqa: E731
+            wait_photo = lambda old: pg.wait_for_function(  # noqa: E731
+                "(old) => { const i = document.querySelector('img.ss-photo[alt^=\"Slide\"]');"
+                " return i && i.src !== old && i.naturalWidth > 0 }", arg=old, timeout=30_000)
+            photo_src = lambda: pg.locator("img.ss-photo[alt^='Slide']").get_attribute("src")  # noqa: E731
+            top0, mid0 = look()
+            pg.keyboard.press("a")
+            expect(pg.locator(".ss-local")).to_be_visible()
+            src = photo_src()
+            pg.get_by_role("button", name="Add radial").click()
+            expect(pg.get_by_role("button", name="Radial 1", exact=True)).to_be_visible()
+            wait_photo(src)
+            src = photo_src()
+            val = pg.get_by_label("Local exposure value")
+            val.fill("80")
+            val.press("Enter")
+            wait_photo(src)
+            top1, mid1 = look()
+            assert mid1 > mid0 + 0.03, (mid0, mid1)  # dodged
+            # drag the radial's centre up: the render follows the handle
+            h = pg.locator(".ss-local-handle[data-h='center']").bounding_box()
+            src = photo_src()
+            pg.mouse.move(h["x"] + h["width"] / 2, h["y"] + h["height"] / 2)
+            pg.mouse.down()
+            pg.mouse.move(h["x"] + h["width"] / 2, h["y"] - 40, steps=5)
+            pg.mouse.up()
+            wait_photo(src)
+            src = photo_src()
+            pg.get_by_role("button", name="Add graduated").click()
+            expect(pg.get_by_role("button", name="Graduated 2", exact=True)).to_be_visible()
+            wait_photo(src)
+            src = photo_src()
+            val.fill("-90")
+            val.press("Enter")
+            wait_photo(src)
+            top2, mid2 = look()
+            assert top2 < top1 - 0.03, (top1, top2)  # burned in from the top
+            pg.keyboard.press("o")
+            expect(pg.get_by_test_id("local-mask")).to_be_visible()
+            pg.screenshot(path=str(SHOTS / "02c-local.png"))
+            pg.keyboard.press("Escape")
+            expect(pg.locator(".ss-local")).to_have_count(0)
+            pg.keyboard.press("Control+z")  # the graduated filter's exposure
+            pg.keyboard.press("Control+z")  # adding it
+            expect(pg.get_by_role("button", name="Graduated 2", exact=True)).to_have_count(0)
+            expect(pg.get_by_role("button", name="Radial 1", exact=True)).to_be_visible()
+            # a brush stroke across the photo, then deleted with ⌫
+            pg.get_by_role("button", name="Add brush").click()
+            expect(pg.locator(".ss-local")).to_be_visible()
+            box = pg.locator(".ss-local").bounding_box()
+            pg.mouse.move(box["x"] + box["width"] * 0.2, box["y"] + box["height"] * 0.8)
+            pg.mouse.down()
+            pg.mouse.move(box["x"] + box["width"] * 0.8, box["y"] + box["height"] * 0.7, steps=12)
+            pg.mouse.up()
+            expect(pg.get_by_text("1 stroke so far")).to_be_visible()
+            expect(pg.get_by_test_id("local-mask")).to_be_visible()  # a brush always shows its mask
+            pg.keyboard.press("Backspace")
+            expect(pg.get_by_role("button", name="Brush 2", exact=True)).to_have_count(0)
+            pg.keyboard.press("Escape")
+            print(f"local: radial {mid0:.3f} -> {mid1:.3f} middle, graduated {top1:.3f} -> {top2:.3f} top, "
+                  f"{time.time() - t0:.1f}s")
 
             # ---- date a range of slides
             pg.keyboard.press("Control+k")

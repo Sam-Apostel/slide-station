@@ -9,6 +9,7 @@ locally in your browser, keyboard-first, built for working through thousands of 
 - Restores faded film, and **learns your corrections** to pre-set the next slides
 - Optionally recognises people across all your trays: name someone once, Immich gets it as a tag
 - Straightens slides that sit crooked in their mount, and takes out dust and scratches
+- Local adjustments: graduated filters, radials and a brush to dodge and burn one part of a slide
 - Uploads to a per-tray Immich album (works with Immich v1.118 → v3)
 - Deletes scans from the card only after they are verified and uploaded
 
@@ -133,6 +134,17 @@ can be re-rendered from the originals at any time).
    **Straighten to mount** (the frame button next to it also crops to the inside of the mount).
    **Dust** in Adjust → Restore takes out specks and thin scratches (off by default; turn it up
    until they're gone — it leaves texture and fine detail alone).
+
+   **Local adjustments** (the Local section, or **A** for the tool on the photo) fix one part of a
+   slide: a **graduated** filter burns a blown sky back in from the edge you drag from, a
+   **radial** dodges a dark foreground inside an ellipse (or, inverted, darkens around it like a
+   vignette), and a **brush** paints where it applies (Erase takes paint away). Each has its own
+   exposure, contrast, warmth, tint and saturation. Drag the handles on the photo: a graduated
+   filter's start (full effect), middle and end (none) lines; a radial's centre and its two radii,
+   which also turn it. **O** shows the mask in red, **⌫** deletes the selected one, **Esc** closes
+   the tool; **⌘Z** undoes. They stay on the picture when you crop, straighten or turn the slide,
+   and like the crop they belong to that slide: **C** (copy previous), Apply to rest, presets and
+   Develop like… never copy them.
 4. **Upload to Immich**. Editing a slide after uploading marks it "edited"; the next upload
    replaces the old copy in Immich (the old one goes to the Immich trash, its albums and favourite
    carry over). A new date or caption alone is changed in Immich in place, nothing re-uploaded.

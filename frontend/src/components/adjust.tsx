@@ -11,22 +11,24 @@ import { cn } from "@/lib/utils";
 
 // ------------------------------------------------------------------ what each control looks like
 
-type Spec = {
-  key: ParamKey;
+export type Spec = {
+  key: string;
   label: string;
   min: number;
   max: number;
   /** Painted rail: what moving that way does to the photo. */
   track: string;
   hint: [string, string];
+  /** Accessible name, when the label alone would repeat another control's. */
+  aria?: string;
 };
 
-const WARM = "#f0a53a";
-const COOL = "#4d8fe6";
-const GREEN = "#4dbb72";
-const MAGENTA = "#d25ad2";
+export const WARM = "#f0a53a";
+export const COOL = "#4d8fe6";
+export const GREEN = "#4dbb72";
+export const MAGENTA = "#d25ad2";
 
-const SPECS: Record<"strength" | "dust" | "brightness" | "contrast" | "saturation", Spec> = {
+export const SPECS: Record<"strength" | "dust" | "brightness" | "contrast" | "saturation", Spec> = {
   strength: {
     key: "strength",
     label: "Auto restore",
@@ -153,7 +155,7 @@ function ValueField({
  * show a centre notch and a bar from the centre out to the value, so what's been changed (and by
  * how much) reads at a glance. Double-click resets.
  */
-function AdjustSlider({
+export function AdjustSlider({
   spec,
   value,
   resetValue,
@@ -175,7 +177,7 @@ function AdjustSlider({
         <span className="ss-adj-label">{spec.label}</span>
         {changed && <span aria-hidden className="size-[5px] rounded-full bg-primary" />}
         <ValueField
-          label={spec.label}
+          label={spec.aria ?? spec.label}
           value={value}
           min={spec.min}
           max={spec.max}
@@ -197,7 +199,7 @@ function AdjustSlider({
         <div aria-hidden className="ss-adj-thumb" style={{ left: `${at}%` }} />
         <input
           type="range"
-          aria-label={spec.label}
+          aria-label={spec.aria ?? spec.label}
           aria-valuetext={`${fmt(value, bipolar)} (${value < resetValue ? spec.hint[0] : spec.hint[1]})`}
           min={spec.min}
           max={spec.max}

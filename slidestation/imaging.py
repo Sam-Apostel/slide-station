@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import io
+import json
+import math
 import threading
 import warnings
 from dataclasses import asdict, dataclass, field
@@ -246,6 +248,8 @@ class Params:
     angle: float = 0.0  # straighten, degrees clockwise (-15..15), zoomed in so no corners show
     crop: list | None = None  # [left, top, right, bottom] in 0..1 of the straightened frame
     dust: float = 0.0  # dust & scratch repair 0..1 (0 = off)
+    # local adjustments (graduated / radial / brush masks with their own sliders), see clean_local
+    local: list = field(default_factory=list)
 
     @classmethod
     def from_dict(cls, d: dict | None) -> "Params":
@@ -257,6 +261,8 @@ class Params:
                 p.crop = clean_crop(v)
             elif k == "dust":
                 p.dust = min(1.0, max(0.0, float(v)))
+            elif k == "local":
+                p.local = clean_local(v)
             elif hasattr(p, k):
                 setattr(p, k, type(getattr(p, k))(v))
         return p
@@ -634,12 +640,18 @@ def straighten(a: np.ndarray, angle: float) -> np.ndarray:
     return cv2.warpAffine(a, m, (w, h), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REFLECT)
 
 
+def crop_box(h: int, w: int, crop: list) -> tuple[int, int, int, int]:
+    """Rows top..bottom and columns left..right of a straightened h x w frame that `crop` keeps."""
+    l, t, r, b = crop
+    top, left = int(t * h), int(l * w)
+    return top, max(top + 1, int(b * h)), left, max(left + 1, int(r * w))
+
+
 def geometry(a: np.ndarray, p: Params, crop: bool = True) -> np.ndarray:
     out = straighten(a, p.angle)
     if crop and p.crop:
-        h, w = out.shape[:2]
-        l, t, r, b = p.crop
-        out = out[int(t * h) : max(int(t * h) + 1, int(b * h)), int(l * w) : max(int(l * w) + 1, int(r * w))]
+        t, b, l, r = crop_box(*out.shape[:2], p.crop)
+        out = out[t:b, l:r]
     return out
 
 
@@ -726,7 +738,10 @@ def before_view(a: np.ndarray, p: Params, crop: bool = True) -> np.ndarray:
 
 def develop(a: np.ndarray, p: Params, crop: bool = True) -> np.ndarray:
     """crop=False: everything but the crop, for the crop tool to draw its frame over."""
-    out = apply_curves(tone_base(a, p, crop), p.curves)
+    base = tone_base(a, p, crop=False)
+    h, w = base.shape[:2]  # the picture's frame, which local masks are drawn in (straighten keeps the size)
+    t, b, l, r = crop_box(h, w, p.crop) if crop and p.crop else (0, h, 0, w)
+    out = apply_curves(base[t:b, l:r], p.curves)
     eps = 1e-5
     if p.warmth or p.tint:
         gam = np.array([1 - 0.25 * p.warmth, 1 + 0.25 * p.tint, 1 + 0.25 * p.warmth], np.float32)
@@ -742,4 +757,241 @@ def develop(a: np.ndarray, p: Params, crop: bool = True) -> np.ndarray:
             out = out + (0.5 - out) * (-c) * 0.5
     lum = (out * np.array([0.299, 0.587, 0.114], np.float32)).sum(2, keepdims=True)
     out = lum + (out - lum) * (1.1 + p.saturation)
-    return np.clip(out, 0, 1).astype(np.float32)
+    out = np.clip(out, 0, 1).astype(np.float32)
+    if p.local:
+        apply_local(out, p.local, (w, h), (l, t), p.angle)
+    return out
+
+
+# --------------------------------------------------------------------------- local adjustments
+
+LOCAL_KINDS = ("graduated", "radial", "brush")
+LOCAL_SLIDERS = ("exposure", "contrast", "warmth", "tint", "saturation")
+LOCAL_MAX = 16  # adjustments per slide
+BRUSH_STROKES = 64  # strokes per brush
+BRUSH_POINTS = 400  # points per stroke
+MASK_EDGE = 1024  # masks are drawn on a grid this many cells along the picture's longer edge
+EXPOSURE_STOPS = 1.5  # what a local exposure of ±1 does (see local_look)
+
+
+def _num(v, lo: float, hi: float, default: float = 0.0) -> float:
+    try:
+        x = float(v)
+    except (TypeError, ValueError):
+        return default
+    if not math.isfinite(x):
+        return default
+    return round(min(hi, max(lo, x)), 4) + 0.0  # + 0.0: never "-0.0" in the render key
+
+
+def _point(v) -> list | None:
+    """A point in 0..1 of the picture; a little outside is fine (a gradient that starts off it)."""
+    try:
+        x, y = v
+    except (TypeError, ValueError):
+        return None
+    return [_num(x, -1, 2, 0.5), _num(y, -1, 2, 0.5)]
+
+
+def clean_local(v) -> list:
+    """Validate local adjustments from the UI.
+
+    Each is {"kind", "exposure", "contrast", "warmth", "tint", "saturation"} (-1..1) plus its mask:
+    graduated {"start", "end"} (full effect at start, none from end on); radial {"center", "rx",
+    "ry", "angle", "feather", "invert"}; brush {"strokes": [{"points", "radius", "hardness", "flow",
+    "erase"}]}. Points are 0..1 of the picture — the trimmed, turned scan before straightening — so
+    a mask stays on what it covers when the crop or the straighten angle changes. Lengths (rx, ry,
+    radius) are fractions of the picture's longer edge, so a circle stays round."""
+    out: list = []
+    if not isinstance(v, (list, tuple)):
+        return out
+    for a in v[:LOCAL_MAX]:
+        if not isinstance(a, dict) or a.get("kind") not in LOCAL_KINDS:
+            continue
+        c = {"kind": a["kind"], **{k: _num(a.get(k, 0.0), -1, 1) for k in LOCAL_SLIDERS}}
+        if a["kind"] == "graduated":
+            c["start"] = _point(a.get("start")) or [0.5, 0.15]
+            c["end"] = _point(a.get("end")) or [0.5, 0.55]
+        elif a["kind"] == "radial":
+            c["center"] = _point(a.get("center")) or [0.5, 0.5]
+            c["rx"] = _num(a.get("rx", 0.25), 0.005, 2, 0.25)
+            c["ry"] = _num(a.get("ry", 0.25), 0.005, 2, 0.25)
+            c["angle"] = _num(a.get("angle", 0.0), -180, 180)
+            c["feather"] = _num(a.get("feather", 0.5), 0, 1, 0.5)
+            c["invert"] = bool(a.get("invert", False))
+        else:
+            strokes = []
+            for s in a.get("strokes") or []:
+                if len(strokes) >= BRUSH_STROKES:
+                    break
+                if not isinstance(s, dict) or not isinstance(s.get("points"), (list, tuple)):
+                    continue
+                pts = [q for q in (_point(p) for p in s["points"][:BRUSH_POINTS]) if q]
+                if pts:
+                    strokes.append({"points": pts, "radius": _num(s.get("radius", 0.05), 0.002, 0.5, 0.05),
+                                    "hardness": _num(s.get("hardness", 0.5), 0, 1, 0.5),
+                                    "flow": _num(s.get("flow", 1.0), 0, 1, 1.0), "erase": bool(s.get("erase", False))})
+            c["strokes"] = strokes
+        out.append(c)
+    return out
+
+
+def turn_local(local: list, rot: int) -> list:
+    """Local adjustments of a slide turned clockwise by `rot` more degrees, so they stay on the
+    picture (a point (x, y) goes to (1 - y, x) per quarter turn, like rotate_box)."""
+    k = (rot % 360) // 90
+    if not k or not local:
+        return local
+
+    def pt(p):
+        for _ in range(k):
+            p = [round(1 - p[1], 4) + 0.0, p[0]]
+        return p
+
+    out = []
+    for a in json.loads(json.dumps(local)):
+        if a["kind"] == "graduated":
+            a["start"], a["end"] = pt(a["start"]), pt(a["end"])
+        elif a["kind"] == "radial":
+            a["center"] = pt(a["center"])
+            a["angle"] = round((a["angle"] + 90 * k + 180) % 360 - 180, 4) + 0.0
+        else:
+            for s in a["strokes"]:
+                s["points"] = [pt(p) for p in s["points"]]
+        out.append(a)
+    return out
+
+
+def _smooth(t):
+    return t * t * (3 - 2 * t)
+
+
+def local_mask(adj: dict, w: int, h: int) -> np.ndarray:
+    """An adjustment's mask (0..1, float32) for a w x h picture, on the mask grid: MASK_EDGE cells
+    along the longer edge whatever the resolution, so a preview and the full-resolution export get
+    the same mask. Cell (i, j) is centred on picture point ((i + 0.5) / kx, (j + 0.5) / ky)."""
+    s = max(w, h)
+    kx, ky = MASK_EDGE * w / s, MASK_EDGE * h / s  # 0..1 of the picture -> cells
+    gw, gh = math.ceil(kx), math.ceil(ky)
+
+    def cell(p):
+        return p[0] * kx - 0.5, p[1] * ky - 0.5
+
+    if adj["kind"] == "brush":
+        m = np.zeros((gh, gw), np.float64)
+        for st in adj["strokes"]:
+            rad = st["radius"] * MASK_EDGE
+            pts = [cell(p) for p in st["points"]]
+            segs = list(zip(pts, pts[1:])) or [(pts[0], pts[0])]
+            xs, ys = [p[0] for p in pts], [p[1] for p in pts]
+            x0, x1 = max(0, math.floor(min(xs) - rad)), min(gw, math.ceil(max(xs) + rad) + 1)
+            y0, y1 = max(0, math.floor(min(ys) - rad)), min(gh, math.ceil(max(ys) + rad) + 1)
+            if x0 >= x1 or y0 >= y1:
+                continue
+            d2 = np.full((y1 - y0, x1 - x0), np.inf)
+            for (ax, ay), (bx, by) in segs:  # each segment only near itself
+                sx0, sx1 = max(x0, math.floor(min(ax, bx) - rad)), min(x1, math.ceil(max(ax, bx) + rad) + 1)
+                sy0, sy1 = max(y0, math.floor(min(ay, by) - rad)), min(y1, math.ceil(max(ay, by) + rad) + 1)
+                if sx0 >= sx1 or sy0 >= sy1:
+                    continue
+                gy, gx = np.mgrid[sy0:sy1, sx0:sx1].astype(np.float64)
+                vx, vy = bx - ax, by - ay
+                ll = vx * vx + vy * vy
+                t = np.clip(((gx - ax) * vx + (gy - ay) * vy) / ll, 0, 1) if ll > 0 else 0.0
+                dx, dy = gx - (ax + t * vx), gy - (ay + t * vy)
+                sub = d2[sy0 - y0 : sy1 - y0, sx0 - x0 : sx1 - x0]
+                np.minimum(sub, dx * dx + dy * dy, out=sub)
+            hard = st["hardness"]
+            u = np.sqrt(d2) / rad
+            c = st["flow"] * (1 - _smooth(np.clip((u - hard) / max(1 - hard, 1e-3), 0, 1)))
+            win = m[y0:y1, x0:x1]
+            win[...] = win * (1 - c) if st["erase"] else win + c * (1 - win)
+        return m.astype(np.float32)
+    gy, gx = np.mgrid[0:gh, 0:gw].astype(np.float64)
+    if adj["kind"] == "graduated":
+        (ax, ay), (bx, by) = cell(adj["start"]), cell(adj["end"])
+        vx, vy = bx - ax, by - ay
+        t = ((gx - ax) * vx + (gy - ay) * vy) / max(vx * vx + vy * vy, 1e-9)
+        m = 1 - _smooth(np.clip(t, 0, 1))
+    else:  # radial
+        cx, cy = cell(adj["center"])
+        th = math.radians(adj["angle"])  # clockwise on screen
+        cs, sn = math.cos(th), math.sin(th)
+        qx = ((gx - cx) * cs + (gy - cy) * sn) / (adj["rx"] * MASK_EDGE)
+        qy = (-(gx - cx) * sn + (gy - cy) * cs) / (adj["ry"] * MASK_EDGE)
+        m = _smooth(np.clip((1 - np.sqrt(qx * qx + qy * qy)) / max(adj["feather"], 1e-3), 0, 1))
+        if adj["invert"]:
+            m = 1 - m
+    return m.astype(np.float32)
+
+
+def local_look(x: np.ndarray, adj: dict) -> np.ndarray:
+    """An adjustment's sliders on developed pixels: white balance, exposure, contrast, saturation
+    (the global develop's formulas, with saturation centred on 1).
+
+    Exposure lifts with a gamma (shadows and midtones come up, white stays white: dodging) and
+    darkens by scaling (whites come down too: burning a pale sky back in, like a grad ND filter)."""
+    eps = 1e-5
+    if adj["warmth"] or adj["tint"]:
+        gam = np.array([1 - 0.25 * adj["warmth"], 1 + 0.25 * adj["tint"], 1 + 0.25 * adj["warmth"]], np.float32)
+        x = np.clip(x, eps, 1) ** gam
+    e = adj["exposure"]
+    if e > 0:
+        x = np.clip(x, eps, 1) ** np.float32(2.0 ** (-EXPOSURE_STOPS * e))
+    elif e < 0:
+        x = x * np.float32(2.0 ** (EXPOSURE_STOPS * e))
+    c = adj["contrast"]
+    if c > 0:
+        x = x + (x * x * (3 - 2 * x) - x) * np.float32(c * 1.5)
+    elif c < 0:
+        x = x + (0.5 - x) * np.float32(-c * 0.5)
+    if adj["saturation"]:
+        lum = (x * np.array([0.299, 0.587, 0.114], np.float32)).sum(-1, keepdims=True)
+        x = lum + (x - lum) * np.float32(1 + adj["saturation"])
+    return np.clip(x, 0, 1)
+
+
+LOCAL_BAND = 256  # rows at a time, so a full-resolution export makes no full-size temporaries
+
+
+def apply_local(out: np.ndarray, local: list, frame: tuple[int, int], at: tuple[int, int], angle: float) -> None:
+    """Local adjustments, in place, after the global develop: they act on the photo as you see it,
+    and the histogram, curve fit and eyedropper (which read the image before) don't move.
+
+    `out` is the developed (cropped) image; `frame` = (w, h) the straightened frame it was cut from
+    at `at` = (left, top); `angle` the straighten angle. Each output pixel is traced back through
+    the straighten (as straighten() samples) to the picture, where the masks live, and each mask
+    is sampled bilinearly from its grid. Adjustments apply in order, each blended by its mask over
+    the result of the ones before."""
+    w, h = frame
+    k = MASK_EDGE / max(w, h)  # picture pixels -> cells
+    masks = [local_mask(adj, w, h) for adj in local]
+    rows, cols = out.shape[:2]
+    turned = abs(angle) >= 0.01  # straighten() leaves tiny angles alone
+    if turned:
+        th = math.radians(abs(angle))
+        scale = math.cos(th) + math.sin(th) * max(w, h) / min(w, h)
+        cs, sn = math.cos(math.radians(angle)) / scale, math.sin(math.radians(angle)) / scale
+    for y0 in range(0, rows, LOCAL_BAND):
+        y1 = min(rows, y0 + LOCAL_BAND)
+        py, px = np.mgrid[y0 + at[1] : y1 + at[1], at[0] : at[0] + cols].astype(np.float64)
+        if turned:
+            dx, dy = px - w / 2, py - h / 2
+            px, py = w / 2 + cs * dx + sn * dy, h / 2 - sn * dx + cs * dy
+        gx, gy = (px + 0.5) * k - 0.5, (py + 0.5) * k - 0.5
+        ix, iy = np.floor(gx), np.floor(gy)
+        fx, fy = (gx - ix).astype(np.float32), (gy - iy).astype(np.float32)
+        gh, gw = masks[0].shape  # every mask of this picture has the same grid
+        xa, xb = np.clip(ix, 0, gw - 1).astype(np.intp), np.clip(ix + 1, 0, gw - 1).astype(np.intp)
+        ya, yb = np.clip(iy, 0, gh - 1).astype(np.intp) * gw, np.clip(iy + 1, 0, gh - 1).astype(np.intp) * gw
+        corners = ya + xa, ya + xb, yb + xa, yb + xb
+        band = out[y0:y1]
+        for adj, g in zip(local, masks):
+            g00, g01, g10, g11 = (g.ravel().take(c) for c in corners)
+            m = (g00 * (1 - fx) + g01 * fx) * (1 - fy) + (g10 * (1 - fx) + g11 * fx) * fy
+            hit = m > 0
+            if hit.all():
+                band += (local_look(band, adj) - band) * m[..., None]
+            elif hit.any():  # only where the mask reaches: a small radial or brush costs little
+                sel = band[hit]
+                band[hit] = sel + (local_look(sel, adj) - sel) * m[hit][:, None]

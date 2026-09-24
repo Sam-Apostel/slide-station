@@ -192,6 +192,11 @@ extension Slide {
         if p.angle != 0 { parts.append(String(format: "a%.3f", p.angle)) }
         if let c = p.crop { parts.append("c\(c)") }
         if p.dust != 0 { parts.append(String(format: "d%.3f", p.dust)) }   // only when on: older keys stay
+        if !p.local.isEmpty {   // likewise only when there are some
+            let enc = JSONEncoder()
+            enc.outputFormatting = .sortedKeys
+            parts.append("l" + String(decoding: (try? enc.encode(p.local)) ?? Data(), as: UTF8.self))
+        }
         return shortHash(parts.joined(separator: "|"))
     }
 }
