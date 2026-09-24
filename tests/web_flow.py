@@ -143,6 +143,7 @@ def main() -> None:
             pg = ctx.new_page()
             pg.on("console", lambda m: m.type == "error" and errors.append(m.text))
             pg.on("pageerror", lambda e: errors.append(str(e)))
+            pg.goto(f"http://127.0.0.1:{port}/card/")  # history to go back to (see the crop keys)
             pg.goto(f"http://127.0.0.1:{port}/index.html")
             if not NO_FS:
                 pg.evaluate(FILL_CARD, names)
@@ -180,7 +181,13 @@ def main() -> None:
             pg.keyboard.press("k")
             expect(pg.locator(".ss-crop")).to_be_visible()
             pg.keyboard.press("ArrowRight")  # nudge the crop frame
-            pg.keyboard.press("Alt+ArrowLeft")  # and shrink it
+            # and shrink it - not the browser's Back. Playwright's keys never reach the browser's
+            # own shortcuts, so this only guards the page side; with real keys (XTEST under Xvfb,
+            # headed Chromium) Alt+Left goes back outside the crop tool and stays inside it.
+            pg.keyboard.press("Alt+ArrowLeft")
+            pg.wait_for_timeout(300)
+            assert pg.url.endswith("/index.html"), pg.url
+            expect(pg.locator(".ss-crop")).to_be_visible()
             pg.keyboard.press("Enter")
             expect(pg.locator(".ss-crop")).to_have_count(0)
             pg.keyboard.press("Control+z")
