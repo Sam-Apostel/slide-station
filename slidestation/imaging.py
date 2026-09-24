@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import io
+import threading
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
@@ -117,6 +118,7 @@ def weak_scans(q: list[dict]) -> dict[int, str]:
 
 _MODEL = str(Path(__file__).parent / "models" / "face_detection_yunet_2023mar.onnx")
 _detector = None
+_detector_lock = threading.Lock()  # one network, used by imports and the background helper
 
 
 def rotate_arr(a: np.ndarray, rot: int) -> np.ndarray:
@@ -125,20 +127,42 @@ def rotate_arr(a: np.ndarray, rot: int) -> np.ndarray:
     return np.ascontiguousarray(np.rot90(a, k))
 
 
+def _faces_in(bgr: np.ndarray) -> np.ndarray:
+    """YuNet on a uint8 BGR image: rows of (x, y, w, h, 5 landmarks x/y, score)."""
+    global _detector
+    with _detector_lock:
+        if _detector is None:
+            _detector = cv2.FaceDetectorYN.create(_MODEL, "", (320, 320), 0.6, 0.3, 5000)
+        _detector.setInputSize((bgr.shape[1], bgr.shape[0]))
+        _, faces = _detector.detect(bgr)
+    return np.zeros((0, 15), np.float32) if faces is None else faces
+
+
+def _face_frame(rgb: np.ndarray) -> np.ndarray:
+    """What the detector looks at: the picture 800 px wide, uint8 BGR."""
+    small = cv2.resize(rgb, (800, int(800 * rgb.shape[0] / rgb.shape[1])), interpolation=cv2.INTER_AREA)
+    return cv2.cvtColor((small * 255).astype(np.uint8), cv2.COLOR_RGB2BGR)
+
+
 def face_votes(rgb: np.ndarray) -> dict[int, float]:
     """Sum of confident face scores found at each candidate rotation."""
-    global _detector
-    if _detector is None:
-        _detector = cv2.FaceDetectorYN.create(_MODEL, "", (320, 320), 0.6, 0.3, 5000)
-    small = cv2.resize(rgb, (800, int(800 * rgb.shape[0] / rgb.shape[1])), interpolation=cv2.INTER_AREA)
-    bgr = cv2.cvtColor((small * 255).astype(np.uint8), cv2.COLOR_RGB2BGR)
+    bgr = _face_frame(rgb)
     votes = {}
     for r in (0, 90, 180, 270):
-        x = rotate_arr(bgr, r)
-        _detector.setInputSize((x.shape[1], x.shape[0]))
-        _, faces = _detector.detect(x)
-        votes[r] = 0.0 if faces is None else float(sum(f[14] for f in faces if f[14] >= 0.7))
+        faces = _faces_in(rotate_arr(bgr, r))
+        votes[r] = float(sum(f[14] for f in faces if f[14] >= 0.7))
     return votes
+
+
+def detect_faces(rgb: np.ndarray) -> np.ndarray:
+    """Faces in a picture as it stands (upright), found like face_votes does, in the picture's own
+    pixel coordinates: rows of (x, y, w, h, right eye, left eye, nose, mouth corners, score)."""
+    bgr = _face_frame(rgb)
+    faces = _faces_in(bgr).copy()
+    sx, sy = rgb.shape[1] / bgr.shape[1], rgb.shape[0] / bgr.shape[0]
+    faces[:, 0:14:2] *= sx
+    faces[:, 1:14:2] *= sy
+    return faces
 
 
 def sky_votes(rgb: np.ndarray) -> dict[int, float]:

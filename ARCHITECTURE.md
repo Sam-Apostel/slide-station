@@ -37,6 +37,7 @@ slidestation/
   workflow.py             import, preview/export rendering, upload, card cleanup, job runner
   imaging.py              signatures/grouping, rotation guessing, HDR fusion, colour pipeline
   learning.py             learns colour settings from approved slides (§5)
+  people.py               faces -> people: SFace embeddings, clustering, names (§5a)
   store.py                config + session persistence (JSON on disk)
   immich.py               minimal Immich client (v1/v2/v3 compatible)
   models/                 YuNet face detector (MIT, from opencv_zoo)
@@ -49,8 +50,8 @@ tests/                    API tests (pytest), synthetic scans, mock Immich, Play
 
 State lives outside the repo: `~/.slidestation/config.json` (settings, incl. the Immich API key,
 chmod 600) and the library folder (default `~/Pictures/Slide Station`), which holds
-`sessions/<id>/{session.json,originals,cache,export}`, `imported.json` (dedupe index) and
-`learning.json`.
+`sessions/<id>/{session.json,faces.json,originals,cache,export}`, `imported.json` (dedupe index),
+`learning.json`, `people.json` and `models/` (downloaded models, §5a).
 
 ## 3. Architecture notes that matter
 
@@ -326,10 +327,45 @@ standalone/
 - **Card cleanup** keeps the safety rules: only folders picked or dropped as a directory with
   `DCIM` at the root are removable (their handle is remembered in IndexedDB), write access is asked
   for at cleanup time, and each file is re-hashed before it is deleted.
-- **Not ported:** YuNet faces (the sky rule runs), scanner detection and eject, the background
+- **Not ported:** people (faces → names, §5a), scanner detection and eject, the background
   renderer, reveal in Finder. Full resolution decodes and encodes through one canvas, so Safari on
   iPad / iPhone tops out around 16 MP (ROADMAP §0).
 - Config (Immich URL and key, keep originals, learning) is in `localStorage` of that browser only.
+
+### Rotation from faces in the browser (`standalone/yunet.ts`)
+
+The worker runs the repo's own YuNet file (`slidestation/models/face_detection_yunet_2023mar.onnx`)
+with onnxruntime-web (wasm backend, one thread), and `yunet.ts` reproduces what
+`cv2.FaceDetectorYN` does around the network, so the browser votes like `imaging.face_votes`:
+
+- **Frame:** the proxy area-resized to 800 px wide (`pixels.resized`, OpenCV's INTER_AREA), `* 255`
+  in float32 then truncated to uint8 (numpy's `astype`), BGR, turned 0/90/180/270, zero-padded
+  right/bottom to a multiple of 32, planar float 0..255 (blobFromImage without scaling or mean).
+- **Decode** per stride 8/16/32 over `cols = padW / s`, `rows = padH / s` anchors: score =
+  `sqrt(clamp(cls) * clamp(obj))`, kept from 0.6; box centre `(c + dx) * s`, size `exp(dw) * s`;
+  landmarks `(kps + c) * s`. **NMS** is `cv::dnn::NMSBoxes` on the boxes truncated to integers
+  (Rect2i): candidates *above* 0.6, best first (stable), IoU ≤ 0.3 kept, top 5000; a single face
+  skips NMS. Votes sum the scores ≥ 0.7 in float32. `suggestRotation(images, faceVotes)` then
+  applies Python's rule; face votes are computed first because inference is asynchronous.
+- **Free input size.** The ONNX file declares a fixed 1×3×640×640 input; OpenCV ignores that,
+  onnxruntime refuses anything else. The graph itself reshapes with -1, so `freeInputSize` rewrites
+  the protobuf before loading (input height/width become named dimensions, the declared output and
+  intermediate shapes are dropped); the weights are untouched.
+- **Loading.** The model and ORT's `ort-wasm-simd-threaded.wasm` (14 MB, 3.7 MB gzipped) are `?url`
+  imports in `engine.worker.ts`, so only the web build emits them into `dist-web/assets` (the regular
+  build aliases `@/standalone/*` away, and never contains them); ORT's JS is a dynamic import. All
+  three load on the first rotation guess of an import. If anything fails the worker logs a warning
+  and the sky rule guesses alone. `vite.config.ts` lets the web dev server read
+  `slidestation/models`.
+- **Tests / parity.** `yunet.test.ts` checks decoding, NMS, the padded input for each turn and the
+  vote on made-up network outputs, plus the protobuf rewrite on the real file. Parity was checked by
+  hand on 27 WIDER FACE validation photos (Hugging Face dataset viewer, kept out of the repo), each
+  turned 0/90/180/270: (1) `yunet.ts` + onnxruntime-web in Node on the same decoded proxies as
+  Python: 108/108 identical guesses, per-rotation votes within 0.004 of `face_votes` (OpenCV's own
+  decode reimplemented in Python on onnxruntime matched `FaceDetectorYN` to 1e-6 first, confirming
+  the decode and NMS reading); (2) the built web app in headless Chromium importing 80 of those
+  turned photos: 79/80 identical guesses, the one difference a borderline case (the winning vote
+  missed Python's `2 × second + 0.3` margin by 0.02) where the browser's JPEG decode tipped it.
 
 ## 5. Learning from past edits (new, working, untested in the wild)
 
@@ -373,6 +409,60 @@ once real edits exist.
 Worth doing next: surface it in the UI (a "learned from N slides" badge on the inspector plus an
 undo), and consider learning rotation corrections per film type once enough examples exist.
 
+## 5a. People: faces → names (`people.py`)
+
+Opt-in (`people_enabled`, Settings → "Recognise people"), desktop / server app only.
+
+- **Faces per slide.** `imaging.detect_faces` runs YuNet exactly like `face_votes` (800 px frame)
+  on the slide's blended proxy turned upright, scaled back to the proxy's pixels. Faces scoring
+  ≥ 0.7 and at least 3 % of the width get an SFace feature (`cv2.FaceRecognizerSF`: `alignCrop` on
+  YuNet's five landmarks, 128-d, stored unit length as base64 float16) — `people.embed_faces`, the
+  one function tests replace. The model (`face_recognition_sface_2021dec.onnx`, Apache 2.0, 39 MB)
+  is downloaded on first use from OpenCV's Hugging Face mirror into `<library>/models/`, checked
+  against its SHA-256, never committed.
+- **Where they live:** `sessions/<id>/faces.json` = `{gid: {"key", "rot", "faces": [{"id", "box",
+  "score", "emb"}]}}`, next to `session.json` but never in it, so finding faces never writes a
+  session (§3). `people.update_faces` is the reload-apply-save for it. `key` = `face_key(g)` (active
+  scans + rotation): a slide turned or re-stacked is stale and is looked at again. Face ids are
+  `sid/gid/n`; a face found again (cosine ≥ 0.8, e.g. after turning) keeps its id, so names and
+  removals stay with it. Faces of slides that no longer exist (merged) are dropped by
+  `workflow.faces_pending`.
+- **When:** during import, right after each slide is committed (if the model is there); the
+  background helper catches up on the open tray when it has nothing to render (turned slides, trays
+  from before); "Find faces" (`POST /api/people/scan`, job `faces`) downloads the model if needed
+  and does every tray. Turning the feature on in Settings starts that job.
+- **Clustering** (`people.agglomerate`, `people.refresh` on every `GET /api/people`): average
+  linkage on cosine similarity with SFace's recommended threshold 0.363 (for unit vectors the average
+  pairwise similarity of two groups is `sum_a · sum_b / (n_a n_b)`, so groups are just running
+  sums). Existing people keep their faces and never merge with each other automatically (that's the
+  user's call); new faces join them or form new people. `people.json` = `{"people": {pid: {"name",
+  "faces"}}, "rejected": {face: [pids]}, "next"}`. Unnamed people left without faces disappear; named
+  ones stay.
+- **Editing** (People dialog, `components/people.tsx`): `PATCH /api/people/{pid}` names (a name
+  another person already has merges the two), `POST …/{pid}/merge {"people": [...]}`,
+  `POST …/{pid}/remove {"faces": [...]}` takes faces out and remembers they're not that person (the
+  clustering never puts them back there; they join someone else or stand alone).
+  `GET /api/people/faces/{sid}/{gid}/{n}.jpg?v=<key>` cuts the face from the proxy.
+- **Immich:** it has no API to attach faces or people to an uploaded asset that works across
+  versions, so names go as **tags** `People/<name>` (`/` in a name becomes `-`):
+  `Immich.tag_assets(values, asset_ids)` upserts the tags (`PUT /api/tags`, hierarchical values,
+  answers the leaf tags) and tags assets (`PUT /api/tags/assets`); a server without the tags API
+  (404/405) is skipped, a key without `tag.create` / `tag.asset` gives a readable error. The upload
+  job tags what it just uploaded (a failure is reported in the job message, the upload still
+  succeeds); "Send names to Immich" (`POST /api/people/tag`, job `tag`) tags every slide already
+  there, e.g. after naming someone. Names are only ever added: removing a face doesn't untag.
+  `tag_assets` is deliberately generic so other tag sources (scene tags) can share it.
+- **Not ported:** the browser version (the People button and setting are hidden when `standalone`;
+  SFace through onnxruntime-web plus clustering in the page is the follow-up) and the native app
+  (Apple's Vision framework is the route there).
+- **Tests:** `tests/test_people.py` — clustering on synthetic vectors (identities, the threshold,
+  fixed people, rejected faces) and the API with `embed_faces` replaced (faces per slide, ids kept
+  after turning, merged slides forgotten, naming / merging / removing, tags on upload incl. a server
+  without tags, the scan job, the model checksum). The real model was run once on 48 LFW photos of
+  six people (Hugging Face, scratch only) imported as a tray: 52 faces, one clean cluster of 6–8
+  faces per person, 6 faces on their own (mostly people in the background) and one two-face cluster
+  mixing two of those.
+
 ## 6. Immich integration facts (hard-won)
 
 - Upload is `POST /api/assets`, multipart, header `x-api-key`.
@@ -384,6 +474,7 @@ undo), and consider learning rotation corrections per film type once enough exam
 - Immich takes the timeline date from EXIF `DateTimeOriginal`, which the exporter writes (tray date
   override, one minute per slide to keep tray order); `fileCreatedAt` is the fallback.
 - API key needs: `asset.upload`, `asset.delete`, `album.read`, `album.create`, `albumAsset.create`.
+  With people on, also `tag.create` and `tag.asset` (names go as tags, §5a).
 
 ## 7. Testing
 
@@ -404,8 +495,9 @@ undo), and consider learning rotation corrections per film type once enough exam
   EXIF), every other slide a bracketed pair. `python tests/synthetic.py <folder> 8` writes a card's
   worth for the browser test. Each tray in the tests gets new bytes *and* new file names: the
   dedupe index also skips by a name + size + mtime fingerprint.
-- `tests/fake_immich.py` — FastAPI mock implementing version/users/albums/assets, with a `/debug`
-  endpoint; set `MOCK_IMMICH_MAJOR=3` to exercise the v3 field rules.
+- `tests/fake_immich.py` — FastAPI mock implementing version/users/albums/assets/tags, with a `/debug`
+  endpoint; set `MOCK_IMMICH_MAJOR=3` to exercise the v3 field rules, `TAGS = False` for a server
+  without the tags API.
 - `tests/ui_flow.py` — Playwright script: import from a fake card, browse, rotate, edit warmth and
   saturation, toggle a scan, hold-B before, Fit the tone curve (F), crop and straighten (K, 1:1,
   Enter), undo / redo (Ctrl/⌘Z), split view (Y), Develop (Space), upload, clean the card; asserts

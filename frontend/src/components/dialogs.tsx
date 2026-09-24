@@ -71,6 +71,7 @@ export function SettingsDialog({
   const [keepOriginals, setKeepOriginals] = React.useState(true);
   const [keepExports, setKeepExports] = React.useState(false);
   const [learning, setLearning] = React.useState(true);
+  const [people, setPeople] = React.useState(false);
   const [learned, setLearned] = React.useState<{ examples: number; min_examples: number } | null>(null);
   const [test, setTest] = React.useState<{ ok?: boolean; message: string } | null>(null);
 
@@ -82,6 +83,7 @@ export function SettingsDialog({
     setKeepOriginals(config.keep_originals);
     setKeepExports(config.keep_exports);
     setLearning(config.learning_enabled ?? true);
+    setPeople(!!config.people_enabled);
     api<{ examples: number; min_examples: number }>("GET", "/api/learning").then(setLearned, () => setLearned(null));
     setTest(null);
     // only when the dialog opens; config is a new object on every poll
@@ -106,8 +108,16 @@ export function SettingsDialog({
         keep_originals: keepOriginals,
         keep_exports: keepExports,
         learning_enabled: learning,
+        ...(standalone ? {} : { people_enabled: people }),
       });
       toast.success("Settings saved");
+      if (people && !config?.people_enabled) {
+        // turned on: fetch the face model and look for faces on the slides already in the library
+        await api("POST", "/api/people/scan").then(
+          () => toast("Looking for faces on your slides — see People when it's done"),
+          (err) => toast.error(err instanceof Error ? err.message : String(err)),
+        );
+      }
       onOpenChange(false);
       onSaved();
     } catch (err) {
@@ -145,6 +155,7 @@ export function SettingsDialog({
               <FieldDescription>
                 Create one in Immich → Account settings → API keys. It needs: asset.upload, asset.delete, album.read,
                 album.create, albumAsset.create — and asset.view to show locked slides as they are in Immich.
+                {!standalone && " To send the names of the people on the slides: tag.create and tag.asset."}
                 {standalone && (
                   <>
                     {" "}
@@ -217,6 +228,17 @@ export function SettingsDialog({
                 )}
               </FieldDescription>
             </Field>
+            {!standalone && (
+              <Field>
+                <CheckRow id="cfg-people" checked={people} onChange={setPeople}>
+                  Recognise people across my slides
+                </CheckRow>
+                <FieldDescription>
+                  Groups the faces on your slides by person, so you can name each person once; Immich gets the names as
+                  tags. Downloads a 39 MB face model once. Everything stays on this computer.
+                </FieldDescription>
+              </Field>
+            )}
           </FieldGroup>
           <DialogFooter>
             <DialogClose asChild>

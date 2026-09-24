@@ -87,3 +87,29 @@ class Immich:
         """Immich's own preview JPEG of an asset (needs the asset.view permission)."""
         r = self._check(self.client.get(f"{self.base}/assets/{asset_id}/thumbnail", params={"size": "preview"}))
         return r.content
+
+    # ------------------------------------------------------------------ tags
+    tags_supported: bool | None = None  # None until tried; False on a server without the tags API
+    NO_TAG_PERMISSION = "The API key can't tag photos (403): give it tag.create and tag.asset to send names."
+
+    def tag_assets(self, names: list[str], asset_ids: list[str]) -> int:
+        """Tag assets with each of `names`, full tag values ("People/Ann" is Ann under People), creating
+        the tags that don't exist yet. Returns how many assets were tagged. A server without the tags
+        API is skipped (0), not an error; a key without the tag permissions is (ImmichError)."""
+        if not names or not asset_ids or self.tags_supported is False:
+            return 0
+        r = self.client.put(self.base + "/tags", json={"tags": names})  # upsert, answers the leaf tags
+        if r.status_code in (404, 405):
+            self.tags_supported = False
+            return 0
+        if r.status_code == 403:
+            raise ImmichError(self.NO_TAG_PERMISSION)
+        self.tags_supported = True
+        tags = self._check(r).json()
+        ids = [t["id"] for t in tags if t.get("value") in names] or [t["id"] for t in tags]
+        for i in range(0, len(asset_ids), 200):
+            r = self.client.put(self.base + "/tags/assets", json={"tagIds": ids, "assetIds": asset_ids[i : i + 200]})
+            if r.status_code == 403:
+                raise ImmichError(self.NO_TAG_PERMISSION)
+            self._check(r)
+        return len(asset_ids)

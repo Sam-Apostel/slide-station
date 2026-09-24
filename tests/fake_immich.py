@@ -12,6 +12,7 @@ from fastapi import FastAPI, Header, HTTPException, Request
 
 MAJOR = int(os.environ.get("MOCK_IMMICH_MAJOR", "3"))
 KEY = os.environ.get("MOCK_IMMICH_KEY", "testkey")
+TAGS = True  # False: a server without the tags API (404)
 app = FastAPI()
 if os.environ.get("MOCK_IMMICH_CORS"):
     # a real Immich only allows other origins in development builds; the browser version's test
@@ -83,6 +84,35 @@ async def upload(req: Request, x_api_key: str = Header(None)):
 async def trash(req: Request, x_api_key: str = Header(None)):
     auth(x_api_key)
     DB["log"].append(("trash", await req.json()))
+
+
+@app.put("/api/tags")
+async def upsert_tags(req: Request, x_api_key: str = Header(None)):
+    """Tags by full value ("People/Ann" creates People and Ann under it); answers the leaf tags."""
+    auth(x_api_key)
+    if not TAGS:
+        raise HTTPException(404, "Cannot PUT /api/tags")
+    tags = DB.setdefault("tags", {})
+    out = []
+    for value in (await req.json())["tags"]:
+        parent = None
+        for i, name in enumerate(value.split("/")):
+            path = "/".join(value.split("/")[: i + 1])
+            if path not in tags:
+                tags[path] = {"id": str(uuid.uuid4()), "name": name, "value": path, "parentId": parent, "assets": []}
+            parent = tags[path]["id"]
+        out.append({k: v for k, v in tags[value].items() if k != "assets"})
+    return out
+
+
+@app.put("/api/tags/assets")
+async def tag_assets(req: Request, x_api_key: str = Header(None)):
+    auth(x_api_key)
+    body = await req.json()
+    by_id = {t["id"]: t for t in DB.setdefault("tags", {}).values()}
+    for tid in body["tagIds"]:
+        by_id[tid]["assets"] = sorted(set(by_id[tid]["assets"]) | set(body["assetIds"]))
+    return {"count": len(body["assetIds"]) * len(body["tagIds"])}
 
 
 @app.get("/debug")

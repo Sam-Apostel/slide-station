@@ -24,6 +24,7 @@ import {
   Sparkles,
   Undo2,
   Upload,
+  Users,
 } from "lucide-react";
 import {
   CommandDialog,
@@ -62,6 +63,7 @@ export function CommandPalette({
   handlers,
   onClean,
   onDateRange,
+  onPeople,
   busy,
 }: {
   open: boolean;
@@ -71,6 +73,8 @@ export function CommandPalette({
   onClean: () => void;
   /** Opens the "date a range of slides" dialog. */
   onDateRange: () => void;
+  /** Opens the People dialog (server app, when recognising people is on). */
+  onPeople?: () => void;
   busy: boolean;
 }) {
   const { state, session, sessionId, sel } = app;
@@ -186,6 +190,7 @@ export function CommandPalette({
     [
       "Slide Station",
       [
+        { id: "people", label: "People…", icon: <Users />, hidden: !onPeople, run: () => onPeople?.() },
         { id: "settings", label: "Settings…", icon: <Settings />, keys: `${mod},`, run: handlers.settings },
         { id: "help", label: "Keyboard shortcuts", icon: <Keyboard />, keys: "?", run: handlers.help },
       ],

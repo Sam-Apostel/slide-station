@@ -23,6 +23,7 @@ DEFAULT_CONFIG = {
     "keep_originals": True,
     "keep_exports": False,
     "learning_enabled": True,
+    "people_enabled": False,  # faces -> people (opt-in: downloads a face model)
     "jpeg_quality": 95,
 }
 

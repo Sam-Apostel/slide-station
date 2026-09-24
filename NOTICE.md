@@ -29,7 +29,14 @@ included. Not licensed for reuse — get your own ProUI licence.
 ## YuNet face detector — `slidestation/models/face_detection_yunet_2023mar.onnx`
 
 From OpenCV Zoo (<https://github.com/opencv/opencv_zoo>), MIT licence. Used to work out which way
-up a slide is.
+up a slide is, and to find the faces for recognising people. The browser version serves the same
+file and runs it with onnxruntime-web (MIT, `frontend/package.json`).
+
+## SFace face recognition model — not in the repository
+
+`face_recognition_sface_2021dec.onnx` from OpenCV Zoo, Apache 2.0 licence, is downloaded on first
+use (Settings → recognise people) from OpenCV's Hugging Face mirror into the library's `models/`
+folder. It is never bundled.
 
 ## Python and JavaScript dependencies
 

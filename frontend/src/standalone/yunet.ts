@@ -54,7 +54,8 @@ export function inputBlob(frame: { width: number; height: number; bgr: Uint8Arra
   for (let y = 0; y < height; y++)
     for (let x = 0; x < width; x++) {
       // the source pixel of (x, y) in the clockwise-turned frame (pixels.rotated)
-      const [sx, sy] = r === 90 ? [y, h - 1 - x] : r === 180 ? [w - 1 - x, h - 1 - y] : r === 270 ? [w - 1 - y, x] : [x, y];
+      const [sx, sy] =
+        r === 90 ? [y, h - 1 - x] : r === 180 ? [w - 1 - x, h - 1 - y] : r === 270 ? [w - 1 - y, x] : [x, y];
       const si = (sy * w + sx) * 3;
       const di = y * padW + x;
       blob[di] = bgr[si];
@@ -227,7 +228,11 @@ function withShape(info: Uint8Array, shape: (dims: Uint8Array[]) => Uint8Array[]
             ? undefined
             : rewrite(t.body!, (s) => {
                 if (s.no !== 2) return undefined;
-                const dims = shape(fields(s.body!).filter((d) => d.no === 1).map((d) => d.body!));
+                const dims = shape(
+                  fields(s.body!)
+                    .filter((d) => d.no === 1)
+                    .map((d) => d.body!),
+                );
                 return dims && concat(dims.map((d) => lenField(1, d)));
               }),
         ),

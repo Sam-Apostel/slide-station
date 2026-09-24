@@ -1,5 +1,5 @@
 import type * as React from "react";
-import { CircleHelp, FolderInput, HardDriveDownload, Plus, Settings } from "lucide-react";
+import { CircleHelp, FolderInput, HardDriveDownload, Plus, Settings, Users } from "lucide-react";
 import { ProButton } from "@/components/ui/pro-button";
 import { Tip } from "@/components/tip";
 import { desktop, isMac } from "@/lib/desktop";
@@ -27,6 +27,8 @@ type TopBarProps = {
   onChooseFolder?: () => void;
   onHelp: () => void;
   onSettings: () => void;
+  /** The People dialog; only when recognising people is on (not in the browser version). */
+  onPeople?: () => void;
 };
 
 /** Which tray is open, and a new one. */
@@ -145,9 +147,16 @@ export function ActivityWell({
 }
 
 /** Shortcuts and settings, at the right end of whichever bar is on top. */
-export function AppActions({ onHelp, onSettings }: Pick<TopBarProps, "onHelp" | "onSettings">) {
+export function AppActions({ onHelp, onSettings, onPeople }: Pick<TopBarProps, "onHelp" | "onSettings" | "onPeople">) {
   return (
     <>
+      {onPeople && (
+        <Tip label="People">
+          <ProButton onClick={onPeople} aria-label="People">
+            <Users />
+          </ProButton>
+        </Tip>
+      )}
       <Tip label="Keyboard shortcuts" keys="?">
         <ProButton onClick={onHelp} aria-label="Keyboard shortcuts">
           <CircleHelp />

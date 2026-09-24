@@ -16,6 +16,7 @@ import { SlideMenu } from "@/components/slide-menu";
 import { CommandPalette } from "@/components/command-palette";
 import { DateRangeDialog, HelpDialog, NewTrayDialog, SettingsDialog } from "@/components/dialogs";
 import { PanelToggles, WindowTitlebar } from "@/components/window-titlebar";
+import { PeopleDialog } from "@/components/people";
 import { useSlideStation, type SlideStation } from "@/hooks/use-slide-station";
 import { useDesktop, useFolderDrop, type DesktopHandlers } from "@/hooks/use-desktop";
 import { needsReview, plural, standalone, type Source } from "@/lib/api";
@@ -79,6 +80,7 @@ function SlideStationApp() {
   }, [app.sel, sessionId]);
   const [settingsOpen, setSettingsOpen] = React.useState(false);
   const [helpOpen, setHelpOpen] = React.useState(false);
+  const [peopleOpen, setPeopleOpen] = React.useState(false);
   const [paletteOpen, setPaletteOpen] = React.useState(false);
   const [dateRangeOpen, setDateRangeOpen] = React.useState(false);
   const [newTray, setNewTray] = React.useState<{ open: boolean; source?: Source; folder?: string }>({ open: false });
@@ -208,6 +210,9 @@ function SlideStationApp() {
     if (ok) app.startCleanup();
   };
 
+  // faces → people runs in the Python app only (the browser version has no face embeddings yet)
+  const onPeople = !standalone && state?.config.people_enabled ? () => setPeopleOpen(true) : undefined;
+
   const handlers: DesktopHandlers = {
     settings: () => setSettingsOpen(true),
     newTray: () => openNew(),
@@ -271,7 +276,11 @@ function SlideStationApp() {
           right={
             <>
               {toggles}
-              <AppActions onHelp={() => setHelpOpen(true)} onSettings={() => setSettingsOpen(true)} />
+              <AppActions
+                onHelp={() => setHelpOpen(true)}
+                onSettings={() => setSettingsOpen(true)}
+                onPeople={onPeople}
+              />
             </>
           }
         />
@@ -287,6 +296,7 @@ function SlideStationApp() {
           onChooseFolder={() => importFolder()}
           onHelp={() => setHelpOpen(true)}
           onSettings={() => setSettingsOpen(true)}
+          onPeople={onPeople}
         />
       )}
 
@@ -427,6 +437,14 @@ function SlideStationApp() {
         onChooseFolder={standalone ? () => app.addSource("pick") : undefined}
       />
       <HelpDialog open={helpOpen} onOpenChange={setHelpOpen} />
+      {!standalone && (
+        <PeopleDialog
+          open={peopleOpen}
+          onOpenChange={setPeopleOpen}
+          job={state?.job ?? null}
+          onSettings={() => (setPeopleOpen(false), setSettingsOpen(true))}
+        />
+      )}
       <CommandPalette
         open={paletteOpen}
         onOpenChange={setPaletteOpen}
@@ -434,6 +452,7 @@ function SlideStationApp() {
         handlers={handlers}
         onClean={clean}
         onDateRange={() => setDateRangeOpen(true)}
+        onPeople={onPeople}
         busy={busy}
       />
       {session && (

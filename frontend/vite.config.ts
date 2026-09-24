@@ -23,7 +23,11 @@ export default defineConfig(({ mode }) => {
     build: { outDir: web ? "dist-web" : "../slidestation/web", emptyOutDir: true },
     server: web
       ? // the browser version's face detector is the Python app's model file (engine.worker.ts)
-        { fs: { allow: [searchForWorkspaceRoot(process.cwd()), path.resolve(import.meta.dirname, "../slidestation/models")] } }
+        {
+          fs: {
+            allow: [searchForWorkspaceRoot(process.cwd()), path.resolve(import.meta.dirname, "../slidestation/models")],
+          },
+        }
       : { proxy: { "/api": `http://localhost:${process.env.SLIDESTATION_PORT || 8765}` } },
   };
 });
