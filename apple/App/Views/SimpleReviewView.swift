@@ -42,7 +42,7 @@ struct SimpleReviewView: View {
                     Button("Studio") { studio = true }.font(.system(size: 15, weight: .medium)).foregroundStyle(ProTheme.muted)
                 }
             }
-            TrayGauge(statuses: model.statuses, current: model.selection < tray.groups.count ? model.selection : nil)
+            TraySlots(statuses: model.statuses, current: model.selection < tray.groups.count ? model.selection : nil)
         }
         .padding(.horizontal, 16).padding(.bottom, 10)
         .foregroundStyle(ProTheme.ink)

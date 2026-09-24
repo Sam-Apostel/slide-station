@@ -8,7 +8,7 @@ import Foundation
 /// An actor: every change goes through `update(_:_:)`, which reloads, applies and saves — the
 /// Swift form of `workflow.update_session`, so slow work never writes back a stale tray.
 public actor Library {
-    public let root: URL
+    public nonisolated let root: URL
     private var cache: [String: Tray] = [:]
 
     public init(root: URL) throws {

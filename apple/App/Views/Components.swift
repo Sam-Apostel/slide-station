@@ -92,39 +92,3 @@ struct JobBanner: View {
         }
     }
 }
-
-/// A slide mount: the thin frame the web app's filmstrip tiles have.
-struct Mount<Content: View>: View {
-    var selected = false
-    @ViewBuilder var content: Content
-    var body: some View {
-        content
-            .padding(5)
-            .background(Color(proHex: 0xd8d2c4).opacity(selected ? 0.95 : 0.16), in: RoundedRectangle(cornerRadius: 3, style: .continuous))
-            .overlay { RoundedRectangle(cornerRadius: 3, style: .continuous).strokeBorder(selected ? ProTheme.accent : .clear, lineWidth: 2) }
-    }
-}
-
-/// The tray from above: one slot per slide, coloured by status (the web app's `TrayGauge`).
-struct TrayGauge: View {
-    let statuses: [SlideStatus]
-    var current: Int?
-    var body: some View {
-        GeometryReader { geo in
-            let n = max(1, statuses.count)
-            let w = geo.size.width / CGFloat(n)
-            HStack(spacing: 0) {
-                ForEach(Array(statuses.enumerated()), id: \.offset) { i, s in
-                    Rectangle().fill(s.color).frame(width: max(1, w - (w > 3 ? 1 : 0)))
-                        .overlay { if i == current { Rectangle().fill(.white.opacity(0.9)) } }
-                        .frame(width: w)
-                }
-            }
-        }
-        .frame(height: 6)
-        .background(ProTheme.well)
-        .clipShape(RoundedRectangle(cornerRadius: 2))
-        .accessibilityElement()
-        .accessibilityLabel("Tray progress")
-    }
-}

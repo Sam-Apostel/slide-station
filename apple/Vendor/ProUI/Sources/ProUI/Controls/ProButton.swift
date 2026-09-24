@@ -74,3 +74,25 @@ public extension ProButton where Label == Text {
         self.init(size: size, active: active, activeTint: activeTint, backgroundTint: backgroundTint, plain: plain, fullWidth: fullWidth, topHighlightOpacity: topHighlightOpacity, height: height, hoverEffect: hoverEffect, action: action) { Text(title) }
     }
 }
+public struct ProButtonGroup<Content: View>: View {
+    private let content: Content
+    public init(@ViewBuilder content: () -> Content) { self.content = content() }
+    public var body: some View {
+        // Nothing here needs to know whether a sibling is selected any more:
+        // each segment paints itself.
+        _VariadicView.Tree(ProButtonGroupLayout()) { content }
+            .environment(\.proGrouped, true)
+            .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
+            .overlay { RoundedRectangle(cornerRadius: 5, style: .continuous).strokeBorder(.black.opacity(0.2), lineWidth: 0.3) }
+            .shadow(color: .black.opacity(0.06), radius: 1, y: 1)
+    }
+}
+private struct ProButtonGroupLayout: _VariadicView_MultiViewRoot {
+    func body(children: _VariadicView.Children) -> some View {
+        HStack(spacing: 0) {
+            ForEach(Array(children.enumerated()), id: \.element.id) { index, child in
+                child.overlay(alignment: .leading) { if index > 0 { Rectangle().fill(.black.opacity(0.2)).frame(width: 0.6) } }
+            }
+        }
+    }
+}

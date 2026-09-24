@@ -46,55 +46,20 @@ public extension View {
     }
 }
 
-func proModifierScale() -> Double {
-    #if os(macOS)
-    let flags = NSEvent.modifierFlags
-    return flags.contains(.option) ? 0.2 : flags.contains(.shift) ? 5 : 1
-    #else
-    return 1
-    #endif
-}
-
-struct ProRangeKeyboard: ViewModifier {
-    let enabled: Bool
-    let value: Double, min: Double, max: Double, step: Double
-    let update: (Double) -> Void
-    var commit: (() -> Void)?
-    var edit: (() -> Void)?
-    var cancel: (() -> Void)?
-    var interactionStarted: (() -> Void)?
+/// The selected-segment recess shared by scope buttons and inspector tabs.
+///
+/// A shadow falling inside the top edge, a hairline, and a light caught on the
+/// outside of the bottom edge — the segment sits *in* the surface rather than
+/// being outlined on top of it.
+struct ProRecessedFill<S: InsettableShape>: ViewModifier {
+    var active: Bool
+    var shape: S
     func body(content: Content) -> some View {
-        content.focusable(enabled).focusEffectDisabled()
-            .onKeyPress(phases: [.down, .repeat]) { press in
-                guard enabled else { return .ignored }
-                let scale = press.modifiers.contains(.option) ? 0.2 : press.modifiers.contains(.shift) ? 5.0 : 1.0
-                let next: Double
-                switch press.key {
-                case .upArrow, .rightArrow: next = value + step * scale
-                case .downArrow, .leftArrow: next = value - step * scale
-                case .home: next = min
-                case .end: next = max
-                case .return, .space:
-                    guard let edit else { return .ignored }; edit(); return .handled
-                case .escape:
-                    guard let cancel else { return .ignored }; cancel(); return .handled
-                default: return .ignored
-                }
-                interactionStarted?()
-                update(next); commit?(); return .handled
-            }
-    }
-}
-
-struct ProChevron: Shape {
-    var down = true
-    func path(in rect: CGRect) -> Path {
-        var path = Path()
-        let s = rect.width / 11
-        path.move(to: CGPoint(x: s, y: (down ? 0.9 : 2.7) * rect.height / 3.6))
-        path.addLine(to: CGPoint(x: 5.5 * s, y: (down ? 2.5 : 1.1) * rect.height / 3.6))
-        path.addLine(to: CGPoint(x: 10 * s, y: (down ? 0.9 : 2.7) * rect.height / 3.6))
-        return path
+        content
+            .overlay { if active { shape.strokeBorder(.black.opacity(0.28), lineWidth: 2).blur(radius: 1).mask(alignment: .top) { Rectangle().frame(height: 3) } } }
+            .overlay { if active { shape.strokeBorder(.black.opacity(0.25), lineWidth: 0.5) } }
+            .clipShape(shape)
+            .background { if active { shape.fill(.white.opacity(0.08)).offset(y: 0.5) } }
     }
 }
 

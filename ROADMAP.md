@@ -95,9 +95,10 @@ wants them.
 **Status (2026-09-24):** `apple/` has SlideKit (the pipeline, parity-tested against Python on
 synthetic slides), Simple mode end to end (import → keep/skip/turn → Immich, checked in the
 simulator against `tests/fake_immich.py`) and a first Studio mode on the ProUI SwiftUI kit. See
-`apple/README.md`. What's open: the real scanner on a real iPad (phase 1), Metal/half-precision
-fusion for full-resolution memory, and in Studio: curves, crop, undo, learning. The ProUI template
-apps (image editor, video editor, DAW…) had nothing to port beyond the kit itself.
+`apple/README.md`. Studio now matches the web app (curves, crop & straighten, undo, split, learning,
+card cleanup, locked slides). Full-resolution export: 1 s / 1.1 GB for a 20 MP bracket. What's open:
+the real scanner on a real iPad (phase 1) and measuring memory there. The ProUI template apps
+(image editor, video editor, DAW…) had nothing to port beyond the kit itself.
 
 **Phases**
 

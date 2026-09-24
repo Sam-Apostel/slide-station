@@ -93,7 +93,7 @@ struct TrayRow: View {
                     .foregroundStyle(s.uploaded == s.slides - s.skipped && s.slides > 0 ? ProTheme.green : ProTheme.muted)
                 Image(systemName: "chevron.right").font(.system(size: 13, weight: .semibold)).foregroundStyle(ProTheme.dim)
             }
-            TrayGauge(statuses: tray.statuses())
+            TraySlots(statuses: tray.statuses())
         }
         .padding(16)
         .background(ProTheme.canvas, in: RoundedRectangle(cornerRadius: 14, style: .continuous))

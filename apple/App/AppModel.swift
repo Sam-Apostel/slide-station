@@ -42,7 +42,11 @@ final class AppModel {
         library = try! Library(root: root)
         renderer = Renderer(library: library)
         previews = PreviewCache(renderer: renderer)
+        RendererSizes.shared.library = library
+        learning = Learning.Model(url: root.appendingPathComponent("learning.json"))
         immich = ImmichSettings(url: UserDefaults.standard.string(forKey: "immichURL") ?? "", key: Keychain.get("immichKey") ?? "")
+        learningEnabled = UserDefaults.standard.object(forKey: "learningEnabled") as? Bool ?? true
+        keepOriginals = UserDefaults.standard.object(forKey: "keepOriginals") as? Bool ?? true
     }
 
     var slide: Slide? { tray.flatMap { $0.groups.indices.contains(selection) ? $0.groups[selection] : nil } }
@@ -125,7 +129,7 @@ final class AppModel {
     /// Import everything new from the card into a new tray (or `into` an existing one), then open it.
     func importFromCard(name: String, date: String, into existing: String? = nil) {
         guard let url = cardURL() else { error = "The scanner isn't connected. Plug it in and open Files once."; return }
-        let library = library, renderer = renderer
+        let library = library, renderer = renderer, learning = learningEnabled ? learning : nil
         run("Starting import") { progress in
             var trayID = existing ?? ""
             if existing == nil { trayID = try await library.createTray(name: name, date: date).id }
@@ -133,7 +137,7 @@ final class AppModel {
             await MainActor.run { self.pendingOpen = opened }
             let scoped = url.startAccessingSecurityScopedResource()
             defer { if scoped { url.stopAccessingSecurityScopedResource() } }
-            let r = try await Importer(library: library, renderer: renderer).importScans(into: trayID, from: url, progress: progress)
+            let r = try await Importer(library: library, renderer: renderer, learning: learning).importScans(into: trayID, from: url, progress: progress)
             return r.summary
         }
     }
@@ -143,10 +147,10 @@ final class AppModel {
     func upload(onlyReady: Bool) {
         guard let id = tray?.id else { return }
         guard immich.isComplete else { error = "Add your Immich server and API key in Settings first."; return }
-        let library = library, settings = immich
+        let library = library, settings = immich, keep = keepOriginals
         flushEdits()
         run("Connecting to Immich") { progress in
-            let r = try await Uploader(library: library).finish(trayID: id, settings: settings, onlyReady: onlyReady, progress: progress)
+            let r = try await Uploader(library: library).finish(trayID: id, settings: settings, onlyReady: onlyReady, keepOriginals: keep, progress: progress)
             var s = "\(r.uploaded) slides uploaded to “\(r.album)”"
             if r.lost > 0 { s += "; \(r.lost) kept their Immich copy (originals deleted)" }
             return s
@@ -164,18 +168,41 @@ final class AppModel {
         }
     }
 
+    // MARK: settings
+
+    var learningEnabled: Bool {
+        didSet { UserDefaults.standard.set(learningEnabled, forKey: "learningEnabled") }
+    }
+    var keepOriginals: Bool {
+        didSet { UserDefaults.standard.set(keepOriginals, forKey: "keepOriginals") }
+    }
+    /// Colour settings learned from developed slides (the library's learning.json).
+    @ObservationIgnored let learning: Learning.Model
+
     // MARK: editing
 
     private var pendingSave: [String: Task<Void, Never>] = [:]
 
     /// Change a slide locally now; save shortly after (slider drags coalesce into one write).
-    func edit(_ slideID: String, debounce: Bool = false, _ change: @escaping (inout Slide) -> Void) {
+    /// `what` names the edit for undo (the same labels as the server: "params:warmth", "rotation"…);
+    /// nil for things that aren't the photo's look (developed, skipped, date).
+    func edit(_ slideID: String, what: String? = nil, debounce: Bool = false, _ change: @escaping (inout Slide) -> Void) {
         guard let trayID = tray?.id, let i = tray?.index(of: slideID) else { return }
-        guard tray?.groups[i].locked == nil else { error = "This slide's originals are gone; it can't be edited."; return }
+        guard what == nil || tray?.groups[i].locked == nil else {
+            error = "This slide's original scans were deleted after upload, so it can't be edited — Immich has the final version. Import its scans again to edit it."
+            return
+        }
+        if let what { tray!.groups[i].remember(what) }
         change(&tray!.groups[i])
+        save(trayID, slideID, debounce: debounce)
+    }
+
+    private func save(_ trayID: String, _ slideID: String, debounce: Bool) {
+        guard let i = tray?.index(of: slideID) else { return }
         let snapshot = tray!.groups[i]
+        let learnKey = "\(trayID):\(slideID)"
         pendingSave[slideID]?.cancel()
-        let library = library
+        let library = library, learning = learning, learn = learningEnabled
         pendingSave[slideID] = Task {
             if debounce { try? await Task.sleep(for: .milliseconds(300)) }
             guard !Task.isCancelled else { return }
@@ -185,35 +212,106 @@ final class AppModel {
                     t.groups[j].params = snapshot.params; t.groups[j].paramsSource = snapshot.paramsSource
                     t.groups[j].rotation = snapshot.rotation; t.groups[j].rotReason = snapshot.rotReason
                     t.groups[j].reviewed = snapshot.reviewed; t.groups[j].skip = snapshot.skip
-                    t.groups[j].excluded = snapshot.excluded
+                    t.groups[j].excluded = snapshot.excluded; t.groups[j].history = snapshot.history
                     t.groups[j].date = snapshot.date; t.groups[j].caption = snapshot.caption
                 }
             }
+            // learning (Python: server._learn): developed slides teach, skipped ones are forgotten
+            guard learn, let f = snapshot.feat else { return }
+            if snapshot.skip { learning.forget(key: learnKey) }
+            else if snapshot.reviewed || snapshot.immich != nil { learning.remember(key: learnKey, features: f, params: snapshot.params) }
         }
     }
 
-    func flushEdits() {
-        // debounced saves are short; nothing to do but let them run — kept as a hook for undo later
+    func flushEdits() {}
+
+    func setParam(_ key: WritableKeyPath<Params, Double>, _ value: Double, name: String) {
+        guard let s = slide else { return }
+        edit(s.id, what: "params:\(name)", debounce: true) { $0.params[keyPath: key] = value; $0.paramsSource = "manual" }
     }
 
-    func setParam(_ key: WritableKeyPath<Params, Double>, _ value: Double) {
+    func setBalance(warmth: Double, tint: Double) {
         guard let s = slide else { return }
-        edit(s.id, debounce: true) { $0.params[keyPath: key] = value; $0.paramsSource = "manual" }
+        edit(s.id, what: "params:tint,warmth", debounce: true) { $0.params.warmth = warmth; $0.params.tint = tint; $0.paramsSource = "manual" }
     }
 
     func setTrim(_ on: Bool) {
         guard let s = slide else { return }
-        edit(s.id) { $0.params.trim = on; $0.paramsSource = "manual" }
+        edit(s.id, what: "params:trim") { $0.params.trim = on; $0.paramsSource = "manual" }
     }
 
-    func resetParams() {
-        guard let s = slide, let d = tray?.defaults else { return }
-        edit(s.id) { $0.params = d; $0.paramsSource = nil }
-    }
-
-    func turn(clockwise: Bool = true) {
+    func setCurves(_ curves: [String: [[Double]]]) {
         guard let s = slide else { return }
-        edit(s.id) { $0.rotation = ($0.rotation + (clockwise ? 90 : 270)) % 360; $0.rotReason = "manual" }
+        edit(s.id, what: "params:curves", debounce: true) { $0.params.curves = Curves.clean(curves); $0.paramsSource = "manual" }
+    }
+
+    func setFrame(crop: [Double]?, angle: Double) {
+        guard let s = slide else { return }
+        edit(s.id, what: "params:angle,crop") { $0.params.crop = Params.cleanCrop(crop); $0.params.angle = max(-15, min(15, angle)); $0.paramsSource = "manual" }
+    }
+
+    /// Reset a group of settings to the tray's defaults (the Adjust panel's per-group reset).
+    func resetParams(_ keys: [WritableKeyPath<Params, Double>]? = nil, trim: Bool = false) {
+        guard let s = slide, let d = tray?.defaults else { return }
+        edit(s.id, what: "reset") { g in
+            if let keys { for k in keys { g.params[keyPath: k] = d[keyPath: k] }; if trim { g.params.trim = d.trim } }
+            else { g.params = d; g.paramsSource = nil }
+        }
+    }
+
+    /// Put the learned suggestion back (Python: resuggest).
+    func useLearned() {
+        guard let s = slide, let f = s.feat, let sug = learning.suggest(f) else { notice = "Nothing learned for this slide yet."; return }
+        edit(s.id, what: "learned") { $0.params = sug.apply(to: $0.params); $0.paramsSource = "learned:\(sug.neighbours)" }
+    }
+
+    /// "Fit to data": each colour channel's ends pulled in to the scan's data; restore off (F).
+    /// `all`: every slide still to develop, each to its own data (⇧F).
+    func fitCurves(all: Bool = false) {
+        guard let tray else { return }
+        let targets = all ? tray.groups.filter { !$0.reviewed && !$0.skip && $0.locked == nil } : (slide.map { [$0] } ?? [])
+        let renderer = renderer
+        Task {
+            for g in targets {
+                var p = g.params
+                p.strength = 0
+                let base = await Task.detached { () -> RGBImage? in
+                    guard let a = try? renderer.fusedProxy(tray, g) else { return nil }
+                    return Develop.toneBase(a.fitting(maxEdge: 900).rotated(g.rotation), p)
+                }.value
+                guard let base else { continue }
+                let fitted = Develop.fitCurves(base, g.params.curves)
+                edit(g.id, what: "fit") { $0.params.strength = 0; $0.params.curves = fitted; $0.paramsSource = "manual" }
+            }
+            if all { notice = "Fitted \(targets.count) slides" }
+        }
+    }
+
+    /// Eyedropper: warmth and tint that make the tapped spot (0…1 of the photo) neutral.
+    func neutral(at point: CGPoint) {
+        guard let tray, let g = slide else { return }
+        let renderer = renderer
+        Task {
+            let wt = await Task.detached { () -> (Double, Double)? in
+                guard let a = try? renderer.fusedProxy(tray, g) else { return nil }
+                return Develop.neutralBalance(a.rotated(g.rotation), g.params, x: point.x, y: point.y)
+            }.value
+            if let wt { setBalance(warmth: wt.0, tint: wt.1) }
+        }
+    }
+
+    func undo() { step(undo: true) }
+    func redo() { step(undo: false) }
+    private func step(undo: Bool) {
+        guard let trayID = tray?.id, let s = slide, let i = tray?.index(of: s.id), tray?.groups[i].locked == nil else { return }
+        guard tray!.groups[i].step(undo: undo) != nil else { return }
+        save(trayID, s.id, debounce: false)
+    }
+
+    func turn(clockwise: Bool = true) { rotate(clockwise ? 90 : 270) }
+    func rotate(_ degrees: Int) {
+        guard let s = slide else { return }
+        edit(s.id, what: "rotation") { $0.rotation = ($0.rotation + degrees) % 360; $0.rotReason = "manual" }
     }
 
     /// "Develop" / keep: mark ready and move on.
@@ -244,14 +342,14 @@ final class AppModel {
 
     func toggleScan(_ scan: String) {
         guard let s = slide else { return }
-        edit(s.id) { g in
+        edit(s.id, what: "scans") { g in
             if g.excluded.contains(scan) { g.excluded.removeAll { $0 == scan } } else if g.activeScans.count > 1 { g.excluded.append(scan) }
         }
     }
 
     func setDate(_ date: String) {
         guard let s = slide else { return }
-        let v = date.trimmingCharacters(in: .whitespaces)
+        let v = date.trimmingCharacters(in: .whitespaces).replacingOccurrences(of: "/", with: "-")
         edit(s.id, debounce: true) { $0.date = v.isEmpty ? nil : v }
     }
 
@@ -263,6 +361,27 @@ final class AppModel {
     func next() { if let t = tray { selection = min(t.groups.count, selection + 1) } }
     func previous() { selection = max(0, selection - 1) }
     func select(_ i: Int) { if let t = tray, t.groups.indices.contains(i) { selection = i } }
+    /// The next slide still to develop after the current one (wrapping), for the ⇥ button.
+    func nextUndeveloped() {
+        guard let t = tray, !t.groups.isEmpty else { return }
+        let n = t.groups.count
+        for k in 1...n { let i = (selection + k) % n; if !t.groups[i].reviewed && !t.groups[i].skip { selection = i; return } }
+    }
+
+    // MARK: card cleanup
+
+    var cleanupBlockers: [String] { tray.map(Originals.cleanupBlockers) ?? [] }
+
+    func cleanCard() {
+        guard let id = tray?.id else { return }
+        guard let url = cardURL() else { error = "Plug the scanner in to clean its card."; return }
+        let library = library
+        run("Cleaning the card") { progress in
+            let scoped = url.startAccessingSecurityScopedResource()
+            defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+            return try await Originals.cleanCard(trayID: id, card: url, library: library, progress: progress).summary
+        }
+    }
 }
 
 /// Rendered previews, keyed by what they show, so going back to a slide is instant.
@@ -274,16 +393,22 @@ final class PreviewCache {
 
     init(renderer: Renderer) { self.renderer = renderer }
 
-    static func key(_ slide: Slide, edge: Int, before: Bool) -> String { "\(slide.id)|\(slide.renderKey)|\(edge)|\(before)" }
+    static func key(_ slide: Slide, edge: Int, before: Bool, crop: Bool = true) -> String {
+        // the uncropped view (crop tool) doesn't change with the crop itself
+        var p = slide.params
+        if !crop { p.crop = nil }
+        var s = slide; s.params = p
+        return "\(slide.id)|\(s.renderKey)|\(edge)|\(before)|\(crop)"
+    }
 
-    func cached(_ slide: Slide, edge: Int, before: Bool = false) -> UIImage? { images[Self.key(slide, edge: edge, before: before)] }
+    func cached(_ slide: Slide, edge: Int, before: Bool = false, crop: Bool = true) -> UIImage? { images[Self.key(slide, edge: edge, before: before, crop: crop)] }
 
-    func image(_ tray: Tray, _ slide: Slide, edge: Int, before: Bool = false) async -> UIImage? {
-        let key = Self.key(slide, edge: edge, before: before)
+    func image(_ tray: Tray, _ slide: Slide, edge: Int, before: Bool = false, crop: Bool = true) async -> UIImage? {
+        let key = Self.key(slide, edge: edge, before: before, crop: crop)
         if let hit = images[key] { return hit }
         let renderer = renderer
         let cg = await Task.detached(priority: .userInitiated) { () -> CGImage? in
-            guard let img = try? renderer.preview(tray, slide, maxEdge: edge, before: before) else { return nil }
+            guard let img = try? renderer.preview(tray, slide, maxEdge: edge, before: before, crop: crop) else { return nil }
             return ImageFile.cgImage(img)
         }.value
         guard let cg else { return nil }

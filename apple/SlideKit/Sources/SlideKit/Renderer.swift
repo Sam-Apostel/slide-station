@@ -70,11 +70,13 @@ public final class Renderer: @unchecked Sendable {
     }
 
     /// The developed slide at preview size (or the untouched "before" in the same frame).
-    public func preview(_ tray: Tray, _ slide: Slide, maxEdge: Int = 1600, before: Bool = false) throws -> RGBImage {
+    public func preview(_ tray: Tray, _ slide: Slide, maxEdge: Int = 1600, before: Bool = false, crop: Bool = true) throws -> RGBImage {
         var a = try fusedProxy(tray, slide)
         if maxEdge < max(a.width, a.height) { a = a.fitting(maxEdge: maxEdge) }
         a = a.rotated(slide.rotation)
-        return before ? Develop.beforeView(a, slide.params) : Develop.develop(a, slide.params)
+        if before { return Develop.beforeView(a, slide.params, crop: crop) }
+        Develop.developInPlace(&a, slide.params, crop: crop)
+        return a
     }
 
     public func previewJPEG(_ tray: Tray, _ slide: Slide, maxEdge: Int = 1600, before: Bool = false) throws -> Data {

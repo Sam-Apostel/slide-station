@@ -41,19 +41,23 @@ The golden fixtures in `SlideKit/Tests/SlideKitTests/Golden` are synthetic slide
 | `imaging.fuse` (AlignMTB + MergeMertens) | `Fusion` — Vision translational registration + Mertens with OpenCV's exact pyramids |
 | `imaging.develop` and friends | `Develop`, `Curves` — function by function, same maths |
 | YuNet faces | Vision face rectangles (roll-filtered per rotation); the sky heuristic is unchanged |
-| `render_export`, `finish_session`, `immich.py` | `Uploader`, `ImmichClient` (v1/v2 vs v3 field rules kept) |
+| `render_export`, `finish_session`, `immich.py` | `Uploader`, `Export`, `ImmichClient` (v1/v2 vs v3 field rules kept) |
+| `learning.py` | `Learning` — same features, k-NN and `learning.json` (parity-tested) |
+| `server._remember` / undo | `Slide.remember`, `Slide.step` — same `history` format, drags coalesce |
+| `cleanup_card`, `sync_locks`, keep originals off | `Originals` — same safety rules; card paths rebuilt from the card's root |
 | scanner under `/Volumes` | `CardBookmark` + `CardSource`: the card is picked once in Files, re-checked when the app becomes active |
 
-Not ported yet: learning (k-NN suggestions), curves and crop editors (the pipeline supports both),
-undo, card cleanup, keep-originals off / locked slides' Immich previews.
+Not ported yet: a locked slide shows the local render rather than fetching Immich's own preview.
 
 ## Simple and Studio
 
 - **Simple** (default everywhere): full-screen slides, swipe left or Keep, Skip, Turn, Back; hold
   to see the scan before restoring; a finish line with "Send N to Immich".
-- **Studio** (iPad, regular width; toggle in the header or Settings): filmstrip | stage |
-  inspector on ProUI — histogram, Restore / Light / Colour sliders, rotation, bracket scans (1–9),
-  dates and captions. Hardware keys match the desktop app.
+- **Studio** (iPad, regular width; toggle in the header or Settings): the web app's layout and
+  skin — slide mounts that gild when developed, the tray gauge, Frame (rotate, crop & straighten),
+  Tone curve (per channel, Fit to data), Adjust (painted rails, white-balance pad, eyedropper),
+  Details, Tray, undo / redo, Before and aligned Split, Develop / Upload / Clean card. Hardware keys
+  match the desktop app (← → Space R X B Y K W F ⌘Z 1–9). Views in `App/Views/Studio/`.
 
 ## Testing in the simulator without tapping
 
@@ -68,8 +72,9 @@ SIMCTL_CHILD_SS_CARD_PATH=/path/to/card SIMCTL_CHILD_SS_AUTOIMPORT="Test tray" S
 
 ## Known limits
 
-- The pixel pipeline is plain Swift on Float buffers (CPU). Previews are fast (a 13-scan synthetic
-  tray imports in ~5 s in the simulator), but a full-resolution 22 MP bracket needs ~1 GB while
-  fusing. Next: half-precision, tiled Metal fusion, as the roadmap says — and test on the real iPad.
+- The pixel pipeline is plain Swift on all CPU cores. Full-resolution export of a 3-scan 20 MP
+  bracket: 1.0 s and a 1.08 GB peak on an M-series Mac (it was 5.8 s / 2.4 GB):
+  `SLIDEKIT_PERF=1 swift test -c release --filter PerfTests`. Half-precision pyramids would roughly
+  halve the peak again if an older iPad needs it — measure on the real device first.
 - Card access is only verified in the simulator with a folder in Files. Phase 1 of the roadmap
   (the real scanner on the real iPad, over USB-C) still needs doing.

@@ -37,6 +37,12 @@ struct SettingsView: View {
                     if model.cardPicked { Button("Forget the scanner", role: .destructive) { model.forgetCard() } }
                 }
                 Section {
+                    Toggle("Learn from developed slides", isOn: Bindable(model).learningEnabled)
+                    Toggle("Keep original scans after upload", isOn: Bindable(model).keepOriginals)
+                } header: { Text("Library") } footer: {
+                    Text("Learning suggests colour settings for new slides from the ones you developed (\(model.learning.examples.count) so far). With originals off, a tray's scans are deleted from this iPad once all its slides are in Immich; those slides can't be edited any more unless you import the scans again.")
+                }
+                Section {
                     Toggle("Studio mode on iPad", isOn: $studio)
                 } footer: {
                     Text("Studio has the detailed tools — sliders, histogram, bracket scans, dates — for a trackpad or pencil. Simple mode is keep, skip, turn.")
