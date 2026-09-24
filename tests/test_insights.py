@@ -271,7 +271,8 @@ def test_tags_go_to_immich_and_xmp(api, tray, immich_db, monkeypatch):
     assert "tags not sent" not in job["message"]
     s = store.Session(sid)
     assets = [s.group(x)["immich"]["asset_id"] for x in ids]
-    tags = {v["value"]: set(v["assets"]) for v in fake_immich.DB["tags"].values()}
+    tags = {v["value"]: set(v["assets"]) for v in fake_immich.DB["tags"].values()
+            if not v["value"].startswith("Trays")}  # the tray tag: test_immich_album.py
     assert tags == {"beach": {assets[0], assets[1]}, "family group": {assets[0]}}
     xmp = Image.open(s.export_dir / s.group(ids[0])["export"]["file"]).info.get("xmp", b"")
     assert b"<rdf:li>beach</rdf:li>" in xmp and b"<rdf:li>family group</rdf:li>" in xmp

@@ -229,6 +229,12 @@ export type SessionPayload = {
   log: unknown[];
   /** The tray's film stock ("" = not set), for slides without their own. */
   stock: string;
+  /** Slides in Immich not in the album / without the tray tag that Settings and the tray name ask for. */
+  placement_stale?: boolean;
+  /** The Immich album the tray goes to: Settings' album for every tray, else the tray's own. */
+  album_label?: string;
+  /** Every tray goes to the album chosen in Settings: the tray's own album name isn't used. */
+  album_from_settings?: boolean;
   /** Background analysis: a model turned on, one of those downloaded, slides still to
    *  analyse, and the models turned on but not downloaded yet. */
   insights?: { enabled: boolean; ready: boolean; pending: number; missing?: SuggestionModel[] };
@@ -302,6 +308,11 @@ export type Config = {
   learning_enabled?: boolean;
   /** Also upload the untouched scans, stacked under each developed photo in Immich. */
   upload_originals_stacked?: boolean;
+  /** One Immich album for every tray (its id; "" = an album per tray), and its name. */
+  immich_album?: string;
+  immich_album_name?: string;
+  /** Tag each uploaded photo Trays/<tray name>. */
+  tag_trays?: boolean;
   /** Slides to digitise in all, for the stats' projected finish. */
   stats_target?: number;
   insights_enabled?: boolean;

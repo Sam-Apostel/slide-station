@@ -1818,6 +1818,21 @@ slide 2 got the tray suggestion.
 
 ## 6a. Round trip with Immich (ROADMAP §2)
 
+**Album and tray tag** (`workflow._place_tray` / `placeTray`). Settings' `immich_album` (an album
+id, `immich_album_name` to show it) sends every tray into that one album, shared albums included
+(`GET /albums` answers only the user's own; `GET /albums?shared=true` the ones shared with them,
+both are listed). Unset, each tray goes to its own album by name, as before. A gone album stops
+the upload with a message rather than creating a new one. After every upload the whole tray is put
+right: all its photos in Immich join the album (`PUT /albums/{id}/assets` answers "duplicate" for
+those already in it), the untouched scans stacked under them leave it (adding a stack to an album
+in Immich takes the scans along, and albums show each photo of a stack on its own), and they get
+the tag `Trays/<tray name>` ("/" in a name becomes "-"; `tag_trays`, on by default). A renamed tray
+moves the tag: the old one is taken off (`GET /tags` for its id, `DELETE /tags/{id}/assets`). The
+session remembers `placed` (album|tag) and `tray_tag`; when `placement(cfg, d)` differs (the setting
+changed, the tray was renamed) the payload says `placement_stale` and the upload button offers "Put
+in '<album>' in Immich", which runs the upload with nothing to send. Missing permissions
+(`albumAsset.delete`, `tag.create` / `tag.asset`) or a server without tags only add a note.
+
 `workflow.finish_session` / `pull_in` / `pull_metadata`, mirrored in `standalone/server.ts`
 (`finishSession`, `pullIn`, `pullMetadata`); client calls in `immich.py` / `standalone/immich.ts`.
 A slide's `g["immich"]` record grew to:

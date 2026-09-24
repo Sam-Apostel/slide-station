@@ -27,6 +27,7 @@ import {
   type AuthState,
   type Config,
   type Group,
+  type ImmichAlbum,
   type InsightsState,
   type Source,
 } from "@/lib/api";
@@ -91,6 +92,10 @@ export function SettingsDialog({
   const [keepOriginals, setKeepOriginals] = React.useState(true);
   const [keepExports, setKeepExports] = React.useState(false);
   const [stackOriginals, setStackOriginals] = React.useState(false);
+  // one album for every tray ("" = an album per tray, named after it) and the tray tag
+  const [album, setAlbum] = React.useState("");
+  const [albums, setAlbums] = React.useState<ImmichAlbum[] | null>(null);
+  const [tagTrays, setTagTrays] = React.useState(true);
   const [learning, setLearning] = React.useState(true);
   const [people, setPeople] = React.useState(false);
   const [learned, setLearned] = React.useState<{ examples: number; min_examples: number } | null>(null);
@@ -113,6 +118,10 @@ export function SettingsDialog({
     setKeepOriginals(config.keep_originals);
     setKeepExports(config.keep_exports);
     setStackOriginals(!!config.upload_originals_stacked);
+    setAlbum(config.immich_album || "");
+    setTagTrays(config.tag_trays ?? true);
+    setAlbums(null);
+    if (config.has_key) api<ImmichAlbum[]>("GET", "/api/immich/albums").then(setAlbums, () => setAlbums(null));
     setLearning(config.learning_enabled ?? true);
     setPeople(!!config.people_enabled);
     api<{ examples: number; min_examples: number }>("GET", "/api/learning").then(setLearned, () => setLearned(null));
@@ -144,6 +153,11 @@ export function SettingsDialog({
         keep_originals: keepOriginals,
         keep_exports: keepExports,
         upload_originals_stacked: stackOriginals,
+        immich_album: album,
+        immich_album_name: album
+          ? (albums?.find((a) => a.id === album)?.name ?? config?.immich_album_name ?? "")
+          : "",
+        tag_trays: tagTrays,
         learning_enabled: learning,
         insights_enabled: suggestTags,
         lookalike_enabled: lookalikes,
@@ -285,6 +299,30 @@ export function SettingsDialog({
             <CheckRow id="cfg-keep-exp" checked={keepExports} onChange={setKeepExports}>
               Also keep the finished JPEGs locally (~6 MB per slide)
             </CheckRow>
+            <Field>
+              <FieldLabel htmlFor="cfg-album">Immich album</FieldLabel>
+              <NativeSelect id="cfg-album" value={album} onChange={(e) => setAlbum(e.target.value)}>
+                <NativeSelectOption value="">An album per tray (the tray's own)</NativeSelectOption>
+                {album && !albums?.some((a) => a.id === album) && (
+                  <NativeSelectOption value={album}>{config?.immich_album_name || album}</NativeSelectOption>
+                )}
+                {(albums ?? []).map((a) => (
+                  <NativeSelectOption key={a.id} value={a.id}>
+                    {a.name} ({plural(a.count, "photo")})
+                  </NativeSelectOption>
+                ))}
+              </NativeSelect>
+              <FieldDescription>
+                {album
+                  ? "Every tray goes into this album. Trays already in Immich move in on their next upload."
+                  : config?.has_key
+                    ? "Or pick one album for every tray, shared albums included."
+                    : "Save an API key to pick one album for every tray."}
+              </FieldDescription>
+              <CheckRow id="cfg-tag-trays" checked={tagTrays} onChange={setTagTrays}>
+                Tag each photo with its tray (Trays/&lt;tray name&gt;)
+              </CheckRow>
+            </Field>
             <Field>
               <CheckRow id="cfg-stack" checked={stackOriginals} onChange={setStackOriginals}>
                 Upload the untouched scans too, stacked under each slide in Immich

@@ -77,8 +77,7 @@ class Immich:
 
     # ------------------------------------------------------------------ albums
     def find_or_create_album(self, name: str) -> str:
-        r = self._check(self.client.get(self.base + "/albums"))
-        for a in r.json():
+        for a in self.albums():
             if a.get("albumName") == name:
                 return a["id"]
         r = self._check(self.client.post(self.base + "/albums", json={"albumName": name}))
@@ -92,8 +91,20 @@ class Immich:
         self._check(self.client.request("DELETE", f"{self.base}/albums/{album_id}/assets", json={"ids": asset_ids}))
 
     def albums(self) -> list[dict]:
-        """Every album the user can see: [{"id", "albumName", "assetCount", "albumThumbnailAssetId", ...}]."""
-        return self._check(self.client.get(self.base + "/albums")).json()
+        """Every album the user can see: [{"id", "albumName", "assetCount", "albumThumbnailAssetId", ...}].
+        `GET /albums` answers the user's own; albums others shared with them only come with `shared=true`."""
+        out = {a["id"]: a for a in self._check(self.client.get(self.base + "/albums")).json()}
+        for a in self._check(self.client.get(self.base + "/albums", params={"shared": "true"})).json():
+            out.setdefault(a["id"], a)
+        return list(out.values())
+
+    def album(self, album_id: str) -> dict | None:
+        """One album ({"id", "albumName", ...}), None when it is gone or this key can't see it."""
+        params = {} if self.major >= 3 else {"withoutAssets": "true"}  # v3 never lists the assets here
+        r = self.client.get(f"{self.base}/albums/{album_id}", params=params)
+        if r.status_code in (400, 403, 404):
+            return None
+        return self._check(r).json()
 
     def albums_of(self, asset_id: str) -> list[str]:
         """Ids of the albums an asset is in (`GET /albums?assetId=`, v1 through v3)."""
@@ -258,6 +269,23 @@ class Immich:
     # ------------------------------------------------------------------ tags
     tags_supported: bool | None = None  # None until tried; False on a server without the tags API
     NO_TAG_PERMISSION = "The API key can't tag photos (403): give it tag.create and tag.asset to send names."
+
+    def untag_assets(self, name: str, asset_ids: list[str]) -> None:
+        """Take the tag `name` (its full value) off these assets; a tag that doesn't exist is fine."""
+        if not asset_ids or self.tags_supported is False:
+            return
+        r = self.client.get(self.base + "/tags")
+        if r.status_code in (404, 405):
+            self.tags_supported = False
+            return
+        tag = next((t for t in self._check(r).json() if t.get("value") == name), None)
+        if not tag:
+            return
+        for i in range(0, len(asset_ids), 200):
+            r = self.client.request("DELETE", f"{self.base}/tags/{tag['id']}/assets", json={"ids": asset_ids[i : i + 200]})
+            if r.status_code == 403:
+                raise ImmichError(self.NO_TAG_PERMISSION)
+            self._check(r)
 
     def tag_assets(self, names: list[str], asset_ids: list[str]) -> int:
         """Tag assets with each of `names`, full tag values ("People/Ann" is Ann under People), creating

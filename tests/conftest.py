@@ -63,7 +63,7 @@ def api() -> TestClient:
 @pytest.fixture
 def immich_db(monkeypatch):
     """Route the real Immich client to tests/fake_immich.py in-process; yields its DB."""
-    fake_immich.DB.update(albums={}, assets={}, stacks={}, data={}, log=[])
+    fake_immich.DB.update(albums={}, assets={}, stacks={}, data={}, log=[], tags={})
     monkeypatch.setattr(fake_immich, "MAJOR", 3)
     monkeypatch.setattr(fake_immich, "STACKS", True)
     monkeypatch.setattr(fake_immich, "PAGE", 1000)

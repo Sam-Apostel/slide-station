@@ -181,7 +181,7 @@ def set_config(body: dict = Body(...)):
             return _err(e, 502)
     for k in (*own, "immich_key", "keep_originals", "keep_exports", "jpeg_quality",
               "learning_enabled", "upload_originals_stacked", "insights_enabled", "captions_enabled",
-              "people_enabled", "lookalike_enabled", "eyes_enabled"):
+              "people_enabled", "lookalike_enabled", "eyes_enabled", "immich_album", "immich_album_name", "tag_trays"):
         if k in body and not (k == "immich_key" and body[k] == ""):
             cfg[k] = body[k]
     if "stats_target" in body:  # slides to digitise in all, for the stats' projected finish
@@ -371,6 +371,10 @@ def _session_payload(s: Session) -> dict:
         })
     return {
         "summary": summary(d),
+        # its slides in Immich aren't in the album / tagged the way Settings and the tray name say now
+        "placement_stale": wf.placement_stale(cfg := load_config(), d),
+        "album_label": wf.album_label(cfg, d),
+        "album_from_settings": bool(cfg.get("immich_album")),
         "defaults": d["defaults"],
         "groups": groups,
         "cleanup_blockers": wf.cleanup_blockers(s),

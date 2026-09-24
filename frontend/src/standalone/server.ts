@@ -148,6 +148,11 @@ type StoredConfig = {
   people_enabled: boolean;
   /** Look-alikes prefer the shot with open eyes (downloads the face mesh; with the tag model only). */
   eyes_enabled: boolean;
+  /** One Immich album for every tray (its id; "" = an album per tray), and its name to show. */
+  immich_album: string;
+  immich_album_name: string;
+  /** Each uploaded photo tagged Trays/<tray name>. */
+  tag_trays: boolean;
 };
 
 const CONFIG_KEY = "slide-station-config";
@@ -164,6 +169,9 @@ const DEFAULT_CONFIG: StoredConfig = {
   lookalike_enabled: false,
   people_enabled: false,
   eyes_enabled: false,
+  immich_album: "",
+  immich_album_name: "",
+  tag_trays: true,
 };
 
 function loadConfig(): StoredConfig {
@@ -1310,6 +1318,61 @@ async function mountOf(d: SessionData, g: GroupData): Promise<NonNullable<GroupD
   return { ...(await ui.call("mount", { src: await fusedSrc(d, g) }, 3)), scans: activeScans(g) };
 }
 
+/** The Immich tag a tray's photos carry: Trays/<tray name> (a "/" in the name would nest it deeper). */
+function trayTag(name: string): string {
+  return "Trays/" + ((name || "").replaceAll("/", "-").trim() || "Untitled tray");
+}
+
+/** Where a tray's photos belong in Immich: the album and the tray tag (workflow.placement). */
+function placement(cfg: StoredConfig, d: SessionData): string {
+  const album = cfg.immich_album || "name:" + (d.album || d.name);
+  return `${album}|${cfg.tag_trays ?? true ? trayTag(d.name) : ""}`;
+}
+
+function placementStale(cfg: StoredConfig, d: SessionData): boolean {
+  return d.groups.some((g) => g.immich && !g.skip) && d.placed !== placement(cfg, d);
+}
+
+function albumLabel(cfg: StoredConfig, d: SessionData): string {
+  return cfg.immich_album ? cfg.immich_album_name || "the album chosen in Settings" : d.album || d.name;
+}
+
+/** Every slide of the tray in Immich into `album` with the tray tag, the untouched scans stacked
+ *  under them out of it (workflow._place_tray). Answers a note on what couldn't be done. */
+async function placeTray(client: Immich, cfg: StoredConfig, sid: string, album: string): Promise<string> {
+  const d = await loadSession(sid);
+  const recs = d.groups.filter((g) => g.immich && !g.skip).map((g) => g.immich!);
+  const assets = [...new Set(recs.map((r) => r.asset_id))];
+  const scans = [...new Set(recs.flatMap((r) => Object.values(r.originals ?? {})))]
+    .filter((a) => !assets.includes(a))
+    .sort();
+  const notes: string[] = [];
+  let tag = cfg.tag_trays ?? true ? trayTag(d.name) : "";
+  if (assets.length) {
+    await client.addToAlbum(album, assets); // the ones in it already just answer "duplicate"
+    if (scans.length)
+      try {
+        await client.removeFromAlbum(album, scans);
+      } catch (e) {
+        console.warn("originals out of the album:", e);
+        notes.push("the untouched scans stay in the album: the API key needs albumAsset.delete");
+      }
+    const old = d.tray_tag;
+    try {
+      if (old && old !== tag) await client.untagAssets(old, assets);
+      if (tag && (await client.tagAssets([tag], assets)) === 0) notes.push("no tray tag: this Immich has no tags API");
+    } catch (e) {
+      notes.push(`no tray tag (${e instanceof Error ? e.message : e})`);
+      tag = old ?? "";
+    }
+  }
+  await update(sid, (fresh) => {
+    fresh.placed = placement(cfg, fresh);
+    fresh.tray_tag = tag;
+  });
+  return notes.map((n) => `; ${n}`).join("");
+}
+
 async function payload(d: SessionData): Promise<SessionPayload> {
   const dates = slideDates(d);
   const st = statuses(d);
@@ -1318,6 +1381,10 @@ async function payload(d: SessionData): Promise<SessionPayload> {
   return {
     ...(await insightsPayload(d, models)),
     summary: summary(d),
+    // its slides in Immich aren't in the album / tagged the way Settings and the tray name say now
+    placement_stale: placementStale(loadConfig(), d),
+    album_label: albumLabel(loadConfig(), d),
+    album_from_settings: !!loadConfig().immich_album,
     defaults: d.defaults,
     stock: d.stock ?? "",
     groups: d.groups.map((g, i) => ({
@@ -2036,7 +2103,15 @@ async function finishSession(
   if (target === "immich") {
     client = new Immich(cfg.immich_url, cfg.immich_key);
     job.message = `Connecting to Immich ${await client.version()}`;
-    album = await client.findOrCreateAlbum(d.album || d.name);
+    if (cfg.immich_album) {
+      // one album for every tray, chosen in Settings
+      if (!(await client.album(cfg.immich_album)))
+        throw new ImmichError(
+          `The album chosen in Settings ('${albumLabel(cfg, d)}') is gone from Immich, or this API key can't see it: ` +
+            "choose another one in Settings",
+        );
+      album = cfg.immich_album;
+    } else album = await client.findOrCreateAlbum(d.album || d.name);
     await update(sid, (f) => void (f.immich_album_id = album));
   }
   const toTrash: string[] = [];
@@ -2228,7 +2303,7 @@ async function finishSession(
     if (!onlyReady || fresh.groups.every((g) => g.reviewed || g.skip)) fresh.date_key = fresh.date; // every slide now carries the date
     log(
       fresh,
-      `Uploaded ${uploaded} slides to album '${fresh.album}'` + (synced ? `, updated ${synced} in place` : ""),
+      `Uploaded ${uploaded} slides to album '${albumLabel(cfg, fresh)}'` + (synced ? `, updated ${synced} in place` : ""),
     );
   });
   for (const x of stacksGone) await client!.deleteStack(x);
@@ -2244,6 +2319,8 @@ async function finishSession(
       tagNote = `; tags not sent (${e instanceof Error ? e.message : e})`;
     }
   }
+  job.message = "Putting the tray in its album";
+  const placeNote = await placeTray(client!, cfg, sid, album);
   let peopleTagged = 0;
   let peopleProblem = "";
   if (cfg.people_enabled && sent.length) {
@@ -2263,7 +2340,7 @@ async function finishSession(
   const lookNote = cfg.lookalike_enabled && sent.length ? await lookalikesQuietly(client!, sid, sent, job) : "";
   if (!cfg.keep_originals) await dropLocalOriginals(sid);
   job.message =
-    `Done - ${uploaded} slides uploaded to '${d.album}'` +
+    `Done - ${uploaded} slides uploaded to '${albumLabel(cfg, await loadSession(sid))}'` +
     (synced ? `; ${synced} updated in place (date, caption, place)` : "") +
     (noUpdate
       ? "; dates / captions / places went up as new copies: give the API key asset.update to change them in place"
@@ -2276,7 +2353,8 @@ async function finishSession(
     tagNote +
     (peopleTagged ? `; ${peopleTagged} tagged with the people on them` : "") +
     (peopleProblem ? `; names not sent: ${peopleProblem}` : "") +
-    lookNote;
+    lookNote +
+    placeNote;
 }
 
 function download(blob: Blob, name: string) {
@@ -2572,6 +2650,9 @@ export async function handle(method: string, url: string, body: Body = {}): Prom
       lookalike_enabled: cfg.lookalike_enabled,
       people_enabled: cfg.people_enabled,
       eyes_enabled: cfg.eyes_enabled,
+      immich_album: cfg.immich_album,
+      immich_album_name: cfg.immich_album_name,
+      tag_trays: cfg.tag_trays,
     };
     return { config, sources: await sourceList(), sessions: await listSessions(), job: current } satisfies AppState;
   }
@@ -2589,6 +2670,9 @@ export async function handle(method: string, url: string, body: Body = {}): Prom
       "lookalike_enabled",
       "people_enabled",
       "eyes_enabled",
+      "immich_album",
+      "immich_album_name",
+      "tag_trays",
     ] as const)
       if (k in body && !(k === "immich_key" && body[k] === "")) (cfg as Record<string, unknown>)[k] = body[k];
     if ("stats_target" in body) {

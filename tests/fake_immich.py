@@ -144,9 +144,12 @@ def album_dto(aid: str, with_assets: bool = False) -> dict:
 
 
 @app.get("/api/albums")
-def albums(assetId: str | None = None, x_api_key: str = Header(None)):
+def albums(assetId: str | None = None, shared: str | None = None, x_api_key: str = Header(None)):
+    """The user's own albums; `shared=true` answers the ones shared with them (`"shared": True` here)."""
     auth(x_api_key)
-    return [album_dto(k) for k, v in DB["albums"].items() if assetId is None or assetId in v["assets"]]
+    want = shared == "true"
+    return [album_dto(k) for k, v in DB["albums"].items()
+            if (assetId is None or assetId in v["assets"]) and (assetId is not None or bool(v.get("shared")) == want)]
 
 
 @app.get("/api/albums/{aid}")
@@ -444,6 +447,24 @@ async def tag_assets(req: Request, x_api_key: str = Header(None)):
     for tid in body["tagIds"]:
         by_id[tid]["assets"] = sorted(set(by_id[tid]["assets"]) | set(body["assetIds"]))
     return {"count": len(body["assetIds"]) * len(body["tagIds"])}
+
+
+@app.get("/api/tags")
+def list_tags(x_api_key: str = Header(None)):
+    auth(x_api_key)
+    if not TAGS:
+        raise HTTPException(404, "Cannot GET /api/tags")
+    return [{k: v for k, v in t.items() if k != "assets"} for t in DB.setdefault("tags", {}).values()]
+
+
+@app.delete("/api/tags/{tid}/assets")
+async def untag(tid: str, req: Request, x_api_key: str = Header(None)):
+    auth(x_api_key)
+    ids = (await req.json())["ids"]
+    tag = next(t for t in DB["tags"].values() if t["id"] == tid)
+    out = [{"id": i, "success": i in tag["assets"]} for i in ids]
+    tag["assets"] = [a for a in tag["assets"] if a not in ids]
+    return out
 
 
 @app.get("/debug")
