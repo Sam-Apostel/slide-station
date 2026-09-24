@@ -15,6 +15,7 @@ import { EmptyState } from "@/components/empty-state";
 import { SlideMenu } from "@/components/slide-menu";
 import { CommandPalette } from "@/components/command-palette";
 import { DateRangeDialog, HelpDialog, NewTrayDialog, SettingsDialog } from "@/components/dialogs";
+import { ImmichImportDialog } from "@/components/immich-import";
 import { PanelToggles, WindowTitlebar } from "@/components/window-titlebar";
 import { useSlideStation, type SlideStation } from "@/hooks/use-slide-station";
 import { useDesktop, useFolderDrop, type DesktopHandlers } from "@/hooks/use-desktop";
@@ -81,6 +82,7 @@ function SlideStationApp() {
   const [helpOpen, setHelpOpen] = React.useState(false);
   const [paletteOpen, setPaletteOpen] = React.useState(false);
   const [dateRangeOpen, setDateRangeOpen] = React.useState(false);
+  const [immichOpen, setImmichOpen] = React.useState(false);
   const [newTray, setNewTray] = React.useState<{ open: boolean; source?: Source; folder?: string }>({ open: false });
   const [panels, setPanels] = React.useState(storedPanels);
   // What focus mode hid, so the same shortcut brings exactly that back.
@@ -110,6 +112,9 @@ function SlideStationApp() {
   const source = state?.sources.find((x) => x.new > 0) ?? state?.sources[0];
 
   const openNew = (src?: Source, folder?: string) => setNewTray({ open: true, source: src, folder });
+  /** Pull photos back in from Immich (needs Immich set up first). */
+  const openImmich = () =>
+    state?.config.has_key && state.config.immich_url ? setImmichOpen(true) : setSettingsOpen(true);
   const importFolder = async (folder?: string) => {
     if (standalone) {
       // the browser version: pick a folder, then import it like a card
@@ -425,6 +430,7 @@ function SlideStationApp() {
         preferFolder={newTray.folder}
         onCreate={app.createSession}
         onChooseFolder={standalone ? () => app.addSource("pick") : undefined}
+        onFromImmich={openImmich}
       />
       <HelpDialog open={helpOpen} onOpenChange={setHelpOpen} />
       <CommandPalette
@@ -434,8 +440,10 @@ function SlideStationApp() {
         handlers={handlers}
         onClean={clean}
         onDateRange={() => setDateRangeOpen(true)}
+        onFromImmich={openImmich}
         busy={busy}
       />
+      <ImmichImportDialog open={immichOpen} onOpenChange={setImmichOpen} onImport={app.importFromImmich} />
       {session && (
         <DateRangeDialog
           open={dateRangeOpen}

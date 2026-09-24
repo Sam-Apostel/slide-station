@@ -12,6 +12,22 @@ export type Scan = {
   sha1: string;
   taken: string;
   source_deleted: boolean;
+  /** Pulled in from Immich: the asset it was downloaded from. */
+  immich_asset?: string;
+};
+
+/** A slide's copy in Immich (see ARCHITECTURE "Round trip with Immich"). */
+export type ImmichRecord = {
+  asset_id: string;
+  key: string;
+  status?: string;
+  meta?: string;
+  /** What Immich was told besides the pixels: the day and the caption. */
+  pushed?: { date: string; caption: string };
+  /** The untouched scans stacked under it: scan -> asset, the stack, and which ones this app uploaded. */
+  stack_id?: string;
+  originals?: Record<string, string>;
+  own_originals?: string[];
 };
 
 export type Snapshot = {
@@ -33,7 +49,9 @@ export type GroupData = {
   reviewed: boolean;
   skip: boolean;
   export: { file: string; key: string; ekey: string; sha1: string } | null;
-  immich: { asset_id: string; key: string; status?: string; meta?: string } | null;
+  immich: ImmichRecord | null;
+  /** Pulled in from Immich: its upload replaces this asset. */
+  source_asset?: { id: string };
   params_source?: string;
   auto_excluded?: Record<string, string>;
   locked?: string;
@@ -57,6 +75,7 @@ export type SessionData = {
   immich_album_id?: string;
   date_key?: string;
   orphan_assets?: string[];
+  orphan_stacks?: string[];
 };
 
 // ------------------------------------------------------------------ Python-compatible JSON

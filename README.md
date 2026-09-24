@@ -92,7 +92,9 @@ in the browser altogether: save to disk and drop the JPEGs into an Immich album 
 Settings → Immich URL (e.g. `http://your-server:2283`) and an API key
 (Immich → Account settings → API keys) with the permissions
 `asset.upload`, `asset.delete`, `album.read`, `album.create`, `albumAsset.create`.
-Test connection, Save. Works with Immich v1.118 and later, including v2 and v3.
+For the round trip below also `asset.read`, `asset.update`, `asset.view`, `asset.download`,
+`albumAsset.delete`, `stack.read`, `stack.create`, `stack.delete` (without them uploads work as
+before). Test connection, Save. Works with Immich v1.118 and later, including v2 and v3.
 
 Pick a library folder with room to spare: about 6 MB per slide with the defaults
 (the original scans are kept; the finished JPEGs are deleted once they are in Immich because they
@@ -111,11 +113,27 @@ can be re-rendered from the originals at any time).
    **M** merge with next, **1–9** leave a scan out of the stack, ✂ between stack scans splits a
    slide. Reviewed slides are rendered at full resolution in the background.
 4. **Upload to Immich**. Editing a slide after uploading marks it "edited"; the next upload
-   replaces the old copy in Immich (the old one goes to the Immich trash).
+   replaces the old copy in Immich (the old one goes to the Immich trash, its albums and favourite
+   carry over). A new date or caption alone is changed in Immich in place, nothing re-uploaded.
+   Photos Immich already has byte for byte aren't sent again.
 5. **Clean scanner card** unlocks once every slide is uploaded or skipped. It only deletes files
    that still match the verified local copies. Then eject.
 
 Importing the same card twice never duplicates: every scan is fingerprinted.
+
+## Round trip with Immich
+
+- **Keep the scans too.** Settings → "Upload the untouched scans too": each slide's original scans
+  go to Immich as well, stacked under the developed photo, so nothing is ever lost. Needs an Immich
+  with stacks; older servers just get the developed photos.
+- **Pull from Immich** (Tray section, or ⌘K): captions and dates you changed in Immich come back
+  into the tray.
+- **Pull photos back in** (⌘K, or New tray → "From Immich…"): pick an Immich album and some or all
+  of its photos — slides scanned years ago with other tools — and they become a new tray to
+  restore, crop and re-date. Uploading one replaces it in Immich (same albums, favourite kept, the
+  old one to the trash; with "keep the scans" on it stays, stacked under the new one).
+
+Look-alike detection ("a scan you uploaded in 2021") isn't done: only exact duplicates are.
 
 ## Scanning tips
 

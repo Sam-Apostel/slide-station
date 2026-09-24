@@ -209,7 +209,8 @@ activity pill fills up as a job runs (`.ss-well-fill`). All in `theme.css`.
   around it in tray order, else the nearest dated one, else the tray date, else the scanner EXIF.
   The caption goes into EXIF ImageDescription (Immich's description). `meta_key` of date + caption
   is stored at upload; a change makes the slide `changed` (use `store.statuses(d)`, which knows the
-  neighbours, rather than `group_status(g)` wherever that matters).
+  neighbours, rather than `group_status(g)` wherever that matters). Such a slide's next upload only
+  updates Immich's date / description in place (§6a).
 - **Date a range** ("12–31: Aug 1978"): `POST /api/sessions/{sid}/dates` with
   `{"from": gid, "to": gid, "date": "1978-08"}` sets the date of every slide from..to in tray order
   (either order, both included), validated like `PATCH …/groups/{gid}` (400 on junk, `""` clears),
@@ -412,6 +413,93 @@ undo), and consider learning rotation corrections per film type once enough exam
 - Immich takes the timeline date from EXIF `DateTimeOriginal`, which the exporter writes (tray date
   override, one minute per slide to keep tray order); `fileCreatedAt` is the fallback.
 - API key needs: `asset.upload`, `asset.delete`, `album.read`, `album.create`, `albumAsset.create`.
+  The round trip (§6a) also uses `asset.read`, `asset.update`, `asset.view`, `asset.download`,
+  `albumAsset.delete`, `stack.read`, `stack.create`, `stack.delete`; without them it falls back to
+  the plain upload behaviour instead of failing.
+
+## 6a. Round trip with Immich (ROADMAP §2)
+
+`workflow.finish_session` / `pull_in` / `pull_metadata`, mirrored in `standalone/server.ts`
+(`finishSession`, `pullIn`, `pullMetadata`); client calls in `immich.py` / `standalone/immich.ts`.
+A slide's `g["immich"]` record grew to:
+
+```
+{"asset_id", "key", "status", "meta",
+ "pushed": {"date": "YYYY-MM-DD", "caption"},     what Immich was told besides the pixels
+ "stack_id", "originals": {scan: asset_id},        only when its scans are stacked under it
+ "own_originals": [asset_id, ...]}                 the originals this app uploaded (vs. reused)
+```
+
+and a pulled-in slide has `g["source_asset"] = {"id"}` (its scan record `immich_asset`,
+`source: "immich:<id>"`, `source_root: "immich"`, `removable: false`).
+
+**Upload, per slide** (the order matters):
+
+1. *Metadata only.* A slide whose pixels Immich has (`immich.key == render_key`, or locked) and whose
+   `meta` differs is not rendered: `PUT /api/assets/{id}` with `dateTimeOriginal` (naive local time,
+   `YYYY-MM-DDTHH:MM:SS`, the same wall clock the EXIF upload carries) and `description`. The
+   file's own EXIF in Immich keeps the old values (Immich writes edits to its sidecar). `PUT
+   /assets/{id}` is marked deprecated in v3 with itself as the replacement, i.e. still the way. A
+   403 (no `asset.update`) falls back to re-rendering and uploading as before. The tray-date
+   "redate" case is the same path now, and slides whose `meta` didn't move are skipped.
+2. *What it replaces:* the slide's last upload, or the photo it was pulled in from. Its albums
+   (`GET /albums?assetId=`) and favourite (`GET /assets/{id}` → `isFavorite`, uploaded as
+   `isFavorite`) carry over; faces aren't copied (Immich detects and recognises them again).
+3. *Exact duplicate:* `POST /assets/bulk-upload-check` with the export's hex SHA-1. If Immich has
+   those bytes, that asset is used (restored from the trash if it's there: undoing an edit renders
+   the same bytes as the trashed copy) and nothing is sent. Servers without the endpoint (404) just
+   upload. **CLIP / look-alike matching ("a scan you uploaded in 2021") is not done** — only
+   byte-identical files are recognised.
+4. *Stacks* (`upload_originals_stacked`, Settings, default off): the slide's scans — all of
+   `g["scans"]`, brackets included, never edited — are checked with bulk-upload-check (reusing any
+   Immich has, e.g. a pulled-in photo's own asset or raw scans uploaded some other way) and the
+   rest uploaded with the slide's date; then `POST /api/stacks {"assetIds": [developed, *scans]}`
+   (the first id is the primary, per the spec). Scans don't go into the album. **Re-upload rule:**
+   the old stack is deleted (`DELETE /stacks/{id}`, which only unstacks), a new one is made under
+   the new photo with the same scan assets, then the old photo is trashed. This is the simplest
+   order that never leaves a stack headed by a trashed asset; the scans are never re-uploaded
+   (bulk-upload-check finds them). Scans already in Immich stay stacked even after the setting is
+   turned off. Split / merge need nothing special: each slide's next upload stacks its current scans
+   (merge also queues the merged-away slide's stack in `orphan_stacks`). Skipping an uploaded slide
+   trashes its photo and the scans in `own_originals` that no other slide stacks.
+   Stacks need an Immich with the `/stacks` API and `stack.*` permissions: `has_stacks` probes `GET /stacks?primaryAssetId=<random>`
+   once per upload; 404 (older server) or 403 means nothing is stacked and no scans are uploaded,
+   and the job message says so. `create_stack` / `delete_stack` also treat 403/404 as "can't".
+5. The replaced asset goes to the trash — except a pulled-in photo that is itself one of the stacked
+   scans: that one stays, under the new photo, and is taken out of the albums the new one joined
+   (`DELETE /albums/{id}/assets`, best effort).
+
+**Pull from Immich** (`POST /api/sessions/{sid}/pull`, Tray section / ⌘K): `GET /assets/{id}` for
+every uploaded slide; where `exifInfo.description` or the day of `localDateTime` (Immich's wall
+clock, v1–v3) differs from `pushed`, the slide's caption / own date take Immich's value — only
+fields someone changed in Immich come back, and Immich wins over an unsent local edit of the same
+field. `meta` is then recorded as sent (unless the slide's resulting date still differs, e.g. a
+neighbour moved). Assets without `exifInfo` (not read by Immich yet) are left alone; missing or
+trashed ones are counted as `gone`. Slides uploaded before this have no `pushed`: the current
+values stand in. Answers the payload plus `pulled: {checked, captions, dates, gone}`.
+
+**Pull back in** (`GET /api/immich/albums`, `GET /api/immich/albums/{id}/assets`,
+`GET /api/immich/assets/{id}/thumb.jpg`, `POST /api/immich/import {"assets", "name", "album"}`;
+dialog `components/immich-import.tsx`, from ⌘K or New tray → "From Immich…"). Listing an album:
+v1/v2 return its assets in `GET /albums/{id}`, v3 doesn't, so the client falls back to
+`POST /search/metadata {"albumIds": [id]}` (deprecated in 3.2 but working), following `nextPage`
+(v1/v2) or `nextCursor` (3.2+). The import creates a tray (its album defaults to the Immich album,
+so uploads land back in it) and runs as an `import` job: each JPEG / PNG image (videos, RAW, HEIC
+left out) is downloaded with `GET /assets/{id}/original`, verified against Immich's base64 SHA-1,
+and becomes one slide (no bracket grouping, no rotation guess; the Python app turns EXIF
+orientation 3/6/8 into `rotation` because PIL doesn't apply it, the browser decodes upright
+already — so a pulled photo with an orientation tag differs between the two apps) with the
+photo's date (day of `localDateTime`) and description. Learned colour settings apply as on import.
+These scans are **never removable** and are not added to `imported.json` (card imports stay as
+they were). Pulling the same asset into one tray twice is skipped; the album list shows which
+tray already has a photo.
+
+Tests: `tests/test_immich_roundtrip.py`; the mock (`tests/fake_immich.py`) keeps asset bytes,
+checksums, trash, EXIF description / date, stacks (`STACKS = False` = an older server), v2 vs v3
+album listing with search paging (`PAGE`), and `DENY` for a key missing permissions.
+`tests/web_flow.py` runs pull-captions, pull-back-in and the replacing upload in the browser
+version. **Not ported to the Swift app** (`apple/`): stacks, metadata-only sync, pull from Immich,
+duplicate check, pull back in, carrying albums / favourites over.
 
 ## 7. Testing
 
@@ -434,7 +522,8 @@ undo), and consider learning rotation corrections per film type once enough exam
   content (SHA-1). The name + size + mtime fingerprint only counts "new" scans on a card; import
   hashes every file (`test_dedupe.py`: a different scan sharing all three is still imported).
 - `tests/fake_immich.py` — FastAPI mock implementing version/users/albums/assets, with a `/debug`
-  endpoint; set `MOCK_IMMICH_MAJOR=3` to exercise the v3 field rules.
+  endpoint; set `MOCK_IMMICH_MAJOR=3` to exercise the v3 field rules. It also covers the round-trip
+  endpoints (§6a), tested in `tests/test_immich_roundtrip.py`.
 - `tests/ui_flow.py` — Playwright script: import from a fake card, browse, rotate, edit warmth and
   saturation, toggle a scan, hold-B before, Fit the tone curve (F), crop and straighten (K, 1:1,
   Enter), undo / redo (Ctrl/⌘Z), split view (Y), Develop (Space), upload, clean the card; asserts

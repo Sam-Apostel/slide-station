@@ -27,6 +27,7 @@ import {
   summary,
   toneKey,
   type GroupData,
+  type ImmichRecord,
   type Scan,
   type SessionData,
   type Snapshot,
@@ -51,6 +52,7 @@ type StoredConfig = {
   keep_exports: boolean;
   learning_enabled: boolean;
   jpeg_quality: number;
+  upload_originals_stacked: boolean;
 };
 
 const CONFIG_KEY = "slide-station-config";
@@ -61,6 +63,7 @@ const DEFAULT_CONFIG: StoredConfig = {
   keep_exports: false,
   learning_enabled: true,
   jpeg_quality: 95,
+  upload_originals_stacked: false,
 };
 
 function loadConfig(): StoredConfig {
@@ -252,6 +255,7 @@ async function payload(d: SessionData): Promise<SessionPayload> {
       params_source: g.params_source ?? "",
       auto_excluded: g.auto_excluded ?? {},
       locked: !!g.locked,
+      from_immich: !!g.source_asset,
       status: st[i],
       date: g.date ?? "",
       caption: g.caption ?? "",
@@ -648,6 +652,8 @@ export async function image(url: string, priority = 0): Promise<{ blob: Blob; fr
     await ensureProxies(d, scan);
     return { blob: await readCache(d.id, `${scan}.thumb.jpg`), fresh: true };
   }
+  m = u.pathname.match(/\/api\/immich\/assets\/([^/]+)\/thumb\.jpg$/);
+  if (m) return { blob: await immichClient().thumbnail(m[1]), fresh: true };
   throw new HttpError(404, "Not found");
 }
 
@@ -770,6 +776,54 @@ function watchTray(sid: string) {
 
 type Target = "immich" | "disk";
 
+const isoDay = (t: Date) =>
+  `${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, "0")}-${String(t.getDate()).padStart(2, "0")}`;
+
+/** A slide's date for `PUT /assets/{id}`: naive local time, like the EXIF the upload carries. */
+const immichTime = (t: Date) => exifTime(t).replace(/^(\d{4}):(\d{2}):(\d{2}) /, "$1-$2-$3T");
+
+/** What Immich was told about a slide besides its pixels; pulling edits back compares against it. */
+const pushedMeta = (d: SessionData, g: GroupData, index: number) => ({
+  date: isoDay(photoDate(d, g, index)),
+  caption: g.caption ?? "",
+});
+
+/** Immich has this slide's pixels already: only its date or caption can have changed. */
+const metaOnly = (g: GroupData) => !!g.immich && (!!g.locked || g.immich.key === renderKey(g));
+
+/** What a replacement keeps of the asset it replaces: its albums and whether it's a favourite. */
+async function carryOver(client: Immich, asset: string | undefined) {
+  let a = null;
+  try {
+    a = asset ? await client.asset(asset) : null;
+  } catch (e) {
+    console.warn("carry over:", e); // a key without asset.read: replace it as before, carrying nothing
+  }
+  if (!a || !asset) return { albums: [] as string[], favorite: false };
+  return { albums: await client.albumsOf(asset), favorite: !!a.isFavorite };
+}
+
+/** Every scan of a slide in Immich, untouched ({scan: asset}, the ones this uploaded), reusing what Immich has. */
+async function originalsInImmich(client: Immich, d: SessionData, g: GroupData, when: Date) {
+  const scans = g.scans.filter((x) => d.scans[x]);
+  const have = await client.existing(Object.fromEntries(scans.map((x) => [x, d.scans[x].sha1])));
+  await client.restore(Object.values(have).flatMap((h) => (h.trashed ? [h.asset_id] : [])));
+  const out: Record<string, string> = {};
+  const created: string[] = [];
+  for (const x of scans) {
+    if (have[x]) {
+      out[x] = have[x].asset_id;
+      continue;
+    }
+    const blob = await lib.read(originalPath(d, x));
+    if (!blob) continue; // deleted after an earlier upload ("keep originals" off)
+    const [id, status] = await client.upload(blob, d.scans[x].file, when, `${d.id}-${x}`);
+    out[x] = id;
+    if (status !== "duplicate") created.push(id);
+  }
+  return { originals: out, created };
+}
+
 async function finishSession(
   job: Job,
   sid: string,
@@ -779,15 +833,18 @@ async function finishSession(
 ) {
   const cfg = loadConfig();
   let d = await loadSession(sid);
-  const redate = target === "immich" && d.date_key !== d.date; // date changed: every slide needs new EXIF
+  const redate = target === "immich" && d.date_key !== d.date; // tray date changed: every slide may have a new date
   const st = Object.fromEntries(d.groups.map((g, i) => [g.id, statuses(d)[i]]));
   let todo = d.groups
     .filter((g) => !g.skip && (target === "disk" || redate || st[g.id] !== "uploaded") && (g.reviewed || !onlyReady))
     .map((g) => g.id);
+  // slides whose pixels Immich has only get their date / caption updated there
+  const meta = target === "immich" ? todo.filter((gid) => metaOnly(group(d, gid))) : [];
+  todo = todo.filter((x) => !meta.includes(x));
   const lost: string[] = [];
   for (const gid of todo) if (await originalsMissing(d, group(d, gid))) lost.push(gid);
   todo = todo.filter((x) => !lost.includes(x)); // nothing to render them from: keep what Immich has
-  job.total = todo.length * 2;
+  job.total = todo.length * 2 + meta.length;
   const saved: { name: string; blob: Blob }[] = [];
   let client: Immich | null = null;
   let album = "";
@@ -799,6 +856,46 @@ async function finishSession(
   }
   const toTrash: string[] = [];
   let uploaded = 0;
+  let synced = 0;
+  let duplicates = 0;
+  let noUpdate = false;
+  const wantOriginals = cfg.upload_originals_stacked;
+  let stacks: boolean | null = null; // asked once, and only if needed
+  const hasStacks = async () => (stacks ??= await client!.hasStacks());
+
+  for (const [n, gid] of meta.entries()) {
+    job.message = `Updating date and caption ${n + 1} of ${meta.length}`;
+    job.done++;
+    d = await loadSession(sid);
+    const g = d.groups.find((x) => x.id === gid);
+    if (!g?.immich) continue;
+    const idx = groupIndex(d, gid);
+    const mk = slideMeta(d, g, idx);
+    const asset = g.immich.asset_id;
+    if (g.immich.meta === mk) continue; // only the tray date moved, and not this slide's
+    try {
+      await client!.updateAsset(asset, {
+        dateTimeOriginal: immichTime(photoDate(d, g, idx)),
+        description: g.caption ?? "",
+      });
+    } catch (e) {
+      // a key without asset.update: upload it again with the new EXIF, as before
+      console.warn("metadata update:", e);
+      if (!g.locked && !(await originalsMissing(d, g))) {
+        todo.push(gid);
+        job.total += 2;
+        noUpdate = true;
+      }
+      continue;
+    }
+    const pushed = pushedMeta(d, g, idx);
+    await update(sid, (fresh) => {
+      const fg = fresh.groups.find((x) => x.id === gid);
+      if (fg?.immich?.asset_id === asset) Object.assign(fg.immich, { meta: mk, pushed });
+    });
+    synced++;
+  }
+
   for (const [n, gid] of todo.entries()) {
     job.message = `Rendering slide ${n + 1} of ${todo.length}`;
     let out: { name: string; blob: Blob } | null = null;
@@ -827,22 +924,68 @@ async function finishSession(
       continue;
     }
     job.message = `Uploading slide ${n + 1} of ${todo.length}`;
+    const c = client!;
     const idx = groupIndex(d, gid);
-    const [assetId, status] = await client!.upload(
-      out.blob,
-      out.name,
-      photoDate(d, g, idx),
-      `${sid}-${gid}-${g.export!.sha1.slice(0, 8)}`,
-    );
-    await client!.addToAlbum(album, [assetId]);
-    const rkey = g.export!.key;
-    const meta = slideMeta(d, g, idx);
-    await update(sid, (fresh) => {
-      const fg = group(fresh, gid);
-      const old = fg.immich?.asset_id;
-      if (old && old !== assetId) toTrash.push(old);
-      fg.immich = { asset_id: assetId, key: rkey, status, meta };
-    });
+    const when = photoDate(d, g, idx);
+    const old = g.immich;
+    // the asset this one takes the place of: the last upload, or the Immich photo it was pulled in from
+    const replaces = old?.asset_id ?? g.source_asset?.id;
+    const carry = await carryOver(c, replaces);
+    // exact duplicate: Immich has these very bytes already (an identical render), so use that
+    const hit = (await c.existing({ slide: g.export!.sha1 })).slide;
+    let assetId: string;
+    let status: string;
+    if (hit) {
+      [assetId, status] = [hit.asset_id, "duplicate"];
+      if (hit.trashed) await c.restore([assetId]);
+      if (carry.favorite) await c.updateAsset(assetId, { isFavorite: true });
+      duplicates++;
+    } else
+      [assetId, status] = await c.upload(
+        out.blob,
+        out.name,
+        when,
+        `${sid}-${gid}-${g.export!.sha1.slice(0, 8)}`,
+        carry.favorite,
+      );
+    await c.addToAlbum(album, [assetId]);
+    for (const a of carry.albums) if (a !== album) await c.addToAlbum(a, [assetId]);
+
+    // Stacks: the untouched scans under the developed photo. A new upload replaces the whole stack,
+    // so the scans Immich has stay stacked even once the setting is turned off.
+    let originals = Object.fromEntries(Object.entries(old?.originals ?? {}).filter(([k]) => g.scans.includes(k)));
+    let own = [...(old?.own_originals ?? [])];
+    let stackId: string | null = null;
+    if ((wantOriginals || Object.keys(originals).length || old?.stack_id) && (await hasStacks())) {
+      if (old?.stack_id) await c.deleteStack(old.stack_id);
+      if (wantOriginals) {
+        const r = await originalsInImmich(c, d, g, when);
+        originals = r.originals;
+        own.push(...r.created);
+      }
+      const ids = [...new Set(Object.values(originals))].filter((a) => a !== assetId);
+      stackId = await c.createStack([assetId, ...ids]);
+    }
+    own = [...new Set(own)].filter((a) => Object.values(originals).includes(a));
+    const kept = new Set(stackId ? Object.values(originals) : []);
+    if (replaces && replaces !== assetId) {
+      if (kept.has(replaces)) {
+        // a pulled-in photo is itself the untouched scan: it stays, stacked under the new one, and
+        // leaves the albums the new one took its place in
+        for (const a of [...carry.albums, album])
+          await c.removeFromAlbum(a, [replaces]).catch((e) => console.warn("remove from album:", e));
+      } else toTrash.push(replaces);
+    }
+    const rec: ImmichRecord = {
+      asset_id: assetId,
+      key: g.export!.key,
+      status,
+      meta: slideMeta(d, g, idx),
+      pushed: pushedMeta(d, g, idx),
+    };
+    if (stackId && Object.keys(originals).length)
+      Object.assign(rec, { originals, own_originals: own, stack_id: stackId });
+    await update(sid, (fresh) => void (group(fresh, gid).immich = rec));
     if (!cfg.keep_exports) await lib.remove(`${sessionDir(sid)}/export/${out.name}`); // it's in Immich now
     uploaded++;
     job.done++;
@@ -864,22 +1007,38 @@ async function finishSession(
       (lost.length ? `; ${lost.length} skipped: their original scans are gone` : "");
     return;
   }
+  const stacksGone: string[] = [];
   await update(sid, (fresh) => {
     // slides merged away or skipped after uploading: move their old Immich copies to the trash
     toTrash.push(...(fresh.orphan_assets ?? []));
+    stacksGone.push(...(fresh.orphan_stacks ?? []));
     delete fresh.orphan_assets;
+    delete fresh.orphan_stacks;
+    const used = new Set(fresh.groups.filter((g) => !g.skip).flatMap((g) => Object.values(g.immich?.originals ?? {})));
     for (const g of fresh.groups)
       if (g.skip && g.immich) {
         toTrash.push(g.immich.asset_id);
+        if (g.immich.stack_id) stacksGone.push(g.immich.stack_id);
+        // the scans this uploaded for it go too, unless another slide stacks them
+        toTrash.push(...(g.immich.own_originals ?? []).filter((a) => !used.has(a)));
         g.immich = null;
       }
     if (!onlyReady || fresh.groups.every((g) => g.reviewed || g.skip)) fresh.date_key = fresh.date; // every slide now carries the date
-    log(fresh, `Uploaded ${uploaded} slides to album '${fresh.album}'`);
+    log(fresh, `Uploaded ${uploaded} slides to album '${fresh.album}'` + (synced ? `, updated ${synced} in place` : ""));
   });
+  for (const x of stacksGone) await client!.deleteStack(x);
   await client!.trash(toTrash);
   if (!cfg.keep_originals) await dropLocalOriginals(sid);
   job.message =
     `Done - ${uploaded} slides uploaded to '${d.album}'` +
+    (synced ? `; ${synced} updated in place (date, caption)` : "") +
+    (noUpdate
+      ? "; dates / captions went up as new copies: give the API key asset.update to change them in place"
+      : "") +
+    (duplicates ? `; ${duplicates} were in Immich already, not sent again` : "") +
+    (wantOriginals && uploaded && stacks === false
+      ? "; original scans not stacked: this Immich has no stacks, or the API key lacks stack.read / stack.create"
+      : "") +
     (lost.length ? `; ${lost.length} skipped: their original scans were deleted after the last upload` : "");
 }
 
@@ -914,6 +1073,156 @@ async function syncLocks(d: SessionData): Promise<boolean> {
     }
   }
   return changed;
+}
+
+// ------------------------------------------------------------------ round trip: back from Immich
+
+const PULLABLE = ["image/jpeg", "image/png"];
+
+function immichClient() {
+  const cfg = loadConfig();
+  if (!cfg.immich_url || !cfg.immich_key) throw new HttpError(400, "Set your Immich URL and API key in Settings first.");
+  return new Immich(cfg.immich_url, cfg.immich_key);
+}
+
+const b64Hex = (b64: string) => {
+  try {
+    return Array.from(atob(b64), (c) => c.charCodeAt(0).toString(16).padStart(2, "0")).join("");
+  } catch {
+    return "";
+  }
+};
+
+/** Immich's localDateTime (the wall clock) as a scan's EXIF-style time. */
+const exifFromLocal = (local: string) =>
+  /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/.test(local) ? local.slice(0, 19).replace(/-/g, ":").replace("T", " ") : "";
+
+/**
+ * Import photos from Immich into a tray as scans, one slide each, to develop them again
+ * (workflow.pull_in). Downloaded byte for byte and checked against Immich's SHA-1; never removable.
+ * EXIF orientation needs no rotation here: the browser decodes photos upright already.
+ */
+async function pullIn(job: Job, sid: string, ids: string[]) {
+  const client = immichClient();
+  let d = await loadSession(sid);
+  const have = new Set(Object.values(d.scans).map((s) => s.immich_asset));
+  job.total = ids.length;
+  job.message = `Downloading ${ids.length} photos from Immich`;
+  const records: Record<string, Scan> = {};
+  const fresh: { scanId: string; id: string; day: string; caption: string }[] = [];
+  let skipped = 0;
+  let unusable = 0;
+  for (const id of ids) {
+    job.done++;
+    if (have.has(id)) {
+      skipped++;
+      continue;
+    }
+    const a = await client.asset(id);
+    const name = a?.originalFileName || id;
+    const mime = a?.originalMimeType || (/\.png$/i.test(name) ? "image/png" : "image/jpeg");
+    if (!a || a.type !== "IMAGE" || a.isTrashed || !PULLABLE.includes(mime)) {
+      unusable++; // videos, RAW / HEIC, or gone
+      continue;
+    }
+    const blob = await client.download(id);
+    const sha = await sha1Blob(blob);
+    const expected = b64Hex(a.checksum ?? "");
+    if (expected.length === 40 && expected !== sha) throw new Error(`The download of ${name} did not verify - try again`);
+    const scanId = `${slugify(stem(name)).slice(0, 40)}_${id.replace(/-/g, "").slice(0, 6)}`;
+    const dest = `${sessionDir(sid)}/originals/${scanId}.jpg`;
+    await lib.write(dest, blob);
+    const local = a.localDateTime ?? "";
+    records[scanId] = {
+      file: `${scanId}.jpg`,
+      source: `immich:${id}`,
+      source_root: "immich",
+      removable: false,
+      size: blob.size,
+      sha1: sha,
+      taken: exifFromLocal(local) || (await taken(new File([blob], name))),
+      source_deleted: false,
+      immich_asset: id,
+    };
+    const day = parseDate(local.slice(0, 10)) ? local.slice(0, 10) : "";
+    fresh.push({ scanId, id, day, caption: (a.exifInfo?.description ?? "").trim().slice(0, 2000) });
+    have.add(id);
+  }
+  d = (await update(sid, (f) => void Object.assign(f.scans, records))).d;
+
+  job.message = "Analysing photos";
+  job.done = 0;
+  job.total = fresh.length;
+  const learning = loadConfig().learning_enabled;
+  for (const x of fresh) {
+    await makeProxies(sid, x.scanId, (await lib.read(originalPath(d, x.scanId)))!);
+    const g = newGroup(d, [x.scanId]);
+    Object.assign(g, { date: x.day, caption: x.caption, source_asset: { id: x.id } });
+    const analysis = await jobs.call("analyse", {
+      proxies: [{ key: `${sid}:${x.scanId}`, blob: await readCache(sid, `${x.scanId}.proxy.jpg`) }],
+      fused: await fusedSrc(d, g, jobs),
+      scans: 1,
+    });
+    let suggestion: Partial<Params> | null = null;
+    let neighbours = 0;
+    if (learning) [suggestion, neighbours] = (await model()).suggest(analysis.features);
+    await update(sid, (f) => {
+      g.params = structuredClone(f.defaults);
+      g.feat = analysis.features;
+      if (suggestion) {
+        g.params = cleanParams({ ...g.params, ...suggestion });
+        g.params_source = `learned:${neighbours}`;
+      }
+      f.groups.push(g);
+    }); // slides appear in the UI one by one
+    job.done++;
+  }
+  await update(sid, (f) => log(f, `Pulled in ${fresh.length} photos from Immich`));
+  job.message =
+    `Pulled in ${fresh.length} photos from Immich` +
+    (skipped ? ` (${skipped} were in this tray already)` : "") +
+    (unusable ? `; left out ${unusable} that aren't JPEG or PNG photos` : "");
+}
+
+/** Captions and dates edited in Immich, back into the tray (workflow.pull_metadata). */
+async function pullMetadata(sid: string) {
+  const client = immichClient();
+  const d0 = await loadSession(sid);
+  const found = new Map<string, Awaited<ReturnType<Immich["asset"]>>>();
+  for (const g of d0.groups) if (g.immich) found.set(g.id, await client.asset(g.immich.asset_id));
+  const out = { checked: found.size, captions: 0, dates: 0, gone: 0 };
+  const { d } = await update(sid, (fresh) => {
+    const touched: GroupData[] = [];
+    fresh.groups.forEach((g, i) => {
+      if (!found.has(g.id) || !g.immich) return;
+      const a = found.get(g.id);
+      if (!a || a.isTrashed) return void out.gone++;
+      if (a.id !== g.immich.asset_id || !a.exifInfo) return; // uploaded again meanwhile, or not read by Immich yet
+      const pushed = g.immich.pushed ?? pushedMeta(fresh, g, i);
+      const caption = (a.exifInfo.description ?? "").trim().slice(0, 2000);
+      const day = (a.localDateTime ?? "").slice(0, 10);
+      const next = { ...pushed };
+      if (caption !== (pushed.caption ?? "")) {
+        g.caption = next.caption = caption;
+        out.captions++;
+      }
+      if (parseDate(day) && day !== pushed.date) {
+        g.date = next.date = day;
+        out.dates++;
+      }
+      if (next.caption !== pushed.caption || next.date !== pushed.date) {
+        g.immich.pushed = next;
+        touched.push(g);
+      }
+    });
+    // Immich has these already: record them as sent, unless the slide's date still differs from Immich's
+    for (const g of touched) {
+      const i = groupIndex(fresh, g.id);
+      if (isoDay(photoDate(fresh, g, i)) === g.immich!.pushed!.date) g.immich!.meta = slideMeta(fresh, g, i);
+    }
+    if (touched.length) log(fresh, `Pulled ${out.captions} captions and ${out.dates} dates from Immich`);
+  });
+  return { d, pulled: out };
 }
 
 // ------------------------------------------------------------------ card cleanup
@@ -1002,6 +1311,7 @@ export async function handle(method: string, url: string, body: Body = {}): Prom
       keep_originals: cfg.keep_originals,
       keep_exports: cfg.keep_exports,
       learning_enabled: cfg.learning_enabled,
+      upload_originals_stacked: cfg.upload_originals_stacked,
     };
     return { config, sources: await sourceList(), sessions: await listSessions(), job: current } satisfies AppState;
   }
@@ -1014,6 +1324,7 @@ export async function handle(method: string, url: string, body: Body = {}): Prom
       "keep_exports",
       "jpeg_quality",
       "learning_enabled",
+      "upload_originals_stacked",
     ] as const)
       if (k in body && !(k === "immich_key" && body[k] === "")) (cfg as Record<string, unknown>)[k] = body[k];
     saveConfig(cfg);
@@ -1156,6 +1467,7 @@ export async function handle(method: string, url: string, body: Body = {}): Prom
       d.groups[i].scans.push(...nxt.scans);
       d.groups[i].excluded.push(...(nxt.excluded ?? []));
       if (nxt.immich) (d.orphan_assets ??= []).push(nxt.immich.asset_id);
+      if (nxt.immich?.stack_id) (d.orphan_stacks ??= []).push(nxt.immich.stack_id); // restacked under the merged one
     });
     return payload(d);
   }
@@ -1287,6 +1599,45 @@ export async function handle(method: string, url: string, body: Body = {}): Prom
     }
     startJob("cleanup", sid, (job) => cleanupCard(job, sid, cards));
     return { ok: true };
+  }
+  if (is("GET", /^\/api\/immich\/albums$/)) {
+    const albums = await immichClient().albums();
+    return albums
+      .map((a) => ({ id: a.id, name: a.albumName ?? "", count: a.assetCount ?? 0, thumb: a.albumThumbnailAssetId ?? null }))
+      .sort((a, b) => a.name.toLowerCase().localeCompare(b.name.toLowerCase()));
+  }
+  if ((m = is("GET", /^\/api\/immich\/albums\/([^/]+)\/assets$/))) {
+    const assets = await immichClient().albumAssets(m[1]);
+    const pulled = new Map<string, string>();
+    for (const t of await listSessions())
+      for (const sc of Object.values((await loadSession(t.id)).scans))
+        if (sc.immich_asset) pulled.set(sc.immich_asset, t.name);
+    return assets
+      .filter((a) => (a.type ?? "IMAGE") === "IMAGE" && !a.isTrashed)
+      .map((a) => ({
+        id: a.id,
+        name: a.originalFileName ?? "",
+        date: (a.localDateTime ?? "").slice(0, 10),
+        favorite: !!a.isFavorite,
+        tray: pulled.get(a.id) ?? "",
+      }))
+      .sort((a, b) => (a.date === b.date ? (a.name < b.name ? -1 : 1) : a.date < b.date ? -1 : 1));
+  }
+  if (is("POST", /^\/api\/immich\/import$/)) {
+    const ids = ((body.assets as unknown[]) ?? []).map(String);
+    if (!ids.length) throw new HttpError(400, "Pick at least one photo.");
+    if (current && !current.finished) throw new HttpError(409, `Busy with ${current.kind} - wait for it to finish.`);
+    const d = await createSession(
+      String(body.name ?? "").trim() || "From Immich",
+      String(body.album ?? "").trim() || null,
+      String(body.date ?? "").trim(),
+    );
+    startJob("import", d.id, (job) => pullIn(job, d.id, ids));
+    return { id: d.id };
+  }
+  if ((m = is("POST", /^\/api\/sessions\/([^/]+)\/pull$/))) {
+    const { d, pulled } = await pullMetadata(m[1]);
+    return { ...(await payload(d)), pulled };
   }
   if (is("POST", /^\/api\/eject$/))
     return { ok: true, message: "Eject the card from your computer (Finder or Explorer)." };

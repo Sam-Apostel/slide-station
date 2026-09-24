@@ -24,6 +24,8 @@ DEFAULT_CONFIG = {
     "keep_exports": False,
     "learning_enabled": True,
     "jpeg_quality": 95,
+    # also upload each slide's untouched scans, stacked under the developed photo in Immich
+    "upload_originals_stacked": False,
 }
 
 lock = threading.RLock()
@@ -178,7 +180,9 @@ class Session:
             "reviewed": False,
             "skip": False,
             "export": None,  # {"file","sha1","key"}
-            "immich": None,  # {"asset_id","key"}
+            # {"asset_id", "key", "meta", "pushed": {"date", "caption"}, "stack_id", "originals": {scan: asset},
+            #  "own_originals": [assets this app uploaded]}; see ARCHITECTURE "Round trip with Immich"
+            "immich": None,
         }
 
     def log(self, msg: str) -> None:

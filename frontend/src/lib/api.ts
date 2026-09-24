@@ -45,6 +45,8 @@ export type Group = {
   /** The original scans were deleted after upload ("keep originals" off): read-only, Immich has the
    *  final version. Re-importing the scans into the tray unlocks it. */
   locked: boolean;
+  /** Pulled in from an Immich album: its upload replaces that photo there. */
+  from_immich?: boolean;
   reviewed: boolean;
   skip: boolean;
   status: GroupStatus;
@@ -110,7 +112,18 @@ export type Config = {
   keep_originals: boolean;
   keep_exports: boolean;
   learning_enabled?: boolean;
+  /** Also upload the untouched scans, stacked under each developed photo in Immich. */
+  upload_originals_stacked?: boolean;
 };
+
+/** An Immich album to pull photos back in from (`GET /api/immich/albums`). */
+export type ImmichAlbum = { id: string; name: string; count: number; thumb: string | null };
+
+/** A photo in an Immich album; `tray` names the tray that has it already ("" = none). */
+export type ImmichAsset = { id: string; name: string; date: string; favorite: boolean; tray: string };
+
+/** What "Pull from Immich" brought back into a tray. */
+export type Pulled = { checked: number; captions: number; dates: number; gone: number };
 
 export type AppState = {
   config: Config;
@@ -148,6 +161,9 @@ export const histogramUrl = (sid: string, g: Group) =>
   `/api/sessions/${sid}/groups/${g.id}/histogram?v=${g.tone_key}`;
 
 export const scanThumbUrl = (sid: string, scan: string) => `/api/sessions/${sid}/scans/${scan}/thumb.jpg`;
+
+/** Immich's own thumbnail of a photo, through the app (the browser version fetches it from Immich). */
+export const immichThumbUrl = (asset: string) => `/api/immich/assets/${asset}/thumb.jpg`;
 
 // ---------------------------------------------------------------- images
 

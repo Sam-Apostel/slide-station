@@ -9,6 +9,7 @@ import {
   type AppState,
   type Group,
   type Params,
+  type Pulled,
   type SessionPayload,
   type Source,
 } from "@/lib/api";
@@ -487,6 +488,41 @@ export function useSlideStation() {
     }
   };
 
+  /** Bring captions and dates edited in Immich back into this tray. */
+  const pullFromImmich = async () => {
+    const { sessionId: sid } = ref.current;
+    try {
+      const p = await api<SessionPayload & { pulled: Pulled }>("POST", `/api/sessions/${sid}/pull`);
+      applyPayload(p);
+      const { checked, captions, dates, gone } = p.pulled;
+      const what = [captions && plural(captions, "caption"), dates && plural(dates, "date")].filter(Boolean);
+      toast(
+        !checked
+          ? "Nothing in this tray is in Immich yet"
+          : what.length
+            ? `Pulled ${what.join(" and ")} from Immich`
+            : `No changes in Immich (${plural(checked, "slide")} checked)`,
+        gone ? { description: `${plural(gone, "slide")} no longer in Immich (deleted or in its trash)` } : undefined,
+      );
+    } catch (e) {
+      fail(e);
+    }
+  };
+
+  /** A new tray with photos from Immich as its scans, to develop them again. */
+  const importFromImmich = async (assets: string[], body: { name: string; album: string }) => {
+    try {
+      const { id } = await api<{ id: string }>("POST", "/api/immich/import", { assets, ...body });
+      await refreshState();
+      await loadSession(id);
+      toast(`Pulling in ${plural(assets.length, "photo")} from Immich…`);
+      return true;
+    } catch (e) {
+      fail(e);
+      return false;
+    }
+  };
+
   const startCleanup = async () => {
     try {
       await api("POST", `/api/sessions/${ref.current.sessionId}/cleanup`);
@@ -545,6 +581,8 @@ export function useSlideStation() {
     startUpload,
     startSave,
     addSource,
+    pullFromImmich,
+    importFromImmich,
     startCleanup,
     eject,
     reveal,
