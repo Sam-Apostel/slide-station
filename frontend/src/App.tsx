@@ -372,6 +372,7 @@ function SlideStationApp() {
               onEject={(src) => app.eject(src.path)}
               onChooseFolder={() => importFolder()}
               onCapture={canCapture && session ? app.capture : undefined}
+              onResume={app.resumeJob}
             />
           }
           right={
@@ -397,6 +398,7 @@ function SlideStationApp() {
           onEject={(src) => app.eject(src.path)}
           onChooseFolder={() => importFolder()}
           onCapture={canCapture && session ? app.capture : undefined}
+          onResume={app.resumeJob}
           onHelp={() => setHelpOpen(true)}
           onSettings={() => setSettingsOpen(true)}
           onStats={views.stats}
@@ -583,6 +585,7 @@ function SlideStationApp() {
         open={settingsOpen}
         onOpenChange={setSettingsOpen}
         config={state?.config}
+        quota={state?.quota}
         onSaved={() => {
           app.refreshState();
           if (sessionId) app.loadSession(sessionId, true); // e.g. the Insights section follows "Suggest tags"

@@ -91,6 +91,7 @@ def state():
         # what this server can do: accounts (hosted), RAW files, tethered capture (camera rig)
         "server": {"accounts": accounts.enabled(), "raw": raw.available()},
         "camera": _camera(),
+        "quota": uploads.usage(),  # bytes used / allowed, when the server sets quotas
     }
 
 
@@ -115,17 +116,37 @@ def auth_state(request: Request):
     """Whether this server has accounts, and who is signed in."""
     if not accounts.enabled():
         return {"accounts": False, "user": None}
-    home = accounts.resolve(request.cookies.get(accounts.COOKIE))
-    return {"accounts": True, "user": accounts.profile(home) if home else None, "immich_url": store.USER_IMMICH_URL}
+    token = request.cookies.get(accounts.COOKIE)
+    home = accounts.resolve(token)
+    out = {"accounts": True, "user": accounts.profile(home) if home else None, "immich_url": store.USER_IMMICH_URL}
+    if home is None and accounts.ended(token):
+        out["ended"] = accounts.ended(token)  # e.g. the key was revoked in Immich
+    return out
+
+
+TRUST_PROXY = os.environ.get("SLIDESTATION_TRUST_PROXY", "") not in ("", "0")
+
+
+def _client_address(request: Request) -> str:
+    """Who is signing in, for the rate limit: the peer, or behind a reverse proxy you trust
+    (SLIDESTATION_TRUST_PROXY=1) the address it appended to X-Forwarded-For."""
+    fwd = request.headers.get("x-forwarded-for", "")
+    if TRUST_PROXY and fwd.strip():
+        return fwd.split(",")[-1].strip()
+    return request.client.host if request.client else ""
 
 
 @app.post("/api/auth/login")
 def auth_login(request: Request, body: dict = Body(...)):
-    """Sign in with an API key of the server's Immich; your Immich user is your account."""
+    """Sign in with an API key of the server's Immich; your Immich user is your account. Failed
+    tries slow down per address and per key (429 with Retry-After, accounts.check_rate)."""
     if not accounts.enabled():
         return _err(RuntimeError("This server has no accounts"), 404)
     try:
-        token, user = accounts.login(str(body.get("api_key") or ""))
+        token, user = accounts.login(str(body.get("api_key") or ""), _client_address(request))
+    except accounts.RateLimited as e:
+        return JSONResponse({"error": str(e), "retry_after": e.retry_after}, status_code=429,
+                            headers={"Retry-After": str(e.retry_after)})
     except ImmichError as e:
         return _err(e, 401)
     except Exception as e:  # Immich unreachable, no SLIDESTATION_IMMICH_URL
@@ -149,6 +170,14 @@ def set_config(body: dict = Body(...)):
     cfg = load_config()
     # an account's library and Immich are the server's to decide (accounts.py)
     own = () if store.user_home() is not None else ("library", "immich_url")
+    new_key = str(body.get("immich_key") or "").strip()
+    if store.user_home() is not None and new_key and new_key != cfg.get("immich_key"):
+        try:  # an account's key has to stay theirs: it is who they are (accounts.py)
+            accounts.key_owner_ok(new_key)
+        except ImmichError as e:
+            return _err(e, 400)
+        except Exception as e:  # Immich unreachable
+            return _err(e, 502)
     for k in (*own, "immich_key", "keep_originals", "keep_exports", "jpeg_quality",
               "learning_enabled", "upload_originals_stacked", "insights_enabled", "captions_enabled",
               "people_enabled", "lookalike_enabled"):
@@ -410,11 +439,11 @@ def import_into(sid: str, body: dict = Body(...)):
     try:
         if upload is not None:
             uploads.folder(upload)  # 404 now rather than a failed job
-            wf.start_job("import", sid, wf.import_upload, sid, upload)
+            wf.start_job("import", sid, wf.import_upload, sid, upload, resume={"source": source})
         elif store.user_home() is not None:
             return _err(RuntimeError("Upload the scans from your browser: this server's folders aren't yours"), 403)
         else:
-            wf.start_job("import", sid, wf.import_scans, sid, source)
+            wf.start_job("import", sid, wf.import_scans, sid, source, resume={"source": source})
     except uploads.UploadError as e:
         return _err(e, e.status)
     except RuntimeError as e:
@@ -1504,10 +1533,23 @@ def finish(sid: str, body: dict = Body(default={})):
     if not s.data["groups"]:
         return _err(RuntimeError("Nothing to upload yet."))
     try:
-        wf.start_job("upload", sid, wf.finish_session, sid, bool(body.get("only_ready")))
+        only = bool(body.get("only_ready"))
+        wf.start_job("upload", sid, wf.finish_session, sid, only, resume={"only_ready": only})
     except RuntimeError as e:
         return _err(e, 409)
     return {"ok": True}
+
+
+@app.post("/api/job/resume")
+def job_resume():
+    """Run the import or upload a server restart cut off again, as it was started. Both are safe to
+    repeat: an import skips the scans the dedupe index has, an upload the slides Immich has."""
+    job = wf.current_job
+    if not job or not job.interrupted or not job.resume or not job.session:
+        return _err(RuntimeError("Nothing to resume: start it again yourself."), 404)
+    if job.kind == "import":
+        return import_into(job.session, {"source": str(job.resume.get("source") or "")})
+    return finish(job.session, {"only_ready": bool(job.resume.get("only_ready"))})
 
 
 @app.post("/api/sessions/{sid}/cleanup")

@@ -451,5 +451,11 @@ def debug():
     return {k: v for k, v in DB.items() if k != "data"}
 
 
+@app.delete("/debug/keys/{key}")
+def revoke(key: str):
+    """Revoke an API key, as deleting it in Immich's account settings does (accounts mode)."""
+    return {"revoked": USERS.pop(key, None) is not None}
+
+
 if __name__ == "__main__":
     uvicorn.run(app, host="127.0.0.1", port=int(os.environ.get("MOCK_IMMICH_PORT", "2283")))

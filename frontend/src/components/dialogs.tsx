@@ -67,15 +67,21 @@ function FolderInput({
 
 // ------------------------------------------------------------------ settings
 
+const gb = (n: number) =>
+  n >= 1e8 ? `${(n / 1e9).toFixed(1)} GB` : n >= 1e6 ? `${Math.round(n / 1e6)} MB` : `${Math.round(n / 1e3)} KB`;
+
 export function SettingsDialog({
   open,
   onOpenChange,
   config,
+  quota,
   onSaved,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   config: Config | undefined;
+  /** Room used and allowed, when the server sets quotas. */
+  quota?: AppState["quota"];
   onSaved: () => void;
 }) {
   const [url, setUrl] = React.useState("");
@@ -251,6 +257,9 @@ export function SettingsDialog({
                 <FieldLabel>Library</FieldLabel>
                 <FieldDescription>
                   Your trays live on this server, in a library of your own that nobody else signed in here can see.
+                  {quota?.library && ` It holds ${gb(quota.library.used)} of the ${gb(quota.library.limit)} it may.`}
+                  {quota?.uploads &&
+                    ` Folders waiting to be imported take ${gb(quota.uploads.used)} of ${gb(quota.uploads.limit)}.`}
                 </FieldDescription>
               </Field>
             ) : (

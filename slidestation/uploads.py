@@ -26,6 +26,16 @@ MAX_FILE = int(os.environ.get("SLIDESTATION_MAX_UPLOAD_MB", "300")) * 1_000_000
 MAX_CHUNK = 64 * 1_000_000
 ID_RE = re.compile(r"^[0-9a-f]{12}$")
 _lock = threading.Lock()  # upload.json and the .part files
+GB = 1_000_000_000
+# Per library (= per account on a hosted server), 0 = no limit: the whole library (trays, originals,
+# caches, exports, uploads waiting; not downloaded models or place names, which are the server's)
+# and the uploads waiting to be imported. Checked when a folder is announced and on every chunk.
+QUOTA_LIBRARY = int(float(os.environ.get("SLIDESTATION_QUOTA_LIBRARY_GB", "0")) * GB)
+QUOTA_UPLOADS = int(float(os.environ.get("SLIDESTATION_QUOTA_UPLOADS_GB", "0")) * GB)
+NOT_COUNTED = ("models", "data")  # library folders that don't count against its quota
+USAGE_TTL = 60  # a folder's size is walked again after this many seconds (bytes written meanwhile are added)
+_usage: dict[str, tuple[float, int]] = {}  # folder -> (when walked, bytes)
+_usage_lock = threading.Lock()
 
 
 class UploadError(ValueError):
@@ -38,6 +48,92 @@ class UploadError(ValueError):
 
 def _root() -> Path:
     return library() / "uploads"
+
+
+# --------------------------------------------------------------------------- quotas
+
+
+def _walk(d: Path, skip: tuple[str, ...] = ()) -> int:
+    n = 0
+    try:
+        with os.scandir(d) as it:
+            for e in it:
+                try:
+                    if e.is_dir(follow_symlinks=False):
+                        if e.name not in skip:
+                            n += _walk(Path(e.path))
+                    elif e.is_file(follow_symlinks=False):
+                        n += e.stat(follow_symlinks=False).st_size
+                except OSError:  # removed meanwhile
+                    pass
+    except OSError:
+        pass
+    return n
+
+
+def _size(d: Path, skip: tuple[str, ...] = ()) -> int:
+    """Bytes under a folder, walked at most every USAGE_TTL seconds (a library has ~10 files a slide)."""
+    k = str(d)
+    with _usage_lock:
+        hit = _usage.get(k)
+        if hit and time.time() - hit[0] < USAGE_TTL:
+            return hit[1]
+    n = _walk(d, skip)
+    with _usage_lock:
+        _usage[k] = (time.time(), n)
+    return n
+
+
+def _grew(n: int) -> None:
+    """Bytes just written into this library's uploads: counted until the next walk."""
+    with _usage_lock:
+        for k in (str(library()), str(_root())):
+            if k in _usage:
+                t, b = _usage[k]
+                _usage[k] = (t, b + n)
+
+
+def forget_usage() -> None:
+    """Walk again next time (after an import, a deleted upload)."""
+    with _usage_lock:
+        _usage.clear()
+
+
+def usage() -> dict | None:
+    """{"library": {"used", "limit"}, "uploads": {...}} in bytes for the caller's library, only the
+    limits that are set; None without quotas."""
+    out = {}
+    if QUOTA_LIBRARY:
+        out["library"] = {"used": _size(library(), NOT_COUNTED), "limit": QUOTA_LIBRARY}
+    if QUOTA_UPLOADS:
+        out["uploads"] = {"used": _size(_root()), "limit": QUOTA_UPLOADS}
+    return out or None
+
+
+def _gb(n: int) -> str:
+    if n >= GB // 10:
+        return f"{n / GB:.1f} GB"
+    return f"{round(n / 1_000_000)} MB" if n >= 1_000_000 else f"{round(n / 1000)} KB"
+
+
+def check_room(more: int) -> None:
+    """Raises UploadError 413 (with "quota") when `more` bytes wouldn't fit the library's quotas."""
+    if more <= 0 or not (QUOTA_LIBRARY or QUOTA_UPLOADS):
+        return
+    if QUOTA_UPLOADS:
+        used = _size(_root())
+        if used + more > QUOTA_UPLOADS:
+            raise UploadError(
+                f"Not enough room for uploads: this needs {_gb(more)} more, and uploads waiting to be imported may "
+                f"take {_gb(QUOTA_UPLOADS)} in all ({_gb(used)} are there now). Import or remove the folders "
+                f"uploaded before, or send a smaller part of this one.", 413, quota="uploads")
+    if QUOTA_LIBRARY:
+        used = _size(library(), NOT_COUNTED)
+        if used + more > QUOTA_LIBRARY:
+            raise UploadError(
+                f"Your library is full: it holds {_gb(used)} of {_gb(QUOTA_LIBRARY)} and this needs {_gb(more)} "
+                f"more. Turn off “Keep original scans after upload” in Settings (a slide uploaded to Immich "
+                f"from then on lets go of its scans), or ask whoever runs this server for more room.", 413, quota="library")
 
 
 def _dir(uid: str) -> Path:
@@ -84,6 +180,7 @@ def check(uid: str, files: list[dict]) -> dict:
     d, m = _dir(uid), _manifest(uid)
     idx = imported_index()
     out = {}
+    more = 0  # bytes still to come, for the quotas
     for f in files:
         rel = clean_path(f.get("path", ""))
         size, sha = int(f.get("size", -1)), str(f.get("sha1") or "").lower()
@@ -95,6 +192,8 @@ def check(uid: str, files: list[dict]) -> dict:
         else:
             part = d / (rel + ".part")
             out[rel] = {"offset": part.stat().st_size if part.is_file() else 0}
+            more += max(0, size - out[rel]["offset"])
+    check_room(more)  # say so before anything is sent, not halfway through
     return out
 
 
@@ -120,9 +219,11 @@ def put(uid: str, path: str, offset: int, size: int, sha1: str, data: bytes) -> 
         if have + len(data) > size:
             part.unlink(missing_ok=True)
             raise UploadError(f"{rel} is longer than announced", 400, offset=0)
+        check_room(len(data))
         part.parent.mkdir(parents=True, exist_ok=True)
         with open(part, "ab") as fh:
             fh.write(data)
+        _grew(len(data))
         have += len(data)
         if have < size:
             return {"offset": have, "done": False}
@@ -144,6 +245,7 @@ def folder(uid: str) -> tuple[Path, str]:
 
 def delete(uid: str) -> None:
     shutil.rmtree(_dir(uid), ignore_errors=True)
+    forget_usage()
 
 
 def sources() -> list[dict]:

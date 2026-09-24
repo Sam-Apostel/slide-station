@@ -274,6 +274,9 @@ export type Job = {
   error: string;
   finished: boolean;
   started: number;
+  /** Cut off by a server restart (reported as an error); `resumable`: POST /api/job/resume runs it again. */
+  interrupted?: boolean;
+  resumable?: boolean;
 };
 
 export type Config = {
@@ -343,17 +346,34 @@ export type AppState = {
   server?: { accounts: boolean; raw: boolean };
   /** Tethered capture: null without gphoto2 (or on a hosted server). */
   camera?: { cameras: Camera[] } | null;
+  /** Room used and allowed in bytes, when the server sets quotas (a hosted server, per account). */
+  quota?: { library?: Quota; uploads?: Quota } | null;
 };
+
+export type Quota = { used: number; limit: number };
 
 /** A hosted server's accounts: who is signed in (GET /api/auth). */
 export type AuthState = {
   accounts: boolean;
   user: { id: string; name: string; email: string } | null;
   immich_url?: string;
+  /** Why the last session ended by itself, e.g. its API key was revoked in Immich. */
+  ended?: string;
 };
 
 /** Fired when the server says the session is gone (accounts): the sign-in screen takes over. */
 export const SIGNED_OUT = "slide-station-signed-out";
+
+/** A request the server refused: its status and the rest of its answer (e.g. `quota`). */
+export class ApiError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+    readonly body: Record<string, unknown> = {},
+  ) {
+    super(message);
+  }
+}
 
 export async function api<T = unknown>(method: string, url: string, body?: unknown): Promise<T> {
   if (standalone) {
@@ -367,7 +387,7 @@ export async function api<T = unknown>(method: string, url: string, body?: unkno
   });
   const j = await r.json().catch(() => ({}));
   if (r.status === 401 && j.signin) window.dispatchEvent(new Event(SIGNED_OUT));
-  if (!r.ok) throw new Error(j.error || j.detail || `${r.status} ${r.statusText}`);
+  if (!r.ok) throw new ApiError(j.error || j.detail || `${r.status} ${r.statusText}`, r.status, j);
   return j as T;
 }
 

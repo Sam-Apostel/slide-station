@@ -73,8 +73,9 @@ chmod 600) and the library folder (default `~/Pictures/Slide Station`), which ho
   `Session` across slow work and then write it back — the UI patches the same file. Use
   `workflow.update_session(sid, fn)`: it reloads under the lock, applies `fn`, saves. Renders
   commit only if the group's keys still match (the user may have edited meanwhile).
-- **One full-resolution render at a time** (`_export_lock`). A 5-scan stack at 22 MP peaks around
-  3 GB; two at once OOM-killed the server during testing.
+- **One full-resolution render at a time** (`_export_lock`, a semaphore across every account:
+  `SLIDESTATION_FULL_RENDERS`, default 1, §4e). A 5-scan stack at 22 MP peaks around 3 GB; two at
+  once OOM-killed the server during testing.
 - **Background renderer** renders approved-but-not-uploaded slides while the user keeps reviewing,
   so uploading is mostly network time. It skips while a job runs and works on `active_session`
   (set by `GET /api/sessions/{id}`).
@@ -121,6 +122,11 @@ frontend/src/
 - **Keyboard shortcuts are identical to the original** — they are why the app is fast for 10k
   slides. ← → always move between slides, even from a focused slider; ↑ ↓ nudge a focused
   adjustment value field (Shift: by 10).
+- The hook keeps the tray asked for (`openId`, what the tray switcher shows) apart from the tray on
+  screen (`sessionId` = the payload's own `summary.id`): while another tray loads the old payload is
+  still shown, and pairing it with the new id asked for its previews under the wrong tray (404s).
+  Every URL and action uses `sessionId`; `ui_flow.py` ends by creating a tray and asserting no
+  failed request.
 - Slider edits are optimistic and debounced (140 ms). Pending edits are tied to the slide they
   were made on, so pressing → mid-debounce can't save them onto the next slide.
 - Learning is surfaced: the Colour section says where the settings came from (tray defaults /
@@ -166,6 +172,18 @@ don't turn `changed`.
   the scan itself.
 - Editor: `components/tone-curve.tsx`. Click adds, drag moves, double-click or dragging an inner
   point out of the box removes. Curves are learned along with the sliders (§5).
+
+### Auto restore on over-exposed scans
+
+`auto_restore`'s grey-world gamma is `log(target) / log(median)` per channel. A channel whose median
+sits at white (over half the picture clipped, a scan ~1.5–1.8× over-exposed) made that NaN / inf in
+Python (TypeScript and Swift special-cased it to 1, with a cliff just below). All three now keep the
+median at most `RESTORE_MED_MAX` (0.999) and bound the gamma to `RESTORE_GAMMA` (0.25..4): a blown
+channel is pulled down as hard as grey-world ever pulls a too-strong channel (the fixture scene's
+blue already gets 3.3), a scan blown in every channel gets gamma 1 (levels only: nothing left to
+balance), and a flat channel (an empty, white frame) keeps its levels instead of stretching to
+black. Golden fixture `restored_blown.f32` (+ `restore_blown` in `golden.json`): scene.png ×1.5,
+×2, ×3; `tests/test_restore_blown.py`, `parity.test.ts`, `ParityTests.testAutoRestoreBlownOut`.
 
 ### Adjust panel
 
@@ -667,11 +685,10 @@ putting Slide Station behind the same IdP would be the next step if API keys are
   scanner. The browser version never asks `/api/auth`.
 
 What's left for a real multi-user service: a job *queue* (a second job of the same user is refused
-with 409 as before, and nothing survives a restart; a SQLite-backed queue per user would be the
-next step), memory limits across users (one full-resolution render at a time for the whole server
-today), quotas on uploads / library size, rate limiting of sign-in attempts, and removing a user's
-data when they leave Immich. Immich remains the only identity: revoking the API key in Immich stops
-uploads but not an open Slide Station session (sign out, or delete `auth.json`).
+with 409 as before; a restart reports and resumes the job it cut off, below, but doesn't queue),
+memory limits beyond the render semaphore, and removing a user's data when they leave Immich.
+Sign-in rate limits, revoked keys, quotas, jobs across restarts and the render limit are in
+"Limits" below.
 
 Tests: `tests/test_hosted.py` (TestClient): health, the host default, upload + import as a folder
 (grouping, never removable, staging removed), resume at an offset / 409 / damaged 422 / skip what
@@ -684,6 +701,66 @@ running server in accounts mode, docstring) signs in in the real UI, uploads a f
 folder picker, creates the tray, checks Settings, signs out, a wrong key, a second user who sees
 nothing of the first. Verified bound to `0.0.0.0` and reached over the machine's LAN address, and in
 the built image (`docker build`, healthcheck healthy, the same two-user flow over HTTP).
+
+### Limits: sign-in, revoked keys, quotas, restarts, full-resolution renders
+
+- **Sign-in rate limit** (`accounts.check_rate` / `failed` / `succeeded`, in memory). Every key
+  Immich rejects (401, `immich.Rejected`) counts against two buckets: the client address and the
+  key's first 8 characters (only a hash of them is kept). `SIGNIN_FREE` (3,
+  `SLIDESTATION_SIGNIN_FREE`) failures are free, then each try waits `2^(n-2)` s after the last
+  failure, up to 15 minutes; an hour without failures forgets the bucket. While a bucket waits,
+  `POST /api/auth/login` answers **429** with `Retry-After` and `retry_after` and never asks Immich,
+  even for a good key from that address. A good key clears its own prefix's bucket, not the
+  address's (it could be guessing others' keys between its own sign-ins). The address is the peer;
+  behind a reverse proxy set `SLIDESTATION_TRUST_PROXY=1` and the last `X-Forwarded-For` entry (the
+  one the proxy appended) counts instead. The sign-in screen shows the server's message.
+- **Revoked keys end the session.** Each token record in `auth.json` has `checked`; `resolve`
+  (every request, in the middleware) asks `GET /users/me` with the user's stored key once
+  `KEY_RECHECK` (10 min, `SLIDESTATION_KEY_RECHECK_MINUTES`) has passed, claiming the check first
+  so concurrent requests don't all ask. Rejected (401) or a key of another user → `end_sessions`:
+  every record of that user gets `ended` (the reason), the key is removed from their config, the
+  request answers 401 `signin` and `GET /api/auth` returns `ended`, which the sign-in screen shows.
+  Immich unreachable, 5xx or 403 is not a revocation: the session stays and it is asked again a
+  minute later (`KEY_RETRY`). `POST /api/config` in accounts mode only takes a key whose `/users/me`
+  is the same user (400 otherwise), so Settings can't switch an account to someone else's Immich.
+- **Quotas** (`uploads.check_room`, `SLIDESTATION_QUOTA_LIBRARY_GB` / `_UPLOADS_GB`, 0 = none, per
+  library, so per account). The library counts everything under it except `models/` and `data/`
+  (the server's downloads); uploads count `<library>/uploads`. Sizes are walked at most once a
+  minute per folder (`_size`, ~10 files a slide) and bytes written since are added (`_grew`);
+  deleting an upload forgets the cache. `check` refuses a folder whose remaining bytes don't fit
+  before anything is sent, and every chunk is checked again (a client that sends anyway): **413**
+  with `quota: "library" | "uploads"` and a message that says what to do. The UI shows it as the
+  upload's error without "drop the folder again" (`lib/upload.ts` `isQuota`; `api()` now throws an
+  `ApiError` with the status and body). `/api/state` has `quota: {library?, uploads?: {used,
+  limit}}` when set, shown in Settings. Imports from the staging folder aren't checked (their bytes
+  are already counted, and the staging copy goes when the import ends); exports aren't either (an
+  upload to Immich must never fail for room: exports are deleted after upload by default).
+- **Jobs across restarts** (`workflow._record` / `_unrecord` / `_interrupted`). `start_job` writes
+  `<home>/job.json` (`{id, kind, session, started, resume}`, the user's folder or
+  `SLIDESTATION_HOME`) and the job removes it when it ends, if the id is still its own. The first
+  `job_now()` for a library in a new process finds a leftover file = a job the restart cut off, and
+  reports it as a finished job with `interrupted: true` and an error saying to run it again. Imports
+  (`resume: {"source"}`) and uploads (`{"only_ready"}`) are `resumable`: `POST /api/job/resume` runs
+  them again through the normal endpoints, which is safe because an import skips what the dedupe
+  index has (an upload's staging folder stays until its import finishes) and an upload skips slides
+  Immich already has. The activity well shows "Import cut off by a server restart" with
+  **Resume**; other kinds just say so. Nothing else is queued or retried by itself.
+- **Full-resolution renders**: `_export_lock` is a `BoundedSemaphore(SLIDESTATION_FULL_RENDERS)`
+  (default 1) shared by exports and 1:1 zoom across every account. The zoom cache (`_full`, one
+  slide) and its lock stay server-wide, so zooms still take turns; the background renderer still
+  waits while any job runs.
+
+Tests: `tests/test_accounts_limits.py` — per-address backoff (429, Retry-After doubling to the cap,
+Immich not asked while waiting, another address unaffected, forgotten after an hour), per-prefix
+limit across addresses and its reset by the key's owner, `X-Forwarded-For` only when trusted; a key
+revoked in the mock Immich (`DELETE /debug/keys/{key}`) ends both of Ann's sessions after the
+interval but not before, forgets the key, Bob stays, a new key works; Immich down keeps the session;
+Settings refuses Bob's key for Ann; upload and library quotas (announced and per chunk, per account,
+models not counted, room again after deleting); an import and an upload interrupted by a simulated
+restart are reported and resumed (no slide sent twice), other kinds not resumable; two users'
+exports take turns with the default semaphore and overlap with 2. Checked in the real UI too (vite
+against a server in accounts mode): the 429 message, the quota toast and Settings line, the
+sign-in screen after revoking the key, and Resume after a restart with a job left behind.
 
 ## 4f. Camera rig mode: RAW files, tethered capture (ROADMAP §5)
 

@@ -36,6 +36,8 @@ type TopBarProps = {
   onChooseFolder?: () => void;
   /** Camera rig mode: take a picture with the tethered camera into the open tray. */
   onCapture?: () => void;
+  /** An import or upload a server restart cut off: run it again. */
+  onResume?: () => void;
   onHelp: () => void;
   /** Progress across the library (slides per hour, projected finish). */
   onStats?: () => void;
@@ -86,8 +88,11 @@ export function ActivityWell({
   onEject,
   onChooseFolder,
   onCapture,
+  onResume,
   className,
-}: Pick<TopBarProps, "state" | "onImport" | "onEject" | "onChooseFolder" | "onCapture"> & { className?: string }) {
+}: Pick<TopBarProps, "state" | "onImport" | "onEject" | "onChooseFolder" | "onCapture" | "onResume"> & {
+  className?: string;
+}) {
   const src = state?.sources.find((x) => x.new > 0) ?? state?.sources[0];
   const job = visibleJob(state);
   // a hosted server has no scanner of yours to wait for: folders are uploaded from the browser
@@ -100,6 +105,7 @@ export function ActivityWell({
       className={cn(
         "ss-well h-[28px] max-w-full flex-row gap-2 text-[12px]",
         job ? "relative w-[320px] px-3" : "w-auto py-0 pr-[3px] pl-3",
+        job?.interrupted && job.resumable && onResume && "pr-[3px]",
         className,
       )}
     >
@@ -120,12 +126,29 @@ export function ActivityWell({
               job.error ? "text-destructive" : "text-foreground/90",
             )}
           >
-            {job.error
-              ? `Failed: ${job.error}`
-              : job.finished
-                ? job.message
-                : `${job.message} · ${job.done}/${job.total || "?"}`}
+            {job.interrupted && job.resumable && onResume
+              ? `${job.kind === "upload" ? "Upload" : "Import"} cut off by a server restart`
+              : job.interrupted
+                ? job.error
+                : job.error
+                  ? `Failed: ${job.error}`
+                  : job.finished
+                    ? job.message
+                    : `${job.message} · ${job.done}/${job.total || "?"}`}
           </span>
+          {job.interrupted && job.resumable && onResume && (
+            <Tip
+              label={
+                job.kind === "upload"
+                  ? "Upload again: slides already in Immich are skipped"
+                  : "Import again: scans already imported are skipped"
+              }
+            >
+              <ProButton active className="relative" onClick={onResume}>
+                Resume
+              </ProButton>
+            </Tip>
+          )}
         </>
       ) : src ? (
         <>

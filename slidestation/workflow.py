@@ -5,6 +5,7 @@ import base64
 import contextvars
 import hashlib
 import io
+import json
 import os
 import shutil
 import subprocess
@@ -28,8 +29,9 @@ from . import raw
 from . import tether
 from . import uploads
 from .immich import Immich, ImmichError
-from .store import (Session, active_scans, add_to_index, as_home, group_status, imported_index, library, load_config,
-                    lock, meta_key, parse_date, render_key, sha1_file, slide_dates, slugify, statuses, user_home)
+from .store import (Session, _atomic_write, active_scans, add_to_index, as_home, group_status, home, imported_index,
+                    library, load_config, lock, meta_key, parse_date, render_key, sha1_file, slide_dates, slugify,
+                    statuses, user_home)
 
 VOLUMES = Path(os.environ.get("SLIDESTATION_VOLUMES", "/Volumes"))
 SCANNER_MODELS = {"RODFS50"}  # Kodak Slide N Scan
@@ -47,14 +49,29 @@ class Job:
         self.error = ""
         self.finished = False
         self.started = time.time()
+        self.id = uuid.uuid4().hex[:12]
+        # how to run it again after a restart ({"source"} for an import, {"only_ready"} for an
+        # upload): set on a job that was interrupted and can be resumed (POST /api/job/resume)
+        self.resume: dict | None = None
+        self.interrupted = False
 
     def as_dict(self):
-        return {k: getattr(self, k) for k in ("kind", "session", "total", "done", "message", "error", "finished", "started")}
+        d = {k: getattr(self, k) for k in ("kind", "session", "total", "done", "message", "error", "finished", "started")}
+        if self.interrupted:
+            d["interrupted"] = True
+            d["resumable"] = self.resume is not None
+        return d
 
 
 # One job at a time per library: the single user's, or each account's own (accounts mode). Read and
 # set as `wf.current_job` / `wf.active_session` from outside (module properties at the end of this
 # file); inside this module use job_now() / the dicts.
+#
+# A running job is also written to `<home>/job.json` (the user's folder, or SLIDESTATION_HOME) and
+# removed when it ends. One still there when this process first looks at that library was cut off
+# by a restart: it is reported as a finished job with an "interrupted, run it again" error, and an
+# import or upload can be resumed as it was started (imports skip what the dedupe index has,
+# uploads what Immich already has, so running one again is safe).
 _jobs: dict[str, Job | None] = {}
 _active: dict[str, str | None] = {}  # the tray each library has open (the background renderer's)
 _homes: dict[str, Path | None] = {"None": None}  # key -> the home to act as (None: the single user)
@@ -72,9 +89,55 @@ def homes() -> list[Path | None]:
     return list(_homes.values())
 
 
+def _job_file() -> Path:
+    return home() / "job.json"
+
+
+INTERRUPTED = {
+    "import": "The import was interrupted by a server restart: import again (scans already imported are skipped).",
+    "upload": "The upload was interrupted by a server restart: upload again (slides already in Immich are skipped).",
+}
+
+
+def _interrupted() -> Job | None:
+    """The job a restart cut off in this library (job.json left behind), as a finished, failed job."""
+    try:
+        rec = json.loads(_job_file().read_text())
+    except (OSError, ValueError):
+        return None
+    job = Job(str(rec.get("kind") or "job"), rec.get("session"))
+    job.started, job.done, job.total = rec.get("started", job.started), rec.get("done", 0), rec.get("total", 0)
+    job.finished, job.interrupted = True, True
+    job.resume = rec.get("resume") if job.kind in INTERRUPTED else None
+    job.error = INTERRUPTED.get(job.kind, f"The {job.kind} job was interrupted by a server restart: run it again.")
+    return job
+
+
 def job_now() -> Job | None:
-    """The current library's job (running or last finished)."""
-    return _jobs.get(_key())
+    """The current library's job (running or last finished; after a restart, the one it cut off)."""
+    k = _key()
+    if k not in _jobs:
+        with _job_lock:
+            if k not in _jobs:
+                _jobs[k] = _interrupted()
+    return _jobs.get(k)
+
+
+def _record(job: Job) -> None:
+    """job.json while a job runs (see above); never lets a job fail over it."""
+    try:
+        _atomic_write(_job_file(), {"id": job.id, "kind": job.kind, "session": job.session, "started": job.started,
+                                    "resume": job.resume})
+    except OSError as e:
+        print("recording the job:", e)
+
+
+def _unrecord(job: Job) -> None:
+    try:
+        if json.loads(_job_file().read_text()).get("id") == job.id:
+            _job_file().unlink()
+    except (OSError, ValueError):
+        pass
 
 
 def any_job_running() -> bool:
@@ -86,13 +149,18 @@ def set_active(sid: str | None) -> None:
     _active[_key()] = sid
 
 
-def start_job(kind: str, session: str | None, fn, *args) -> Job:
+def start_job(kind: str, session: str | None, fn, *args, resume: dict | None = None) -> Job:
+    """Run fn(job, *args) in a thread as this library's one job. `resume`: what running it again
+    after a restart takes (kept in job.json; only imports and uploads are resumed)."""
+    job_now()  # a job cut off by a restart is known before a new one replaces it
     with _job_lock:
-        cur = job_now()
+        cur = _jobs.get(_key())
         if cur and not cur.finished:
             raise RuntimeError(f"Busy with {cur.kind} - wait for it to finish.")
         job = Job(kind, session)
+        job.resume = resume
         _jobs[_key()] = job
+        _record(job)
 
     def run():
         try:
@@ -104,6 +172,7 @@ def start_job(kind: str, session: str | None, fn, *args) -> Job:
             job.error = str(e) or e.__class__.__name__
         finally:
             job.finished = True
+            _unrecord(job)
 
     # the job acts as whoever started it (store.as_home): same library, same config
     threading.Thread(target=contextvars.copy_context().run, args=(run,), daemon=True).start()
@@ -480,7 +549,10 @@ def export_fresh(s: Session, g: dict, index: int) -> bool:
     return bool(ex and ex.get("ekey") == export_key(s, g, index) and (s.export_dir / ex["file"]).exists())
 
 
-_export_lock = threading.Lock()
+# Full-resolution renders (exports, 1:1 zoom) running at once across the whole server, every
+# account's together: a 5-scan stack at 22 MP peaks around 3 GB, so the default is one at a time.
+FULL_RENDERS = max(1, int(os.environ.get("SLIDESTATION_FULL_RENDERS", "1")))
+_export_lock = threading.BoundedSemaphore(FULL_RENDERS)
 
 
 def xmp_subjects(tags: list[str]) -> bytes:
@@ -520,7 +592,7 @@ def render_export(sid: str, gid: str, quality: int) -> Path | None:
         return s.export_dir / g["export"]["file"]
     rkey, ekey = render_key(g), export_key(s, g, index)
     scans = active_scans(g)
-    with _export_lock:  # full-resolution blends take a few GB: never run two at once
+    with _export_lock:  # full-resolution blends take a few GB: FULL_RENDERS at once
         a = im.fuse([im.load_full(str(s.original_path(x))) for x in scans])
         a = im.rotate_arr(a, g["rotation"])
         a = im.develop(a, im.Params.from_dict(g["params"]))
@@ -575,9 +647,9 @@ def full_image(s: Session, gid: str) -> np.ndarray:
     """The slide developed at full resolution, for 1:1 zoom (uint8, ~65 MB for 22 MP).
 
     Only the slide last zoomed into is kept. A finished export of the same render is decoded
-    instead of fusing again; otherwise it renders like an export, under the same one-at-a-time
-    lock (a 5-scan stack peaks around 3 GB). Raises FileNotFoundError when the originals are gone
-    and there is no export to show."""
+    instead of fusing again; otherwise it renders like an export, under the same server-wide
+    limit (FULL_RENDERS; a 5-scan stack peaks around 3 GB). Raises FileNotFoundError when the
+    originals are gone and there is no export to show."""
     g = s.group(gid)
     key = (str(s.dir), gid, render_key(g))
     with _full_lock:  # concurrent tile requests wait for one render instead of starting their own

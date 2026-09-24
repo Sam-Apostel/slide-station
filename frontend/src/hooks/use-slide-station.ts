@@ -2,7 +2,7 @@ import * as React from "react";
 import { toast } from "sonner";
 import { desktop } from "@/lib/desktop";
 import { droppedFiles, inputFolder, pickedFolder } from "@/lib/files";
-import { scansOf, uploadFolder } from "@/lib/upload";
+import { isQuota, scansOf, uploadFolder } from "@/lib/upload";
 import {
   api,
   needsReview,
@@ -744,6 +744,16 @@ export function useSlideStation() {
     }
   };
 
+  /** Run the import or upload a server restart cut off (reported as interrupted) again, as it was started. */
+  const resumeJob = async () => {
+    try {
+      await api("POST", "/api/job/resume");
+      refreshState();
+    } catch (e) {
+      fail(e);
+    }
+  };
+
   /** Save finished JPEGs to disk instead of Immich (browser version): a folder you pick, or a zip. */
   const startSave = async (onlyReady = false) => {
     try {
@@ -803,8 +813,11 @@ export function useSlideStation() {
       await refreshState();
       return ref.current.state?.sources.find((x) => x.path === `upload:${id}`) ?? null;
     } catch (e) {
-      toast.error(`Upload stopped: ${e instanceof Error ? e.message : e}. Drop the folder again to carry on.`, {
+      const why = e instanceof Error ? e.message : String(e);
+      // out of room says what to do itself; anything else resumes when the folder is dropped again
+      toast.error(isQuota(e) ? why : `Upload stopped: ${why}. Drop the folder again to carry on.`, {
         id: t,
+        duration: isQuota(e) ? 15000 : undefined,
       });
       return null;
     }
@@ -935,6 +948,7 @@ export function useSlideStation() {
     startImport,
     createSession,
     startUpload,
+    resumeJob,
     startSave,
     addSource,
     capture,

@@ -12,6 +12,10 @@ class ImmichError(RuntimeError):
     pass
 
 
+class Rejected(ImmichError):
+    """Immich doesn't accept the API key at all (401): wrong, deleted or revoked."""
+
+
 class NotIndexed(ImmichError):
     """Immich hasn't computed this asset's CLIP embedding yet (its machine learning runs after upload)."""
 
@@ -43,7 +47,7 @@ class Immich:
 
     def _check(self, r: httpx.Response) -> httpx.Response:
         if r.status_code == 401:
-            raise ImmichError("Immich rejected the API key (401).")
+            raise Rejected("Immich rejected the API key (401).")
         if r.status_code == 403:
             raise ImmichError(f"The API key lacks a permission for {r.request.method} {r.request.url.path} (403). "
                               f"Give it {PERMISSIONS}.")

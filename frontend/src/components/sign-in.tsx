@@ -22,14 +22,24 @@ export function AccountGate({ children }: { children: React.ReactNode }) {
 
   if (standalone) return <>{children}</>;
   if (!auth) return null;
-  if (auth.accounts && !auth.user) return <SignIn immichUrl={auth.immich_url ?? ""} onSignedIn={setAuth} />;
+  if (auth.accounts && !auth.user)
+    return <SignIn immichUrl={auth.immich_url ?? ""} ended={auth.ended ?? ""} onSignedIn={setAuth} />;
   // a new account starts the app from scratch: nothing of the last one's state may linger
   return <React.Fragment key={auth.user?.id ?? ""}>{children}</React.Fragment>;
 }
 
-function SignIn({ immichUrl, onSignedIn }: { immichUrl: string; onSignedIn: (a: AuthState) => void }) {
+function SignIn({
+  immichUrl,
+  ended,
+  onSignedIn,
+}: {
+  immichUrl: string;
+  /** Why the last session ended by itself (a revoked key), shown until the next try. */
+  ended: string;
+  onSignedIn: (a: AuthState) => void;
+}) {
   const [key, setKey] = React.useState("");
-  const [error, setError] = React.useState("");
+  const [error, setError] = React.useState(ended);
   const [busy, setBusy] = React.useState(false);
 
   const submit = async (e: React.FormEvent) => {

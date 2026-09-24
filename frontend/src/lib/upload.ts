@@ -3,7 +3,7 @@
 // an offset; the server says where each file stands (`check`), so an interrupted upload carries on
 // where it stopped — within the page, and after a reload when the same folder is dropped again
 // (the upload id is remembered per folder). Files the library already has are not sent at all.
-import { api } from "@/lib/api";
+import { api, ApiError } from "@/lib/api";
 import type { PickedFile } from "@/lib/files";
 
 const CHUNK = 8 * 1024 * 1024;
@@ -21,6 +21,9 @@ export function scansOf(files: PickedFile[], raw: boolean): PickedFile[] {
     (f) => !f.path.split("/").some((p) => p.startsWith(".")) && (SCAN.test(f.path) || (raw && RAW.test(f.path))),
   );
 }
+
+/** The server has no room for this (its quotas, slidestation/uploads.py): sending again won't help. */
+export const isQuota = (e: unknown) => e instanceof ApiError && !!e.body.quota;
 
 async function sha1(file: File): Promise<string> {
   // WebCrypto exists only in a secure context (https, localhost): on plain http across the LAN the
@@ -72,7 +75,7 @@ async function putChunk(id: string, f: PickedFile, sha: string, offset: number):
       await new Promise((res) => setTimeout(res, 500 * 2 ** attempt));
       continue;
     }
-    if (!r.ok) throw new Error(j.error || `${r.status} ${r.statusText}`);
+    if (!r.ok) throw new ApiError(j.error || `${r.status} ${r.statusText}`, r.status, j);
     return j.offset;
   }
 }
@@ -96,7 +99,10 @@ export async function uploadFolder(
     // the same folder was being uploaded before (a reload, a lost connection): resume that one
     status = await api<{ files: Record<string, Status> }>("POST", `/api/uploads/${id}/check`, { files: listing })
       .then((r) => r.files)
-      .catch(() => null);
+      .catch((e) => {
+        if (isQuota(e)) throw e; // no room: a new upload wouldn't fit either
+        return null;
+      });
   }
   if (!status) {
     id = (await api<{ id: string }>("POST", "/api/uploads", { name })).id;

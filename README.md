@@ -120,6 +120,20 @@ can use it, so keep it on a trusted network. The container checks its own health
 (`/api/health`). Not there on a server: the scanner itself (plug it into a computer and drop its
 folder), eject, show in Finder, tethered capture.
 
+Limits for a server shared by several people (environment variables of the container):
+
+| Variable | Default | What it does |
+| --- | --- | --- |
+| `SLIDESTATION_QUOTA_LIBRARY_GB` | none | Room per person for their library (trays, scans, previews, uploads waiting). A folder that doesn't fit is refused before it is sent, with what to do about it. |
+| `SLIDESTATION_QUOTA_UPLOADS_GB` | none | Room per person for uploaded folders not imported yet. |
+| `SLIDESTATION_FULL_RENDERS` | 1 | Full-resolution renders at once for the whole server (each can take ~3 GB for a 5-scan bracket). |
+| `SLIDESTATION_KEY_RECHECK_MINUTES` | 10 | How often a signed-in person's API key is asked about again: a key deleted in Immich signs them out everywhere. |
+| `SLIDESTATION_TRUST_PROXY` | off | Set to 1 behind a reverse proxy, so failed sign-ins are counted per visitor (`X-Forwarded-For`) rather than for the proxy. |
+
+Failed sign-ins slow down (a few free tries, then a wait that doubles, up to 15 minutes) per address
+and per key. An import or upload cut off by a restart of the server is reported with a **Resume**
+button that runs it again (what already arrived is skipped).
+
 Running the Python app yourself on another machine works the same way:
 `SLIDESTATION_HOST=0.0.0.0 uv run --python 3.12 python -m slidestation` (it listens on this
 computer only unless told otherwise).
