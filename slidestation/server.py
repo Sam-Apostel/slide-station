@@ -183,6 +183,13 @@ def _learn(s: Session, g: dict) -> None:
         learning.model().remember(key, g["feat"], g["params"])
 
 
+def _mount_view(g: dict) -> dict | None:
+    m = g.get("mount")
+    if not m or m.get("scans") != active_scans(g):
+        return None
+    return {k: m[k] for k in ("angle", "confidence", "box")}
+
+
 def _session_payload(s: Session) -> dict:
     d = s.data
     groups = []
@@ -208,6 +215,9 @@ def _session_payload(s: Session) -> dict:
             "tone_key": tone_key(g),  # histogram cache key
             "can_undo": bool((g.get("history") or {}).get("undo")),
             "can_redo": bool((g.get("history") or {}).get("redo")),
+            # the slide mount's tilt {"angle", "confidence", "box"}; None = not looked for yet (an
+            # older tray, or the scans changed): POST …/mount finds it
+            "mount": _mount_view(g),
             "index": i,
         })
     return {
@@ -910,6 +920,41 @@ def pick_neutral(sid: str, gid: str, body: dict = Body(...)):
         g["params"] = Params.from_dict({**g["params"], "warmth": warmth, "tint": tint}).to_dict()
         g["params_source"] = "manual"
         _learn(s, g)
+        s.save()
+    return _session_payload(s)
+
+
+@app.post("/api/sessions/{sid}/groups/{gid}/mount")
+def straighten_mount(sid: str, gid: str, body: dict = Body(default={})):
+    """The slide mount's tilt (imaging.detect_mount), found and stored if it isn't yet.
+
+    {"apply": true} straightens the photo to the mount; with "trim": true it also crops to the
+    mount's window (a tighter trim than cutting dark rows and columns)."""
+    s = _session(sid)
+    try:
+        g = s.group(gid)
+    except KeyError:
+        raise HTTPException(404, "Slide not found")
+    if body.get("apply"):
+        _editable(g)
+    m = wf.mount_of(s, g)  # the slow part, outside the lock
+    set_params = {}
+    if body.get("apply"):
+        if m["confidence"] <= 0:
+            raise HTTPException(400, "No slide mount found around this photo")
+        set_params["angle"] = -m["angle"] or 0.0
+        if body.get("trim"):
+            a = im.rotate_arr(wf.fused_proxy(s, g), g["rotation"])  # the preview's frame
+            p = Params.from_dict({**g["params"], **set_params})
+            set_params["crop"] = im.mount_crop(a, p, im.rotate_box(m["box"], g["rotation"]))
+    with lock:
+        s = _session(sid)
+        g = s.group(gid)
+        if active_scans(g) == m["scans"]:
+            g["mount"] = m
+            if set_params:
+                _remember(g, "mount")
+                g["params"] = Params.from_dict({**g["params"], **set_params}).to_dict()
         s.save()
     return _session_payload(s)
 

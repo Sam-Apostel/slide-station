@@ -1,7 +1,7 @@
 import XCTest
 @testable import SlideKit
 
-/// Learning, undo, card cleanup and locked slides.
+/// Learning, undo, card cleanup, locked slides, mount and dust settings.
 final class FeatureTests: XCTestCase {
     struct Golden: Decodable {
         var features: [Double]
@@ -190,5 +190,30 @@ final class FeatureTests: XCTestCase {
         try await library.update(tray.id) { t in t.groups[0].immich = UploadRecord(assetId: "a", key: t.groups[0].renderKey) }
         let t = try await library.load(tray.id)
         XCTAssertEqual(Originals.cleanupBlockers(t), ["these scans were imported from a folder, not from the scanner's card"])
+    }
+
+    func testDustCountsInTheRenderKeyOnlyWhenOn() throws {
+        var g = Slide(scans: ["a"], params: Params())
+        let key = g.renderKey
+        g.params.dust = 0.4
+        XCTAssertNotEqual(g.renderKey, key)
+        g.params.dust = 0
+        XCTAssertEqual(g.renderKey, key)
+        // trays from before dust repair decode with it off
+        let old = try JSONDecoder().decode(Params.self, from: Data(#"{"strength": 0.5, "trim": true}"#.utf8))
+        XCTAssertEqual(old.dust, 0)
+    }
+
+    func testMountRoundTripsAndGoesStaleWithTheScans() throws {
+        var g = Slide(scans: ["a", "b"], params: Params())
+        g.mount = MountEdge(angle: 1.5, confidence: 0.9, box: [0.1, nil, 0.9, 0.92], scans: g.activeScans)
+        let back = try JSONDecoder().decode(Slide.self, from: JSONEncoder().encode(g))
+        XCTAssertEqual(back.mount, g.mount)
+        XCTAssertEqual(back.currentMount, g.mount)
+        XCTAssertTrue(back.straightensToMount)
+        var framed = back; framed.params.angle = 0.5
+        XCTAssertFalse(framed.straightensToMount)
+        var fewer = back; fewer.excluded = ["b"]
+        XCTAssertNil(fewer.currentMount)
     }
 }

@@ -26,7 +26,7 @@ const COOL = "#4d8fe6";
 const GREEN = "#4dbb72";
 const MAGENTA = "#d25ad2";
 
-const SPECS: Record<"strength" | "brightness" | "contrast" | "saturation", Spec> = {
+const SPECS: Record<"strength" | "dust" | "brightness" | "contrast" | "saturation", Spec> = {
   strength: {
     key: "strength",
     label: "Auto restore",
@@ -34,6 +34,16 @@ const SPECS: Record<"strength" | "brightness" | "contrast" | "saturation", Spec>
     max: 1,
     track: "linear-gradient(90deg, #6d7876, #8c8a78 45%, #d49a48)",
     hint: ["off", "full"],
+  },
+  dust: {
+    key: "dust",
+    label: "Dust",
+    min: 0,
+    max: 1,
+    // specks on the left, gone to the right
+    track:
+      "radial-gradient(circle at 7% 40%, #101012 0 1.5px, transparent 2px), radial-gradient(circle at 16% 68%, #ecebe6 0 1px, transparent 1.5px), radial-gradient(circle at 27% 34%, #101012 0 1px, transparent 1.5px), linear-gradient(90deg, #5f6361, #8a8d8b)",
+    hint: ["off", "strong"],
   },
   brightness: {
     key: "brightness",
@@ -287,7 +297,10 @@ function BalancePad({
       </div>
       <div className="grid grid-cols-2 gap-2">
         <label className="ss-adj-pair">
-          <span className="size-[7px] rounded-full" style={{ background: `linear-gradient(90deg, ${COOL}, ${WARM})` }} />
+          <span
+            className="size-[7px] rounded-full"
+            style={{ background: `linear-gradient(90deg, ${COOL}, ${WARM})` }}
+          />
           Warmth
           <ValueField
             label="Warmth"
@@ -300,7 +313,10 @@ function BalancePad({
           />
         </label>
         <label className="ss-adj-pair">
-          <span className="size-[7px] rounded-full" style={{ background: `linear-gradient(90deg, ${GREEN}, ${MAGENTA})` }} />
+          <span
+            className="size-[7px] rounded-full"
+            style={{ background: `linear-gradient(90deg, ${GREEN}, ${MAGENTA})` }}
+          />
           Tint
           <ValueField
             label="Tint"
@@ -358,7 +374,8 @@ const off = (v: number, d = 0) => Math.abs(v - d) > 0.004;
 export function adjustSummary(g: Group, defaults: Params) {
   const p = g.params;
   const n =
-    [off(p.brightness), off(p.contrast), off(p.saturation), off(p.warmth) || off(p.tint)].filter(Boolean).length +
+    [off(p.brightness), off(p.contrast), off(p.saturation), off(p.warmth) || off(p.tint), off(p.dust ?? 0)].filter(Boolean)
+      .length +
     (off(p.strength, defaults.strength) ? 1 : 0);
   const [kind, ...rest] = g.params_source.split(":");
   const src =
@@ -401,13 +418,15 @@ export function AdjustPanel({
       <Section
         title="Restore"
         note={curvesOn && p.strength === 0 ? "by the tone curve" : undefined}
-        changed={off(p.strength, d.strength) || p.trim !== d.trim}
+        changed={off(p.strength, d.strength) || p.trim !== d.trim || off(p.dust ?? 0, d.dust ?? 0)}
         onReset={() => {
           app.setParam("strength", d.strength, true);
           app.setParam("trim", d.trim, true);
+          app.setParam("dust", d.dust ?? 0, true);
         }}
       >
         <AdjustSlider spec={SPECS.strength} value={p.strength} resetValue={d.strength} onChange={set("strength")} />
+        <AdjustSlider spec={SPECS.dust} value={p.dust ?? 0} resetValue={d.dust ?? 0} onChange={set("dust")} />
 
         <div className="flex items-center gap-2">
           <Checkbox id="trim" checked={p.trim} onCheckedChange={(v) => app.setParam("trim", v === true, true)} />
@@ -444,7 +463,6 @@ export function AdjustPanel({
         />
         <AdjustSlider spec={SPECS.saturation} value={p.saturation} resetValue={0} onChange={set("saturation")} />
       </Section>
-
     </div>
   );
 }

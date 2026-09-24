@@ -237,11 +237,12 @@ def import_scans(job: Job, sid: str, source: str) -> None:
             rot = im.suggest_rotation(proxies)
         fused = fused_proxy(s, g)  # pre-blend the brackets so browsing is instant
         feats = learning.features(fused, len(active_scans(g)))
+        mount = {**im.detect_mount(fused), "scans": active_scans(g)}
         suggestion, neighbours = (None, 0)
         if load_config().get("learning_enabled", True):
             suggestion, neighbours = learning.model().suggest(feats)
 
-        def commit(fresh: Session, g=g, ids=ids, extend=extend, rot=rot, feats=feats,
+        def commit(fresh: Session, g=g, ids=ids, extend=extend, rot=rot, feats=feats, mount=mount,
                    suggestion=suggestion, neighbours=neighbours):
             if extend:
                 target = fresh.group(last["id"])
@@ -255,6 +256,9 @@ def import_scans(job: Job, sid: str, source: str) -> None:
             if rot and target.get("rot_reason") != "manual":
                 target["rotation"], target["rot_reason"] = rot
             target["feat"] = feats
+            target["mount"] = mount
+            if not extend and straighten_to_mount(target):
+                target["params"]["angle"] = -mount["angle"]
             if suggestion and not target.get("reviewed") and target.get("params_source") != "manual":
                 target["params"] = Params.from_dict({**target["params"], **suggestion}).to_dict()
                 target["params_source"] = f"learned:{neighbours}"
@@ -269,6 +273,23 @@ def import_scans(job: Job, sid: str, source: str) -> None:
     job.message = f"Imported {len(new_ids)} scans into {len(idx_groups)} slides" + (
         f" ({skipped} were already imported)" if skipped else "") + (
         f"; restored {restored} deleted originals, those slides can be edited again" if restored else "")
+
+
+def straighten_to_mount(g: dict) -> bool:
+    """A new slide is straightened to its mount by itself only when the mount is found with
+    confidence and the slide isn't framed or developed yet; otherwise it stays a suggestion."""
+    m = g.get("mount") or {}
+    return (m.get("confidence", 0) >= im.MOUNT_AUTO and abs(m.get("angle", 0)) >= 0.1 and not g.get("reviewed")
+            and not g["params"].get("angle") and not g["params"].get("crop"))
+
+
+def mount_of(s: Session, g: dict) -> dict:
+    """The slide's mount (imaging.detect_mount on the blended proxy), found now if the import
+    didn't (trays from before mount detection) or the active scans changed since."""
+    m = g.get("mount")
+    if m and m.get("scans") == active_scans(g):
+        return m
+    return {**im.detect_mount(fused_proxy(s, g)), "scans": active_scans(g)}
 
 
 def make_proxies(s: Session, scan_id: str) -> None:

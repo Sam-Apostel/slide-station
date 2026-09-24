@@ -86,6 +86,9 @@ def faces_on(monkeypatch):
     for f in lib.glob("sessions/*/faces.json"):
         f.unlink()
     monkeypatch.setattr(people, "model_ready", lambda: True)
+    # the background helper catches up on the open tray's faces: an earlier test's tray (its
+    # faces.json just deleted) would take the queued faces
+    monkeypatch.setattr(wf, "active_session", None)
     queue: list[list[dict]] = []
     monkeypatch.setattr(people, "embed_faces", lambda rgb: queue.pop(0) if queue else [])
     return queue

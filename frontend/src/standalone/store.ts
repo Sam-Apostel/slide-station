@@ -65,6 +65,8 @@ export type GroupData = {
   tags?: string[];
   feat?: number[];
   history?: { undo: Snapshot[]; redo: Snapshot[] };
+  /** The slide mount found on these (active) scans (imaging.detect_mount). */
+  mount?: { angle: number; confidence: number; box: (number | null)[]; scans: string[] };
 };
 
 export type SessionData = {
@@ -207,12 +209,13 @@ export function activeScans(g: GroupData): string[] {
 const isNeutral = (k: string, v: unknown) =>
   (k === "curves" && v && typeof v === "object" && !Object.keys(v).length) ||
   (k === "angle" && v === 0) ||
-  (k === "crop" && v === null);
+  (k === "crop" && v === null) ||
+  (k === "dust" && v === 0);
 
 /** Identifies the exact output of a slide; changes whenever the result would change. */
 export function renderKey(g: GroupData): string {
   // settings still at their neutral value are left out, so slides uploaded before a setting
-  // existed (curves, straighten, crop) don't become "changed"
+  // existed (curves, straighten, crop, dust) don't become "changed"
   const params = Object.fromEntries(Object.entries(g.params).filter(([k, v]) => !isNeutral(k, v)));
   return sha1Hex(pyDumps([activeScans(g), new PyInt(g.rotation), params], true)).slice(0, 12);
 }
@@ -221,7 +224,15 @@ export function renderKey(g: GroupData): string {
 export function toneKey(g: GroupData): string {
   const p = g.params;
   return sha1Hex(
-    pyDumps([activeScans(g), new PyInt(g.rotation), p.strength, p.trim, p.angle ?? 0, p.crop ?? null]),
+    pyDumps([
+      activeScans(g),
+      new PyInt(g.rotation),
+      p.strength,
+      p.trim,
+      p.angle ?? 0,
+      p.crop ?? null,
+      ...(p.dust ? [p.dust] : []), // only when on, so existing keys stay the same
+    ]),
   ).slice(0, 12);
 }
 

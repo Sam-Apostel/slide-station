@@ -47,9 +47,11 @@ public struct Slide: Codable, Identifiable, Equatable, Sendable {
     public var feat: [Double]?
     /// Undo / redo of the slide's look (Python: `g["history"]`).
     public var history: History?
+    /// The slide mount found on its scans (Python: `g["mount"]`); see `currentMount`.
+    public var mount: MountEdge?
 
     enum CodingKeys: String, CodingKey {
-        case id, scans, excluded, rotation, params, reviewed, skip, immich, date, caption, locked, feat, history
+        case id, scans, excluded, rotation, params, reviewed, skip, immich, date, caption, locked, feat, history, mount
         case autoExcluded = "auto_excluded", rotReason = "rot_reason", paramsSource = "params_source"
     }
 
@@ -75,6 +77,7 @@ public struct Slide: Codable, Identifiable, Equatable, Sendable {
         locked = try? c.decode(String.self, forKey: .locked)
         feat = try? c.decode([Double].self, forKey: .feat)
         history = try? c.decode(History.self, forKey: .history)
+        mount = try? c.decode(MountEdge.self, forKey: .mount)
     }
 
     /// Every key, nulls included, like the Python app writes a group (it reads some with `g["immich"]`).
@@ -88,6 +91,7 @@ public struct Slide: Codable, Identifiable, Equatable, Sendable {
         try c.encode(immich, forKey: .immich)
         try c.encodeIfPresent(date, forKey: .date); try c.encodeIfPresent(caption, forKey: .caption); try c.encodeIfPresent(locked, forKey: .locked)
         try c.encodeIfPresent(feat, forKey: .feat); try c.encodeIfPresent(history, forKey: .history)
+        try c.encodeIfPresent(mount, forKey: .mount)
     }
 
     // MARK: undo
@@ -176,6 +180,7 @@ extension Slide {
         if !p.curves.isEmpty { parts.append(p.curves.sorted { $0.key < $1.key }.map { "\($0.key):\($0.value)" }.joined(separator: ";")) }
         if p.angle != 0 { parts.append(String(format: "a%.3f", p.angle)) }
         if let c = p.crop { parts.append("c\(c)") }
+        if p.dust != 0 { parts.append(String(format: "d%.3f", p.dust)) }   // only when on: older keys stay
         return shortHash(parts.joined(separator: "|"))
     }
 }

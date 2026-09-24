@@ -8,6 +8,7 @@ locally in your browser, keyboard-first, built for working through thousands of 
 - Guesses rotation from faces and skies, and leaves slides alone when it isn't sure
 - Restores faded film, and **learns your corrections** to pre-set the next slides
 - Optionally recognises people across all your trays: name someone once, Immich gets it as a tag
+- Straightens slides that sit crooked in their mount, and takes out dust and scratches
 - Uploads to a per-tray Immich album (works with Immich v1.118 → v3)
 - Deletes scans from the card only after they are verified and uploaded
 
@@ -126,6 +127,12 @@ can be re-rendered from the originals at any time).
      any tray. Crop and straighten are never copied, and **⌘Z** undoes it on each slide.
    - **Stats** (chart icon in the top bar): slides per hour, trays left and a projected finish
      date for your target (10,000 slides unless you change it).
+
+   A slide that sat crooked in the scanner is straightened to its mount's edge on import when the
+   app is sure; otherwise the Frame section says how far the mount is turned and offers
+   **Straighten to mount** (the frame button next to it also crops to the inside of the mount).
+   **Dust** in Adjust → Restore takes out specks and thin scratches (off by default; turn it up
+   until they're gone — it leaves texture and fine detail alone).
 4. **Upload to Immich**. Editing a slide after uploading marks it "edited"; the next upload
    replaces the old copy in Immich (the old one goes to the Immich trash, its albums and favourite
    carry over). A new date or caption alone is changed in Immich in place, nothing re-uploaded.

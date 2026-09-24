@@ -214,6 +214,7 @@ final class AppModel {
                     t.groups[j].reviewed = snapshot.reviewed; t.groups[j].skip = snapshot.skip
                     t.groups[j].excluded = snapshot.excluded; t.groups[j].history = snapshot.history
                     t.groups[j].date = snapshot.date; t.groups[j].caption = snapshot.caption
+                    if snapshot.currentMount != nil { t.groups[j].mount = snapshot.mount }   // found lazily (findMount)
                 }
             }
             // learning (Python: server._learn): developed slides teach, skipped ones are forgotten
@@ -297,6 +298,39 @@ final class AppModel {
                 return Develop.neutralBalance(a.rotated(g.rotation), g.params, x: point.x, y: point.y)
             }.value
             if let wt { setBalance(warmth: wt.0, tint: wt.1) }
+        }
+    }
+
+    /// Slides imported before mount detection (or whose scans changed since) have no mount yet:
+    /// look for it when the slide is shown (Python: POST …/mount).
+    func findMount() {
+        guard let tray, let g = slide, g.currentMount == nil, g.locked == nil else { return }
+        let renderer = renderer
+        Task {
+            let found = await Task.detached { () -> MountEdge? in
+                guard let a = try? renderer.fusedProxy(tray, g) else { return nil }
+                return Develop.detectMount(a)
+            }.value
+            guard let found, slide?.id == g.id, slide?.activeScans == g.activeScans else { return }
+            edit(g.id) { $0.mount = MountEdge(angle: found.angle, confidence: found.confidence, box: found.box, scans: g.activeScans) }
+        }
+    }
+
+    /// Straighten to the mount's edge; with `trim`, also crop to its window (a tighter trim).
+    func straightenToMount(trim: Bool = false) {
+        guard let tray, let g = slide, let m = g.currentMount, m.confidence > 0 else { return }
+        var straight = g.params
+        straight.angle = m.angle == 0 ? 0 : -m.angle
+        let renderer = renderer, p = straight, angle = straight.angle
+        Task {
+            var crop = g.params.crop
+            if trim {
+                crop = await Task.detached { () -> [Double]? in
+                    guard let a = try? renderer.fusedProxy(tray, g) else { return nil }
+                    return Develop.mountCrop(a.rotated(g.rotation), p, box: Develop.rotateBox(m.box, g.rotation))
+                }.value
+            }
+            edit(g.id, what: "mount") { $0.params.angle = angle; $0.params.crop = crop }
         }
     }
 

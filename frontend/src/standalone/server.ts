@@ -7,7 +7,7 @@ import { DEFAULT_TARGET, libraryStats, slideTimes } from "@/lib/stats";
 import { jobs, ui } from "./engine";
 import type { Src } from "./engine.worker";
 import { exifSegment, readExif, withExif } from "./exif";
-import { cleanParams, groupSequence, weakScans, type Quality } from "./imaging";
+import { cleanParams, groupSequence, MOUNT_AUTO, rotateBox, weakScans, type Quality } from "./imaging";
 import { Immich, ImmichError } from "./immich";
 import { Model } from "./learning";
 import { canPickFolders, kvGet, kvSet, permission, pickDirectory, type Library } from "./library";
@@ -279,6 +279,27 @@ async function zoomImage(d: SessionData, g: GroupData): Promise<{ key: string; w
 
 // ------------------------------------------------------------------ payloads
 
+/** The slide mount's tilt; null = not looked for yet (an older tray, or the scans changed). */
+function mountView(g: GroupData) {
+  const m = g.mount;
+  if (!m || m.scans.join() !== activeScans(g).join()) return null;
+  return { angle: m.angle, confidence: m.confidence, box: m.box };
+}
+
+/** A new slide straightens to its mount by itself only when that is found with confidence. */
+function straightenToMount(g: GroupData) {
+  const m = g.mount;
+  return (
+    !!m && m.confidence >= MOUNT_AUTO && Math.abs(m.angle) >= 0.1 && !g.reviewed && !g.params.angle && !g.params.crop
+  );
+}
+
+/** The slide's mount, found now if the import didn't (older trays) or its active scans changed. */
+async function mountOf(d: SessionData, g: GroupData): Promise<NonNullable<GroupData["mount"]>> {
+  if (g.mount && g.mount.scans.join() === activeScans(g).join()) return g.mount;
+  return { ...(await ui.call("mount", { src: await fusedSrc(d, g) }, 3)), scans: activeScans(g) };
+}
+
 async function payload(d: SessionData): Promise<SessionPayload> {
   const dates = slideDates(d);
   const st = statuses(d);
@@ -308,6 +329,7 @@ async function payload(d: SessionData): Promise<SessionPayload> {
       tone_key: toneKey(g),
       can_undo: !!g.history?.undo.length,
       can_redo: !!g.history?.redo.length,
+      mount: mountView(g),
       index: i,
     })),
     cleanup_blockers: cleanupBlockers(d),
@@ -581,6 +603,7 @@ async function importScans(job: Job, sid: string, sourceId: string) {
     });
     if (!g.reviewed && g.rot_reason !== "manual") rot = [analysis.rotation, analysis.reason];
     const feats = analysis.features;
+    const mount = { ...analysis.mount, scans: activeScans(g) };
     let suggestion: Partial<Params> | null = null;
     let neighbours = 0;
     if (learning) [suggestion, neighbours] = (await model()).suggest(feats);
@@ -601,6 +624,8 @@ async function importScans(job: Job, sid: string, sourceId: string) {
       }
       if (rot && target.rot_reason !== "manual") [target.rotation, target.rot_reason] = rot;
       target.feat = feats;
+      target.mount = mount;
+      if (!extend && straightenToMount(target)) target.params = { ...target.params, angle: -mount.angle };
       if (suggestion && !target.reviewed && target.params_source !== "manual") {
         target.params = cleanParams({ ...target.params, ...suggestion });
         target.params_source = `learned:${neighbours}`;
@@ -1702,6 +1727,40 @@ export async function handle(method: string, url: string, body: Body = {}): Prom
       g.params = cleanParams({ ...g.params, warmth, tint });
       g.params_source = "manual";
       await learn(d, g);
+    });
+    return payload(d);
+  }
+  if ((m = is("POST", /^\/api\/sessions\/([^/]+)\/groups\/([^/]+)\/mount$/))) {
+    // the mount's tilt, found if it isn't yet; apply: straighten to it, trim: also crop to its window
+    const [, sid, gid] = m;
+    const d0 = await loadSession(sid);
+    const g0 = group(d0, gid);
+    if (body.apply) editable(g0);
+    const mount = await mountOf(d0, g0); // the slow part, outside the lock
+    const set: Partial<Params> = {};
+    if (body.apply) {
+      if (mount.confidence <= 0) throw new HttpError(400, "No slide mount found around this photo");
+      set.angle = -mount.angle || 0;
+      if (body.trim)
+        set.crop = await ui.call(
+          "mountCrop",
+          {
+            src: await fusedSrc(d0, g0),
+            rotation: g0.rotation,
+            params: cleanParams({ ...g0.params, ...set }),
+            box: rotateBox(mount.box, g0.rotation),
+          },
+          5,
+        );
+    }
+    const { d } = await update(sid, (d) => {
+      const g = group(d, gid);
+      if (activeScans(g).join() !== mount.scans.join()) return;
+      g.mount = mount;
+      if (Object.keys(set).length) {
+        remember(g, "mount");
+        g.params = cleanParams({ ...g.params, ...set });
+      }
     });
     return payload(d);
   }

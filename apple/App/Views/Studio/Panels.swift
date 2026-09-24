@@ -131,19 +131,42 @@ struct InspectorPanel: View {
     // MARK: sections
 
     private func frameSection(_ g: Slide) -> some View {
-        HStack(spacing: 6) {
-            ProButtonGroup {
-                ProButton(plain: true, action: { model.turn(clockwise: false) }) { Image(systemName: "rotate.left") }.accessibilityLabel("Rotate left")
-                ProButton(plain: true, action: { model.turn() }) { Image(systemName: "rotate.right") }.accessibilityLabel("Rotate right")
-                ProButton("180°", plain: true, action: { model.rotate(180) })
+        VStack(spacing: 0) {
+            HStack(spacing: 6) {
+                ProButtonGroup {
+                    ProButton(plain: true, action: { model.turn(clockwise: false) }) { Image(systemName: "rotate.left") }.accessibilityLabel("Rotate left")
+                    ProButton(plain: true, action: { model.turn() }) { Image(systemName: "rotate.right") }.accessibilityLabel("Rotate right")
+                    ProButton("180°", plain: true, action: { model.rotate(180) })
+                }
+                ProButton(active: cropping, activeTint: SS.panel2, action: onCrop) { Label("Crop", systemImage: "crop") }
+                Spacer()
+                if g.params.crop != nil || g.params.angle != 0 {
+                    ProButton(plain: true, action: { model.setFrame(crop: nil, angle: 0) }) { Image(systemName: "arrow.uturn.backward") }.accessibilityLabel("Remove crop and straighten")
+                }
             }
-            ProButton(active: cropping, activeTint: SS.panel2, action: onCrop) { Label("Crop", systemImage: "crop") }
-            Spacer()
-            if g.params.crop != nil || g.params.angle != 0 {
-                ProButton(plain: true, action: { model.setFrame(crop: nil, angle: 0) }) { Image(systemName: "arrow.uturn.backward") }.accessibilityLabel("Remove crop and straighten")
-            }
+            .padding(.horizontal, 12).padding(.vertical, 10)
+            mountSuggestion(g)
         }
-        .padding(.horizontal, 12).padding(.vertical, 10)
+        .task(id: "\(g.id)|\(g.activeScans)") { model.findMount() }   // older trays: look for the mount once shown
+    }
+
+    /// The slide sits turned in its mount: offer to straighten to the mount's edge, and to crop to
+    /// its window (inspector.tsx `MountSuggestion`). Only when the mount was found with confidence.
+    @ViewBuilder private func mountSuggestion(_ g: Slide) -> some View {
+        if let m = g.currentMount, m.confidence >= Develop.mountSuggest, abs(m.angle) >= 0.1 {
+            let done = abs(g.params.angle + m.angle) < 0.05
+            HStack(spacing: 6) {
+                Image(systemName: "ruler").font(.system(size: 11)).foregroundStyle(ProTheme.muted)
+                Text(done ? "Level with the mount" : "Mount turned \(String(format: "%.1f", abs(m.angle)))° \(m.angle > 0 ? "clockwise" : "anticlockwise")")
+                    .font(.system(size: 12)).foregroundStyle(ProTheme.muted).lineLimit(1)
+                Text("· \(Int((m.confidence * 100).rounded()))% sure").font(.system(size: 12)).foregroundStyle(ProTheme.dim).lineLimit(1)
+                Spacer(minLength: 4)
+                if !done { ProButton("Straighten to mount", action: { model.straightenToMount() }) }
+                ProButton(plain: true, action: { model.straightenToMount(trim: true) }) { Image(systemName: "rectangle.dashed") }
+                    .accessibilityLabel("Straighten and trim to the mount")
+            }
+            .padding(.horizontal, 12).padding(.bottom, 10)
+        }
     }
 
     private func frameNote(_ g: Slide) -> String {
@@ -183,7 +206,7 @@ struct InspectorPanel: View {
     private var histogramKey: String {
         guard let g = model.slide else { return "" }
         let p = g.params
-        return "\(g.id)|\(g.activeScans)|\(g.rotation)|\(p.strength)|\(p.trim)|\(p.angle)|\(p.crop ?? [])"
+        return "\(g.id)|\(g.activeScans)|\(g.rotation)|\(p.strength)|\(p.trim)|\(p.dust)|\(p.angle)|\(p.crop ?? [])"
     }
 
     private func loadHistogram() async {

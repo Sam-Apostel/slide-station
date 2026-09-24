@@ -6,7 +6,7 @@ import { describe, expect, it } from "vitest";
 import * as im from "./imaging";
 import { fuse, mtbShift, materialise, rgbSource, shiftedSource } from "./fusion";
 import { features, Model } from "./learning";
-import { gray, rotated, type RGB } from "./pixels";
+import { cropped, gray, rotated, type RGB } from "./pixels";
 
 const DIR = new URL("../../../apple/SlideKit/Tests/SlideKitTests/Golden/", import.meta.url);
 const golden = JSON.parse(readFileSync(new URL("golden.json", DIR), "utf8"));
@@ -182,6 +182,32 @@ describe("parity with imaging.py", () => {
     expect([r.width, r.height]).toEqual([scene.height, scene.width]);
     expect(rotated(r, 270).data).toEqual(scene.data);
     expect(Array.from(r.data.subarray((r.width - 1) * 3, r.width * 3))).toEqual(Array.from(scene.data.subarray(0, 3)));
+  });
+
+  it("mount detection and the tighter trim", () => {
+    const mnt = png("mount.png");
+    const m = im.detectMount(mnt);
+    expect(Math.abs(m.angle - golden.mount.angle)).toBeLessThan(0.02);
+    expect(Math.abs(m.confidence - golden.mount.confidence)).toBeLessThan(0.03);
+    m.box.forEach((v, i) => expect(Math.abs(v! - golden.mount.box[i])).toBeLessThan(0.002));
+    expect(im.rotateBox(golden.mount.box, 90)).toEqual(golden.mount_box_rot90);
+    expect(im.rotateBox(im.rotateBox(golden.mount.box, 180), 180)).toEqual(golden.mount.box);
+    const crop = im.mountCrop(rotated(mnt, 90), im.cleanParams(golden.mount_params), golden.mount_box_rot90)!;
+    crop.forEach((v, i) => expect(Math.abs(v - golden.mount_crop_rot90[i])).toBeLessThan(0.002));
+    expect(im.detectMount(cropped(scene, 8, scene.height - 8, 8, scene.width - 8))).toEqual(golden.mount_none);
+  });
+
+  it("dust and scratch repair", () => {
+    const dusty = png("dusty.png");
+    const { mask, r } = im.dustMask(dusty, golden.dust_amount);
+    expect(r).toBe(golden.dust_r);
+    expect(mask.reduce((s, v) => s + v, 0)).toBe(golden.dust_marked);
+    const before = Float32Array.from(dusty.data);
+    const [mean, worst] = diff(im.repairDust(dusty, golden.dust_amount).data, floats("dust.f32"));
+    expect(mean).toBeLessThan(1e-5);
+    expect(worst).toBeLessThan(1e-3);
+    expect(dusty.data).toEqual(before); // not in place unless asked
+    expect(im.repairDust(dusty, 0)).toBe(dusty);
   });
 
   it("learning features and k-NN", () => {
