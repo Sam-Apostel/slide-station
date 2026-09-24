@@ -1,6 +1,6 @@
-// Insights (desktop app only): what the models suggest about a slide — scene tags today — shown as
-// suggestions to accept or dismiss, never applied silently. The browser version hides all of it
-// (its models would need onnxruntime-web).
+// Insights (desktop app only): what the models suggest about a slide — scene tags and a caption — shown
+// as suggestions to accept (a caption after editing it) or dismiss, never applied silently. The browser
+// version hides all of it (its models would need onnxruntime-web).
 import * as React from "react";
 import { Check, Download, ListChecks, Plus, RefreshCw, Settings, X } from "lucide-react";
 import { ProButton } from "@/components/ui/pro-button";
@@ -18,22 +18,33 @@ import { Field, FieldDescription, FieldGroup, FieldLabel } from "@/components/ui
 import { Input } from "@/components/ui/input";
 import { Tip } from "@/components/tip";
 import { rangeEnd } from "@/components/dialogs";
-import { plural, previewUrl, type Group, type InsightKind, type SessionPayload, type Suggestion } from "@/lib/api";
+import {
+  plural,
+  previewUrl,
+  type Group,
+  type InsightKind,
+  type SessionPayload,
+  type Suggestion,
+  type SuggestionModel,
+} from "@/lib/api";
 import type { SlideStation } from "@/hooks/use-slide-station";
 
 const pct = (c: number) => `${Math.round(c * 100)}%`;
 
-/** A slide's open suggestions, tags first. */
+/** A slide's open suggestions, tags first. A caption is never offered over the slide's own. */
 export function openSuggestions(g: Group): [InsightKind, Suggestion][] {
   const ins = g.insights;
   if (!ins) return [];
   const out: [InsightKind, Suggestion][] = ins.tags.filter((e) => e.state === "suggested").map((e) => ["tags", e]);
   for (const k of ["caption", "date", "place"] as const) {
     const e = ins[k];
-    if (e?.state === "suggested") out.push([k, e]);
+    if (e?.state === "suggested" && !(k === "caption" && g.caption)) out.push([k, e]);
   }
   return out;
 }
+
+const MODEL_NAMES: Record<SuggestionModel, string> = { tags: "tag model", captions: "caption model" };
+const modelNames = (m: SuggestionModel[] | undefined) => (m ?? []).map((k) => MODEL_NAMES[k]).join(" and ");
 
 /** One line for the collapsed Insights section. */
 export function insightsNote(g: Group, session: SessionPayload) {
@@ -71,7 +82,8 @@ export function InsightsPanel({
     return (
       <div className="flex flex-col items-start gap-2 px-3 pt-2.5 pb-3">
         <p className={note}>
-          Suggest tags for each slide from what's in the photo (beach, snow, wedding…). Runs on this computer.
+          Suggest tags (beach, snow, wedding…) and a one-line caption for each slide from what's in the photo. Runs on
+          this computer.
         </p>
         <ProButton onClick={onSettings}>
           <Settings /> Turn on in Settings
@@ -83,7 +95,9 @@ export function InsightsPanel({
     return (
       <div className="flex flex-col items-start gap-2 px-3 pt-2.5 pb-3">
         <p className={note}>
-          {downloading ? "Downloading the tag model — progress is at the top." : "The tag model isn't downloaded yet."}
+          {downloading
+            ? "Downloading — progress is at the top."
+            : `The ${modelNames(st.missing) || "model"} isn't downloaded yet.`}
         </p>
         {!downloading && (
           <ProButton onClick={app.downloadModel}>
@@ -95,10 +109,11 @@ export function InsightsPanel({
   }
   const open = openSuggestions(g);
   const decided = (g.insights?.tags ?? []).filter((e) => e.state !== "suggested").length;
-  const accept = async (kind: InsightKind, value: string) => {
-    const p = await app.decide(kind, "accept", value, [g.id]);
-    if (p?.decided) onAccepted(kind, value, p.groups, g.index);
+  const accept = async (kind: InsightKind, value: string, text?: string) => {
+    const p = await app.decide(kind, "accept", value, [g.id], text);
+    if (p?.decided) onAccepted(kind, text ?? value, p.groups, g.index);
   };
+  const dismiss = (kind: InsightKind, value: string) => app.decide(kind, "dismiss", value, [g.id]);
   return (
     <div className="flex flex-col gap-2 px-3 pt-2.5 pb-3">
       {g.skip ? (
@@ -109,36 +124,52 @@ export function InsightsPanel({
         <p className={note}>Couldn't analyse this slide: {g.insights.error}</p>
       ) : open.length ? (
         <ul className="flex flex-col gap-1" aria-label="Suggestions">
-          {open.map(([kind, e]) => (
-            <li key={`${kind}:${e.value}`} className="ss-suggestion">
-              <span className="min-w-0 flex-1 truncate">
-                {kind !== "tags" && <span className="text-muted-foreground">{kind}: </span>}
-                {e.value}
-              </span>
-              <Tip label={`${pct(e.confidence)} sure (${e.source})`}>
-                <span className="ss-confidence" style={{ "--c": e.confidence } as React.CSSProperties}>
-                  {pct(e.confidence)}
+          {open.map(([kind, e]) =>
+            kind === "caption" ? (
+              <CaptionSuggestion
+                key={`${g.id}:caption:${e.value}`}
+                e={e}
+                onAccept={(text) => accept("caption", e.value, text)}
+                onDismiss={() => dismiss("caption", e.value)}
+              />
+            ) : (
+              <li key={`${kind}:${e.value}`} className="ss-suggestion">
+                <span className="min-w-0 flex-1 truncate">
+                  {kind !== "tags" && <span className="text-muted-foreground">{kind}: </span>}
+                  {e.value}
                 </span>
-              </Tip>
-              <Tip label={kind === "tags" ? "Add this tag to the slide" : `Use as the slide's ${kind}`}>
-                <button type="button" aria-label={`Accept ${e.value}`} onClick={() => accept(kind, e.value)}>
-                  <Check />
-                </button>
-              </Tip>
-              <Tip label="Dismiss: it won't be suggested for this slide again">
-                <button
-                  type="button"
-                  aria-label={`Dismiss ${e.value}`}
-                  onClick={() => app.decide(kind, "dismiss", e.value, [g.id])}
-                >
-                  <X />
-                </button>
-              </Tip>
-            </li>
-          ))}
+                <Tip label={`${pct(e.confidence)} sure (${e.source})`}>
+                  <span className="ss-confidence" style={{ "--c": e.confidence } as React.CSSProperties}>
+                    {pct(e.confidence)}
+                  </span>
+                </Tip>
+                <Tip label={kind === "tags" ? "Add this tag to the slide" : `Use as the slide's ${kind}`}>
+                  <button type="button" aria-label={`Accept ${e.value}`} onClick={() => accept(kind, e.value)}>
+                    <Check />
+                  </button>
+                </Tip>
+                <Tip label="Dismiss: it won't be suggested for this slide again">
+                  <button type="button" aria-label={`Dismiss ${e.value}`} onClick={() => dismiss(kind, e.value)}>
+                    <X />
+                  </button>
+                </Tip>
+              </li>
+            ),
+          )}
         </ul>
       ) : (
         <p className={note}>No open suggestions for this slide{decided ? ` (${decided} decided)` : ""}.</p>
+      )}
+      {!!st.missing?.length && (
+        <p className={note}>
+          The {modelNames(st.missing)} isn't downloaded yet
+          {downloading ? " (downloading)." : "."}{" "}
+          {!downloading && (
+            <button type="button" className="underline underline-offset-2" onClick={app.downloadModel}>
+              Download
+            </button>
+          )}
+        </p>
       )}
       <div className="flex items-center gap-1.5">
         <ProButton onClick={onReview}>
@@ -153,6 +184,62 @@ export function InsightsPanel({
         )}
       </div>
     </div>
+  );
+}
+
+/**
+ * A suggested caption, editable in place: Enter (or ✓) makes the text as it stands the slide's caption,
+ * Escape puts the model's words back, × dismisses it for this slide.
+ */
+function CaptionSuggestion({
+  e,
+  onAccept,
+  onDismiss,
+}: {
+  e: Suggestion;
+  onAccept: (text: string) => void;
+  onDismiss: () => void;
+}) {
+  const [draft, setDraft] = React.useState(e.value);
+  const text = draft.trim().replace(/\s+/g, " ");
+  return (
+    <li className="ss-suggestion ss-caption-suggestion">
+      <textarea
+        aria-label="Suggested caption"
+        value={draft}
+        rows={2}
+        maxLength={2000}
+        spellCheck
+        onChange={(ev) => setDraft(ev.target.value)}
+        onKeyDown={(ev) => {
+          if (ev.key === "Enter" && !ev.shiftKey) {
+            ev.preventDefault();
+            if (text) onAccept(text);
+          }
+          if (ev.key === "Escape") setDraft(e.value);
+        }}
+      />
+      <div className="flex items-center gap-1.5">
+        <span className="min-w-0 flex-1 truncate text-muted-foreground">
+          caption{text !== e.value ? " · edited" : ""}
+        </span>
+        <Tip label={`${pct(e.confidence)} sure (${e.source})`}>
+          <span className="ss-confidence" style={{ "--c": e.confidence } as React.CSSProperties}>
+            {pct(e.confidence)}
+          </span>
+        </Tip>
+        <Tip label="Use as the slide's caption (goes to Immich as the description)">
+          <button type="button" aria-label="Accept caption" disabled={!text} onClick={() => onAccept(text)}>
+            <Check />
+          </button>
+        </Tip>
+        <Tip label="Dismiss: it won't be suggested for this slide again">
+          <button type="button" aria-label="Dismiss caption" onClick={onDismiss}>
+            <X />
+          </button>
+        </Tip>
+      </div>
+    </li>
   );
 }
 
@@ -236,14 +323,16 @@ export function TagsField({
 
 type Pile = { kind: InsightKind; value: string; items: { g: Group; e: Suggestion }[] };
 
-/** Open suggestions of the tray, one pile per kind + value, biggest first. */
+/** Open suggestions of the tray, one pile per kind + value, biggest first. Captions are all different:
+ *  they make one pile (value ""), each slide with its own words. */
 export function suggestionPiles(groups: Group[]): Pile[] {
   const piles = new Map<string, Pile>();
   for (const g of groups) {
     if (g.skip) continue;
     for (const [kind, e] of openSuggestions(g)) {
-      const k = `${kind}:${e.value}`;
-      const p = piles.get(k) ?? { kind, value: e.value, items: [] };
+      const value = kind === "caption" ? "" : e.value;
+      const k = `${kind}:${value}`;
+      const p = piles.get(k) ?? { kind, value, items: [] };
       p.items.push({ g, e });
       piles.set(k, p);
     }
@@ -286,32 +375,38 @@ export function ReviewDialog({
           {piles.map((p) => (
             <section
               key={`${p.kind}:${p.value}`}
-              aria-label={`${p.value}, ${plural(p.items.length, "slide")}`}
+              aria-label={`${p.value || "Captions"}, ${plural(p.items.length, "slide")}`}
               className="ss-pile"
             >
               <header className="flex items-center gap-2">
                 <b className="min-w-0 flex-1 truncate text-[13px] font-semibold">
-                  {p.kind !== "tags" && <span className="font-normal text-muted-foreground">{p.kind}: </span>}
-                  {p.value}
+                  {p.kind === "caption" ? (
+                    "Captions"
+                  ) : (
+                    <>
+                      {p.kind !== "tags" && <span className="font-normal text-muted-foreground">{p.kind}: </span>}
+                      {p.value}
+                    </>
+                  )}
                   <span className="ml-2 font-normal text-muted-foreground">
                     {plural(p.items.length, "slide")} · ≈
                     {pct(p.items.reduce((s, x) => s + x.e.confidence, 0) / p.items.length)}
                   </span>
                 </b>
-                <Button size="sm" variant="outline" onClick={() => app.decide(p.kind, "dismiss", p.value)}>
+                <Button size="sm" variant="outline" onClick={() => app.decide(p.kind, "dismiss", p.value || undefined)}>
                   Dismiss all
                 </Button>
                 <Button
                   size="sm"
                   className="bg-primary text-primary-foreground"
-                  onClick={() => app.decide(p.kind, "accept", p.value)}
+                  onClick={() => app.decide(p.kind, "accept", p.value || undefined)}
                 >
                   Accept all
                 </Button>
               </header>
-              <div className="flex flex-wrap gap-1.5">
+              <div className={p.kind === "caption" ? "flex flex-col gap-1.5" : "flex flex-wrap gap-1.5"}>
                 {p.items.map(({ g, e }) => (
-                  <span key={g.id} className="ss-pile-slide">
+                  <span key={g.id} className={p.kind === "caption" ? "ss-pile-slide ss-pile-caption" : "ss-pile-slide"}>
                     <button
                       type="button"
                       aria-label={`Go to slide ${g.index + 1}`}
@@ -325,11 +420,12 @@ export function ReviewDialog({
                         {g.index + 1} · {pct(e.confidence)}
                       </span>
                     </button>
+                    {p.kind === "caption" && <span>{e.value}</span>}
                     <button
                       type="button"
                       className="ss-pile-dismiss"
-                      aria-label={`Dismiss ${p.value} for slide ${g.index + 1}`}
-                      onClick={() => app.decide(p.kind, "dismiss", p.value, [g.id])}
+                      aria-label={`Dismiss ${p.value || "the caption"} for slide ${g.index + 1}`}
+                      onClick={() => app.decide(p.kind, "dismiss", e.value, [g.id])}
                     >
                       <X />
                     </button>

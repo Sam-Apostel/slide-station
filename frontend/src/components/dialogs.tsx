@@ -86,6 +86,7 @@ export function SettingsDialog({
   const [people, setPeople] = React.useState(false);
   const [learned, setLearned] = React.useState<{ examples: number; min_examples: number } | null>(null);
   const [suggestTags, setSuggestTags] = React.useState(false);
+  const [suggestCaptions, setSuggestCaptions] = React.useState(false);
   const [insights, setInsights] = React.useState<InsightsState | null>(null);
   const [test, setTest] = React.useState<{ ok?: boolean; message: string } | null>(null);
 
@@ -101,6 +102,7 @@ export function SettingsDialog({
     setPeople(!!config.people_enabled);
     api<{ examples: number; min_examples: number }>("GET", "/api/learning").then(setLearned, () => setLearned(null));
     setSuggestTags(config.insights_enabled ?? false);
+    setSuggestCaptions(config.captions_enabled ?? false);
     if (!standalone) api<InsightsState>("GET", "/api/insights").then(setInsights, () => setInsights(null));
     setTest(null);
     // only when the dialog opens; config is a new object on every poll
@@ -126,13 +128,16 @@ export function SettingsDialog({
         keep_exports: keepExports,
         upload_originals_stacked: stackOriginals,
         learning_enabled: learning,
-        ...(standalone ? {} : { insights_enabled: suggestTags }),
+        ...(standalone ? {} : { insights_enabled: suggestTags, captions_enabled: suggestCaptions }),
         ...(standalone ? {} : { people_enabled: people }),
       });
-      // turning tags on fetches the model (a job in the activity pill); while another job runs, the
-      // Insights section offers the download instead
-      if (suggestTags && !insights?.ready && !insights?.downloading)
-        await api("POST", "/api/insights/model").catch(() => {});
+      // turning tags / captions on fetches their models (one job in the activity pill); while another
+      // job runs, the Insights section offers the download instead
+      const models = [
+        ...(suggestTags && !insights?.ready ? ["tags"] : []),
+        ...(suggestCaptions && !insights?.captions.ready ? ["captions"] : []),
+      ];
+      if (models.length && !insights?.downloading) await api("POST", "/api/insights/model", { models }).catch(() => {});
       toast.success("Settings saved");
       if (people && !config?.people_enabled) {
         // turned on: fetch the face model and look for faces on the slides already in the library
@@ -150,7 +155,7 @@ export function SettingsDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-[480px]">
+      <DialogContent className="max-h-[calc(100dvh-2rem)] overflow-y-auto scrollbar-thin sm:max-w-[480px]">
         <form onSubmit={save} className="grid gap-[18px]">
           <DialogHeader>
             <DialogTitle>Settings</DialogTitle>
@@ -276,6 +281,23 @@ export function SettingsDialog({
                     ? " The model is downloaded."
                     : insights?.downloading
                       ? " Downloading the model…"
+                      : ""}
+                </FieldDescription>
+              </Field>
+            )}
+            {!standalone && (
+              <Field>
+                <CheckRow id="cfg-captions" checked={suggestCaptions} onChange={setSuggestCaptions}>
+                  Suggest captions (downloads a ~{insights?.captions.model_mb ?? 276} MB model)
+                </CheckRow>
+                <FieldDescription>
+                  Writes a short description of each slide (“A red car parked in front of a house.”) on this computer,
+                  in the background, a few seconds a slide. Shown under Insights to edit and accept; it becomes the
+                  slide's caption, which Immich shows as the description. Never replaces a caption you typed.
+                  {insights?.captions.ready
+                    ? " The model is downloaded."
+                    : insights?.downloading
+                      ? " Downloading…"
                       : ""}
                 </FieldDescription>
               </Field>

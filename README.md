@@ -179,6 +179,18 @@ own:
 
 Not in the browser version yet.
 
+## Caption suggestions (optional)
+
+Settings → **Suggest captions (downloads a ~276 MB model)**. The app downloads a small
+image-description model (Microsoft's Florence-2, from Hugging Face) into the library's `models`
+folder, then writes a one-sentence English caption for each slide on this computer, in the
+background — a few seconds a slide ("A woman in an orange space suit with a helmet."). The
+**Insights** section shows it in a box you can edit: Enter or ✓ makes it the slide's caption
+(which Immich shows as the description), × dismisses it. "Apply to 12–31…" offers it to the
+neighbours, and **Review tray…** lists every suggested caption to accept or dismiss together.
+A slide that already has a caption — typed by you or pulled from Immich — is never captioned or
+overwritten. Not in the browser version yet.
+
 ## People
 
 Settings → **Recognise people across my slides** (off by default; the desktop app, not the browser
@@ -210,9 +222,8 @@ Library folder → `sessions/<tray>/originals`, `cache` (previews), `export` (fi
 Face detection uses OpenCV's YuNet model (MIT licence, from opencv_zoo), bundled in
 `slidestation/models`. Tag suggestions download OpenAI's CLIP (MIT licence) into the library's
 `models` folder when turned on; `insights.json` in the library remembers which tags you accept and dismiss.
-
-`slidestation/models`. Recognising people uses OpenCV's SFace model (Apache 2.0), downloaded when
-you turn it on.
+Caption suggestions download Microsoft's Florence-2 (MIT licence) the same way. Recognising people
+uses OpenCV's SFace model (Apache 2.0), downloaded when you turn it on.
 
 ## Development
 

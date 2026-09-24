@@ -1435,6 +1435,32 @@ body {
 .ss-suggestion button[aria-label^="Accept"]:hover {
   color: var(--ss-accent);
 }
+/* a suggested caption: the words in an editable box, the meter and ✓ × under it */
+.ss-caption-suggestion {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 2px;
+  height: auto;
+  padding: 4px 4px 2px 4px;
+}
+.ss-caption-suggestion textarea {
+  width: 100%;
+  min-height: 40px;
+  padding: 3px 5px;
+  resize: vertical;
+  border-radius: 4px;
+  background: var(--ss-field);
+  color: var(--ss-text);
+  font: inherit;
+  line-height: 1.35;
+}
+.ss-caption-suggestion textarea:focus-visible {
+  outline: 1.5px solid var(--ss-accent);
+  outline-offset: 0;
+}
+.ss-suggestion button:disabled {
+  opacity: 0.4;
+}
 .ss-suggestion svg,
 .ss-tag svg,
 .ss-tag-add svg,
@@ -1505,6 +1531,25 @@ body {
 }
 .ss-pile-slide > button:first-child:hover {
   box-shadow: 0 0 0 2px var(--ss-accent);
+}
+/* the captions pile: one row per slide, the thumbnail and its suggested words */
+.ss-pile-caption {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 12px;
+}
+.ss-pile-caption > span {
+  flex: 1;
+  min-width: 0;
+  padding-right: 24px;
+}
+.ss-pile-caption .ss-pile-dismiss {
+  top: 50%;
+  transform: translateY(-50%);
+  opacity: 1;
+  background: none;
+  color: var(--ss-muted);
 }
 .ss-pile-dismiss {
   position: absolute;

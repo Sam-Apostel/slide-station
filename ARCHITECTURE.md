@@ -39,7 +39,7 @@ slidestation/
   learning.py             learns colour settings from approved slides (§5)
   stats.py                progress across the library: slides per hour, projected finish (§4)
   insights.py             suggestions per slide: scene tags from CLIP, background analysis (§5a)
-
+  captions.py             a caption per slide from Florence-2 (ONNX), for the insights (§5b)
   people.py               faces -> people: SFace embeddings, clustering, names (§5a)
   store.py                config + session persistence (JSON on disk)
   immich.py               minimal Immich client (v1/v2/v3 compatible)
@@ -668,6 +668,105 @@ corrupt part) through `httpx.MockTransport`. `SS_REAL_CLIP=1` adds a smoke test 
 real model into the scratch library and checks a synthetic beach scene gets "beach" in its top 2
 and a snowy mountain scene gets "snow" or "mountains" (not "beach") in its top 3 (verified:
 beach → beach, sea; snow → mountains, snow, forest).
+
+## 5b. Captions: a local vision-language model (`captions.py`, ROADMAP §1 "Descriptions")
+
+A one-sentence caption per slide ("A rocket is on a launch pad at night."), made on this computer
+and offered through the insights plumbing (§5a) as the `caption` suggestion: editable, accepted into
+the slide's own `caption`, which already goes to Immich as the description (EXIF ImageDescription
+in the export, `PUT /assets/{id}` when only the metadata changed, §6a). Opt-in on its own: config
+`captions_enabled` (Settings → "Suggest captions (downloads a ~276 MB model)"), off by default,
+independent of the tag setting. Desktop / server app only.
+
+**Model.** Microsoft's Florence-2 base, fine-tuned (MIT), as exported to ONNX by onnx-community
+(`onnx-community/Florence-2-base-ft` at a pinned revision), the 8-bit quantized variants of its
+four parts: `vision_encoder` (94 MB, DaViT), `embed_tokens` (39 MB), `encoder_model` (44 MB) and
+`decoder_model_merged` (98 MB, BART with a key / value cache), plus `vocab.json` (1 MB). Downloaded
+like the tag model with `insights.fetch_files` (now shared: resumable `.part` + Range, sha256 / git
+blob sha1, atomic) into `<library>/models/florence-2-base/`; `POST /api/insights/model` takes
+`{"models": ["tags", "captions"]}` (default: the ones turned on) and fetches them in one `model` job.
+
+**Pipeline** (`Florence.generate`, no transformers / torch at runtime):
+1. The slide's blended proxy turned upright (the same array the tags get) → 768 × 768 bicubic,
+   squashed not cropped, ImageNet mean / std (Florence's `CLIPImageProcessor` settings; checked
+   bit-identical to transformers' pixels).
+2. Vision encoder → 577 image tokens; the `<CAPTION>` prompt "What does the image describe?" is a
+   fixed id list (`PROMPT`, `<s>…</s>`), embedded and appended; encoder over the 585 tokens.
+3. Decoder, greedy: starts from `</s>`, `<s>` forced first (the model's `forced_bos_token_id`),
+   then argmax with transformers' `no_repeat_ngram_size=3` rule, until `</s>` or 40 tokens. The
+   first step runs `use_cache_branch=false` with empty past tensors; after that the self-attention
+   cache is fed back and the cross-attention cache from step 1 is kept.
+4. `Vocab.decode`: BART's byte-level BPE backwards (vocab table + the GPT-2 byte map shared with
+   CLIP's tokenizer in `insights.py`); `<s>`, `</s>`, `<pad>`, `<unk>` and Florence's task /
+   location tokens (ids past the vocabulary) are skipped. `tidy`: whitespace collapsed, capital
+   first letter, a full stop, ≤ 200 characters. English only: that's what the model writes.
+5. Confidence = the geometric mean of the chosen tokens' probabilities (≈ 0.4–0.7 in practice).
+
+**Trap: the ONNX export's baked scale.** The export traced DaViT on a 224 × 224 image, which froze
+each channel-attention block's `N ** -0.5` (N = tokens: 56², 28², 14², 7²) as constants. At 768 × 768
+the features then correlate only 0.91 with PyTorch's and the captions change. `Florence.__init__`
+overrides those 12 initializers (`/blocks.{s}/blocks.{s}.{j}/channel_block/channel_attn/fn/Constant_6_output_0`
+→ 1/192, 1/96, 1/48, 1/24) with `SessionOptions.add_initializer`. With that fix the fp32 ONNX parts
+give **token-identical** output to transformers (both the native `Florence2ForConditionalGeneration`
+and Microsoft's original remote code, greedy) on 8 test images (scikit-image's public-domain /
+CC0 samples + the synthetic beach and snow scenes; references made with `uv run --with transformers
+--with torch` in scratch, never a dependency). The 8-bit parts the app downloads give different but
+equally good words ("A cup of coffee on a saucer with a spoon." for "A cup of coffee and a spoon
+on a saucer."); fp32 would be 1.1 GB on disk and ~2 GB RSS for that.
+
+**Cost** (4-core container, 2 threads, other jobs running): ~3–4 s per slide unloaded, of which
+~2.8 s is the vision encoder and ~0.2 s the encoder, ~12 ms per decoder token; 8–15 s when the
+machine is busy. The loaded model adds ~0.5 GB RSS (peak ~0.9 GB while a slide runs); the CPU
+memory arena is off so the image-sized buffers go back after each slide, and `captions.release()`
+drops the model when captions are turned off.
+
+**Where it runs.** In the insights worker (§5a), one slide at a time, only while no job runs.
+`insights.active_models()` = the models turned on *and* downloaded; it is part of every slide's
+insights key, so turning captions on (or the download finishing) re-analyses the trays (the tags
+of a tray that only had tags keep their old key: same hash as before). The key also includes
+whether the slide has a caption of its own when captions are active. `analyse` runs each active
+model on the same upright proxy; a kind no model computed is left out and `merge` keeps what was
+there (turning captions off doesn't drop caption suggestions; turning tags off doesn't drop tags).
+The commit still goes through `update_session` and only if the key still matches: a slide turned,
+re-stacked or captioned while the model ran is not saved, it is picked up again next step.
+
+**Never over the user's caption.**
+- A slide with a caption (typed, propagated or pulled from Immich) isn't captioned at all.
+- Typing a caption (`PATCH …/groups/{gid}`, `server._set_caption`) removes an open caption
+  suggestion and, when the suggestions were up to date, refreshes the key so the slide isn't sent
+  back to the models for nothing; clearing the caption makes it stale, so a suggestion comes.
+- Accepting a caption suggestion on a slide that has a caption does nothing (`decided` 0), also in
+  the review's "Accept all"; the UI hides a caption suggestion on a captioned slide.
+- `merge`: a decided (accepted / dismissed) caption keeps its state while the model says the same
+  words ("Analyse again"); new words (the slide turned) are a new suggestion.
+
+**API.** `POST …/insights/decide {"kind": "caption", "action": "accept", "groups": [gid], "text":
+"…"}` — `text` (one slide) is the suggestion as the user edited it; without it the model's words.
+`GET /api/insights` has `captions: {enabled, ready, model_mb}`. The tray payload's `insights` is
+`{enabled (any model on), ready (one of those downloaded), pending, missing: ["captions"…]}`.
+
+**UI.** The inspector's Insights section shows the caption suggestion in an editable box
+(`CaptionSuggestion`): Enter or ✓ accepts the text as it stands (then "Apply to 12–31…" offers it
+to the neighbours, like a tag), Escape restores the model's words, × dismisses. The review dialog
+puts all caption suggestions in one "Captions" pile, a row per slide with its words; Accept all /
+Dismiss all act on every open caption. Settings has the checkbox with the size; saving downloads
+what's turned on and missing. The Settings dialog now scrolls (it had outgrown a 900 px window).
+
+**Not done / not ported.** The browser version hides it with the rest of Insights (the four ONNX
+parts would run in onnxruntime-web, ~276 MB per browser: a follow-up). The Swift app: not ported
+(Apple's route would be a Vision / Core ML captioner; its `Slide` Codable drops `insights`). "Era
+cues" for date estimation are not extracted: Florence's captions rarely say anything datable
+("an old photo of…" at best), so it was skipped.
+
+**Tests** (`tests/test_captions.py`): the model faked: suggested never applied, edited accept →
+Immich description, never over a typed caption (not captioned, suggestion removed, accept refused,
+accept-all skips, clearing asks again), dismissed stays / new words are new, a slide turned while
+captioning isn't saved, tags + captions together (turning captions on keeps tag decisions), missing
+model reported, settings; the decoding: `tidy`, the no-repeat rule, byte-level decoding, the greedy
+loop against scripted ONNX sessions (prompt, forced `<s>`, cache growth, no-repeat, stop), the
+preprocessing, and the download endpoint. `SS_REAL_CAPTIONS=1` adds a smoke test that downloads
+the real model into the scratch library and captions the synthetic beach and snow scenes (verified:
+"A blue and yellow background with a blue sky.", "A white mountain with trees on it and a blue sky.").
 
 ## 5a. People: faces → names (`people.py`)
 

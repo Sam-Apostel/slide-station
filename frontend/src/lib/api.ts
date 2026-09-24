@@ -117,17 +117,23 @@ export type SessionPayload = {
   groups: Group[];
   cleanup_blockers: string[];
   log: unknown[];
-  /** Background analysis (desktop app only): turned on, model downloaded, slides still to analyse. */
-  insights?: { enabled: boolean; ready: boolean; pending: number };
+  /** Background analysis (desktop app only): a model turned on, one of those downloaded, slides still to
+   *  analyse, and the models turned on but not downloaded yet. */
+  insights?: { enabled: boolean; ready: boolean; pending: number; missing?: SuggestionModel[] };
 };
 
+/** The models that make suggestions: scene tags (CLIP) and captions (Florence-2). */
+export type SuggestionModel = "tags" | "captions";
+
 export type InsightsState = {
+  /** The tag model: turned on, downloaded. */
   enabled: boolean;
   ready: boolean;
   downloading: boolean;
   model_mb: number;
   labels: string[];
   learned: Record<string, { accepted: number; dismissed: number }>;
+  captions: { enabled: boolean; ready: boolean; model_mb: number };
 };
 
 export type Source = {
@@ -164,6 +170,8 @@ export type Config = {
   /** Slides to digitise in all, for the stats' projected finish. */
   stats_target?: number;
   insights_enabled?: boolean;
+  /** Suggest a caption per slide (desktop app only; opt-in, downloads a caption model). */
+  captions_enabled?: boolean;
   /** Faces → people (desktop app only; opt-in, downloads a face model). */
   people_enabled?: boolean;
 };
