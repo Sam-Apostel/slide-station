@@ -3,6 +3,7 @@
 import { describe, expect, it } from "vitest";
 import { cleanParams } from "./imaging";
 import {
+  cleanPlace,
   dumpSession,
   metaKey,
   renderKey,
@@ -48,6 +49,25 @@ describe("keys match the Python app", () => {
     expect(metaKey(g, { value: "1978-08", source: "own" })).toBe("468575a4ce75");
     const tagged = { ...g, tags: ["snow", "beach", "café"] };
     expect(metaKey(tagged, { value: "1978-08", source: "own" })).toBe("9a725df29165");
+  });
+  it("meta key with a place (its coordinates, as Python formats them)", () => {
+    const venice = { name: "Venice", lat: 45.43713, lon: 12.33265, country: "Italy" };
+    const placed = { caption: "Lake", place: venice } as unknown as GroupData;
+    expect(metaKey(placed, { value: "1978-08", source: "own" })).toBe("1c66a5ef98cd");
+    const both = { caption: "", tags: ["beach"], place: { name: "x", lat: -33.9, lon: 151, country: "" } };
+    expect(metaKey(both as unknown as GroupData, { value: "", source: "own" })).toBe("bd79f63a3f0b");
+  });
+  it("cleanPlace", () => {
+    expect(cleanPlace({ name: " Venice ", lat: "45.437134", lon: 12.332651, country: "Italy" })).toEqual({
+      name: "Venice",
+      lat: 45.43713,
+      lon: 12.33265,
+      country: "Italy",
+    });
+    expect(cleanPlace({ lat: 1, lon: 2 })?.name).toBe("1.0000, 2.0000");
+    expect(cleanPlace(null)).toBeNull();
+    expect(() => cleanPlace({ lat: 91, lon: 0 })).toThrow();
+    expect(() => cleanPlace({ name: "x" })).toThrow();
   });
   it("sha1", () => expect(sha1Hex("abc")).toBe("a9993e364706816aba3e25717850c26c9cd0d89d"));
   it("dates between, near", () => {

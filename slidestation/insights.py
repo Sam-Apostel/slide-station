@@ -16,6 +16,9 @@ label text embeddings are computed once and cached next to it. A background thre
 open tray (and trays queued with `queue_tray`) one slide at a time while no job runs; it commits
 through `workflow.update_session`, so it never saves over an edit made meanwhile.
 
+Places: once the text reader and the place names are downloaded (`places.ocr_ready`), each slide's
+text is read too and a place it names is suggested (`places.place_from_text`); see places.py.
+
 Learning: every accept / dismiss is counted per label in the library's `insights.json`; a label
 dismissed more often than accepted needs a higher confidence before it is suggested again.
 """
@@ -33,6 +36,7 @@ import numpy as np
 from PIL import Image
 
 from . import imaging as im
+from . import places
 from . import workflow as wf
 from .store import Session, _atomic_write, active_scans, library, load_config, lock
 
@@ -126,24 +130,30 @@ def _checksum(path: Path, want: str) -> bool:
     return h.hexdigest() == digest
 
 
-OFFLINE = ("Couldn't reach huggingface.co to download the tag model ({}). Check the internet connection "
+OFFLINE = ("Couldn't reach {} to download {} ({}). Check the internet connection "
            "and try again; the download continues where it stopped.")
 
 
 def download_model(job) -> None:
-    """Fetch the model files into the library (a job: progress in MB). Each file is written to a
-    .part file that a later attempt resumes (HTTP Range), checked against its checksum, then moved
-    into place, so a half-downloaded model is never used."""
+    """Fetch the model files into the library (a job: progress in MB)."""
+    fetch_files(job, _REPO, MODEL_FILES, model_dir(), MODEL_MB, "the tag model")
+    job.message = "Tag model ready: slides are analysed in the background"
+
+
+def fetch_files(job, base: str, files: list, d: Path, total_mb: int, what: str) -> None:
+    """Download `files` [(path under `base`, local name, bytes, checksum)] into `d`. Each file is
+    written to a .part file that a later attempt resumes (HTTP Range), checked against its checksum,
+    then moved into place, so a half-downloaded model is never used."""
     import httpx
 
-    d = model_dir()
     d.mkdir(parents=True, exist_ok=True)
-    job.total = MODEL_MB
-    job.message = "Downloading the tag model (MB)"
+    job.total = total_mb
+    job.message = f"Downloading {what} (MB)"
+    host = httpx.URL(base).host
     done = 0
     try:
         with httpx.Client(follow_redirects=True, timeout=httpx.Timeout(30, read=60)) as client:
-            for remote, name, size, want in MODEL_FILES:
+            for remote, name, size, want in files:
                 dest = d / name
                 if dest.is_file() and dest.stat().st_size == size:
                     done += size
@@ -156,7 +166,7 @@ def download_model(job) -> None:
                     have = 0
                 if have < size:
                     headers = {"Range": f"bytes={have}-"} if have else {}
-                    with client.stream("GET", _REPO + remote, headers=headers) as r:
+                    with client.stream("GET", base + remote, headers=headers) as r:
                         if r.status_code == 200 and have:  # the server ignored the range: start over
                             have = 0
                         elif r.status_code not in (200, 206):
@@ -167,7 +177,7 @@ def download_model(job) -> None:
                                 have += len(chunk)
                                 job.done = round((done + have) / 1e6)
                 if part.stat().st_size < size:  # the connection ended early: keep it for the next try
-                    raise RuntimeError(OFFLINE.format("the download stopped early"))
+                    raise RuntimeError(OFFLINE.format(host, what, "the download stopped early"))
                 if part.stat().st_size != size or not _checksum(part, want):
                     part.unlink(missing_ok=True)
                     raise RuntimeError(f"The downloaded {name} didn't match its checksum; try again.")
@@ -175,9 +185,8 @@ def download_model(job) -> None:
                 done += size
                 job.done = round(done / 1e6)
     except httpx.TransportError as e:  # offline, DNS, proxy, a dropped connection, a timeout
-        raise RuntimeError(OFFLINE.format(e.__class__.__name__)) from None
+        raise RuntimeError(OFFLINE.format(host, what, e.__class__.__name__)) from None
     job.done = job.total
-    job.message = "Tag model ready: slides are analysed in the background"
 
 
 # ------------------------------------------------------------------------------------ tokenizer
@@ -356,8 +365,19 @@ def threshold(label: str, stats: dict | None = None) -> float:
 # ------------------------------------------------------------------------------------ per slide
 
 
+_ocr_state = [0.0, False]  # (checked at, ready): asked for every slide on every poll, so cached briefly
+
+
+def ocr_on() -> bool:
+    """Signs are read for places once the text reader and the place names are downloaded."""
+    if time.time() - _ocr_state[0] > 2:
+        _ocr_state[:] = [time.time(), places.ocr_ready()]
+    return _ocr_state[1]
+
+
 def insights_key(g: dict) -> str:
-    return hashlib.sha1(json.dumps([active_scans(g), g["rotation"], MODEL_ID, LABELS_KEY]).encode()).hexdigest()[:12]
+    what = [active_scans(g), g["rotation"], MODEL_ID, LABELS_KEY] + ([places.OCR_ID] if ocr_on() else [])
+    return hashlib.sha1(json.dumps(what).encode()).hexdigest()[:12]
 
 
 def needs_analysis(g: dict) -> bool:
@@ -371,12 +391,22 @@ def analyse(s, g: dict, b) -> dict:
     ranked = scene_tags(b, rgb)
     tags = [{"value": t, "confidence": round(p, 3), "source": MODEL_ID, "state": "suggested"}
             for t, p in ranked if p >= threshold(t, stats)][:MAX_TAGS]
-    return {"key": insights_key(g), "tags": tags}
+    out = {"key": insights_key(g), "tags": tags}
+    if ocr_on():  # signs: the text in the photo, and a place it names
+        lines = places.read_text(rgb)
+        gaz = places.gazetteer()
+        if lines is not None and gaz is not None:
+            out["text"] = lines[:20]
+            hit = places.place_from_text(lines, gaz)
+            if hit:
+                out["place"] = places.suggestion(hit["place"], hit["confidence"], places.OCR_ID, hit["text"])
+    return out
 
 
-def merge(old: dict | None, new: dict, own_tags: list[str]) -> dict:
+def merge(old: dict | None, new: dict, own_tags: list[str], own_place: dict | None = None) -> dict:
     """New suggestions with the decisions already made kept: accepted and dismissed entries stay
-    (confidence refreshed), a new suggestion for a tag the slide already has counts as accepted."""
+    (confidence refreshed), a new suggestion for a tag the slide already has counts as accepted.
+    Places: `places.merge`."""
     old = old or {}
     kept = {e["value"]: e for e in old.get("tags", []) if e.get("state") in ("accepted", "dismissed")}
     tags = []
@@ -387,8 +417,12 @@ def merge(old: dict | None, new: dict, own_tags: list[str]) -> dict:
             tags.append({**e, "state": "accepted" if e["value"] in own_tags else "suggested"})
     tags += kept.values()
     out = {"key": new["key"], "tags": tags}
-    for k in ("caption", "date", "place"):
+    for k in ("caption", "date"):
         out[k] = new.get(k) if new.get(k) is not None else old.get(k)
+    out["place"] = places.merge(old.get("place"), new.get("place"), own_place)
+    text = new.get("text", old.get("text"))
+    if text is not None:
+        out["text"] = text
     return out
 
 
@@ -407,7 +441,7 @@ def analyse_slide(sid: str, gid: str) -> bool:
         except KeyError:
             return
         if insights_key(fg) == new["key"] and (fg.get("insights") or {}).get("key") != new["key"]:
-            fg["insights"] = merge(fg.get("insights"), new, fg.get("tags", []))
+            fg["insights"] = merge(fg.get("insights"), new, fg.get("tags", []), fg.get("place"))
 
     wf.update_session(sid, commit)
     return True
@@ -455,7 +489,7 @@ def step() -> bool:
                 except KeyError:
                     return
                 if insights_key(fg) == key:
-                    fg["insights"] = {**merge(fg.get("insights"), {"key": key, "tags": []}, fg.get("tags", [])),
+                    fg["insights"] = {**merge(fg.get("insights"), {"key": key, "tags": []}, fg.get("tags", []), fg.get("place")),
                                       "error": err}
 
             wf.update_session(sid, failed)

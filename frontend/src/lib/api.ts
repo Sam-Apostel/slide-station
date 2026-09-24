@@ -32,9 +32,19 @@ export const MOUNT_SUGGEST = 0.5;
 
 export type GroupStatus = "new" | "reviewed" | "uploaded" | "changed" | "skipped";
 
-/** Kinds of suggestion a slide can get (ARCHITECTURE "Insights"); only tags have a model so far. */
+/** Kinds of suggestion a slide can get (ARCHITECTURE "Insights"): tags from CLIP, places from signs and neighbours. */
 export type InsightKind = "tags" | "caption" | "date" | "place";
+
+/** Where a slide was taken: goes to Immich as latitude / longitude and into the JPEG as EXIF GPS.
+ *  `admin` (region) and `id` (GeoNames) come with places picked from the gazetteer. */
+export type Place = { name: string; lat: number; lon: number; country: string; admin?: string; id?: number };
+
+/** "Venice, Italy" (with the region when asked: "Venice, Veneto, Italy"). */
+export const placeLabel = (p: Place, region = false) =>
+  [p.name, ...[region ? p.admin : "", p.country].filter((x) => x && x !== p.name)].join(", ");
+
 export type Suggestion = {
+  /** What it suggests, as it reads (a place: "Venice, Italy"). */
   value: string;
   /** 0..1: the model's share for this value. */
   confidence: number;
@@ -42,12 +52,18 @@ export type Suggestion = {
   source: string;
   /** Suggestions are never applied silently: accepted ones became the slide's own, dismissed ones stay away. */
   state: "suggested" | "accepted" | "dismissed";
+  /** A place suggestion's place. */
+  place?: Place;
+  /** Why: the text read in the photo ("WELCOME TO VENICE"), or the slides around it ("slides 11 and 14"). */
+  text?: string;
 };
 export type SlideInsights = {
   tags: Suggestion[];
   caption: Suggestion | null;
   date: Suggestion | null;
   place: Suggestion | null;
+  /** Text the text reader found in the photo (desktop app, once downloaded). */
+  text?: string[];
   /** Computed from other scans or another rotation: being analysed again. */
   stale: boolean;
   /** Why the slide couldn't be analysed ("" when it was). */
@@ -87,6 +103,8 @@ export type Group = {
   caption: string;
   /** The slide's own tags: go to Immich as tags and into the JPEG's XMP keywords. */
   tags: string[];
+  /** Where it was taken (null = not set). */
+  place?: Place | null;
   /** What the models suggest (desktop app only); null until analysed. */
   insights?: SlideInsights | null;
   /** The date it goes to Immich with: its own, or estimated from the dated slides around it. */
@@ -119,6 +137,8 @@ export type SessionPayload = {
   log: unknown[];
   /** Background analysis (desktop app only): turned on, model downloaded, slides still to analyse. */
   insights?: { enabled: boolean; ready: boolean; pending: number };
+  /** Desktop app: signs are read for place suggestions (else `ocr_mb` to download for that). */
+  places?: { ocr: boolean; ocr_mb: number };
 };
 
 export type InsightsState = {
@@ -128,7 +148,15 @@ export type InsightsState = {
   model_mb: number;
   labels: string[];
   learned: Record<string, { accepted: number; dismissed: number }>;
+  /** Place suggestions from signs: the text reader and the place names are downloaded. */
+  ocr_ready?: boolean;
+  /** What that download still weighs. */
+  ocr_mb?: number;
+  ocr_downloading?: boolean;
 };
+
+/** `GET /api/places?q=`: the gazetteer (GeoNames cities, desktop app) and what matches. */
+export type PlacesAnswer = { ready: boolean; downloading: boolean; mb: number; results: Place[] };
 
 export type Source = {
   path: string;
@@ -195,7 +223,7 @@ export type ImmichAlbum = { id: string; name: string; count: number; thumb: stri
 export type ImmichAsset = { id: string; name: string; date: string; favorite: boolean; tray: string };
 
 /** What "Pull from Immich" brought back into a tray. */
-export type Pulled = { checked: number; captions: number; dates: number; gone: number };
+export type Pulled = { checked: number; captions: number; dates: number; places?: number; gone: number };
 
 /** A named colour look (never framing), library-wide. */
 export type Preset = { name: string; params: Omit<Params, "crop" | "angle">; created: number };

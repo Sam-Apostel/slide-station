@@ -36,7 +36,16 @@ import { Tip } from "@/components/tip";
 import { ToneCurve } from "@/components/tone-curve";
 import { AdjustPanel, adjustSummary } from "@/components/adjust";
 import { InsightsPanel, TagsField, insightsNote } from "@/components/insights";
-import { MOUNT_SUGGEST, needsReview, plural, standalone, type Group, type InsightKind, type SessionPayload } from "@/lib/api";
+import { PlaceField } from "@/components/place";
+import {
+  MOUNT_SUGGEST,
+  needsReview,
+  plural,
+  standalone,
+  type Group,
+  type InsightKind,
+  type SessionPayload,
+} from "@/lib/api";
 import { CHANNELS, isStraight } from "@/lib/curves";
 import type { SlideStation } from "@/hooks/use-slide-station";
 
@@ -137,6 +146,8 @@ export function Inspector({
   onReimport,
   onSave,
   onDateRange,
+  onPlaceRange,
+  placesDownloading,
   onPresets,
   onDevelopLike,
   insights,
@@ -158,12 +169,17 @@ export function Inspector({
   onSave?: () => void;
   /** Opens the "date a range of slides" dialog. */
   onDateRange: () => void;
+  /** Offers the slide's place to a run of slides (the propagation dialog). */
+  onPlaceRange: () => void;
+  /** The place names (or the text reader) are being downloaded. */
+  placesDownloading: boolean;
   /** Opens the presets dialog, and the "develop like another slide" picker. */
   onPresets: () => void;
   onDevelopLike: () => void;
   /** The Insights section (desktop app only; the browser version has no models yet). */
   insights?: {
     downloading: boolean;
+    ocrDownloading?: boolean;
     onAccepted: (kind: InsightKind, value: string, groups: Group[], index: number) => void;
     onReview: () => void;
     onSettings: () => void;
@@ -262,7 +278,12 @@ export function Inspector({
             </ProDisclosureGroup>
 
             <ProDisclosureGroup title="Details" summary={detailsNote(g)} {...section("details")}>
-              <SlideDetails app={app} onDateRange={onDateRange} />
+              <SlideDetails
+                app={app}
+                onDateRange={onDateRange}
+                onPlaceRange={onPlaceRange}
+                placesDownloading={placesDownloading}
+              />
             </ProDisclosureGroup>
 
             {insights && (
@@ -432,11 +453,21 @@ const DATE_FROM: Record<string, string> = {
 function detailsNote(g: Group) {
   const d = g.date_est;
   const date = d.value ? (d.source === "own" ? d.value : `≈ ${d.value}`) : "no date";
-  return [date, g.caption, g.tags.length ? g.tags.join(", ") : ""].filter(Boolean).join(" · ");
+  return [date, g.place?.name ?? "", g.caption, g.tags.length ? g.tags.join(", ") : ""].filter(Boolean).join(" · ");
 }
 
-/** The slide's own date (or where its estimate comes from) and its caption. */
-function SlideDetails({ app, onDateRange }: { app: SlideStation; onDateRange: () => void }) {
+/** The slide's own date (or where its estimate comes from), place, caption and tags. */
+function SlideDetails({
+  app,
+  onDateRange,
+  onPlaceRange,
+  placesDownloading,
+}: {
+  app: SlideStation;
+  onDateRange: () => void;
+  onPlaceRange: () => void;
+  placesDownloading: boolean;
+}) {
   const g = app.current!;
   const est = g.date_est;
   const from = est.from?.map((i) => `#${i + 1}`).join(" & ");
@@ -458,6 +489,16 @@ function SlideDetails({ app, onDateRange }: { app: SlideStation; onDateRange: ()
           <CalendarRange /> Date a range…
         </ProButton>
       </Tip>
+      <PlaceField
+        key={`${g.id}-place`}
+        place={g.place}
+        suggestion={g.insights?.place}
+        onDecide={(action, value) => app.decide("place", action, value, [g.id])}
+        onChange={app.setPlace}
+        onRange={onPlaceRange}
+        downloading={placesDownloading}
+        onDownload={() => app.downloadPlaces()}
+      />
       <TrayField
         key={`${g.id}-caption`}
         label="Caption"

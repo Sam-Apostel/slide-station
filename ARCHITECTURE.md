@@ -41,6 +41,7 @@ slidestation/
   insights.py             suggestions per slide: scene tags from CLIP, background analysis (§5a)
 
   people.py               faces -> people: SFace embeddings, clustering, names (§5a)
+  places.py               places: GeoNames gazetteer, sign OCR, tray neighbours (§5b)
   store.py                config + session persistence (JSON on disk)
   immich.py               minimal Immich client (v1/v2/v3 compatible)
   models/                 YuNet face detector (MIT, from opencv_zoo)
@@ -576,8 +577,8 @@ g["insights"] = {"key": "<active scans + rotation + model + labels>",
                  "error": "..."}          # only when the slide couldn't be analysed
 ```
 
-`state` is `suggested`, `accepted` (the value became the slide's own tag / caption / date; a place
-is kept as `g["place"]`, not sent anywhere yet) or `dismissed`. A stale `key` (other scans, a
+`state` is `suggested`, `accepted` (the value became the slide's own tag / caption / date / place,
+§5b) or `dismissed`. A stale `key` (other scans, a
 rotation) means "analyse again": `insights.merge` keeps every accepted / dismissed entry, so a
 dismissed suggestion never comes back for that slide, and a fresh suggestion of a tag the slide
 already has counts as accepted. Removing a tag in the Details section dismisses its suggestion.
@@ -722,6 +723,121 @@ Opt-in (`people_enabled`, Settings → "Recognise people"), desktop / server app
   six people (Hugging Face, scratch only) imported as a tray: 52 faces, one clean cluster of 6–8
   faces per person, 6 faces on their own (mostly people in the background) and one two-face cluster
   mixing two of those.
+
+## 5b. Places (ROADMAP §1 "Location recognition")
+
+`places.py`. A slide's place is `g["place"] = {"name", "lat", "lon", "country"}` (+ `"admin"`, the
+region, and `"id"`, the GeoNames id, when picked from the gazetteer). `places.clean_place` validates
+it (lat ±90, lon ±180, finite; rounded to 5 decimals; no name → "lat, lon" to 4 decimals); `same(a,
+b)` = same name within 1e-3°.
+
+**Gazetteer.** GeoNames `cities15000.zip` (~34k places, 3.4 MB) + `countryInfo.txt` +
+`admin1CodesASCII.txt`, CC BY 4.0 (NOTICE, and a credit line under the autocomplete), downloaded by
+`POST /api/places/download` (job `places`) into `<library>/data/geonames/`, never committed.
+GeoNames rebuilds them daily, so there is no checksum: each goes to `.part`, must parse as a
+tab-separated table with ≥ `MIN_ROWS` rows of the right width, then `os.replace`. `Gazetteer` loads
+the zip in ~2 s (lazily, again when the file's mtime changes) and indexes every place under its
+folded name, ASCII name and Latin-script alternate names (`fold`: NFKD without accents, ß→ss, ø/ł/đ,
+lower case, non-alphanumerics → space; alternates in other scripts and ≤ 4-letter all-caps codes like
+IATA "VCE" are left out). `search(q)`: prefix match over the sorted keys, ranked exact name before
+longer, a city's own name before an alternate (GeoNames lists "Venice" among *Dayton*'s names), then
+population; `"Venice, flor"` narrows by country / region prefix. Typed coordinates come back first,
+named after the nearest city within 25 km (haversine over all of them). `GET /api/places?q=` →
+`{ready, downloading, mb, results}`.
+
+**Setting it.** `PATCH …/groups/{gid} {"place": {...} | null}` (400 on junk; locked → 409 like every
+edit). An open place suggestion is settled by it: the same place → accepted, another → dismissed.
+`POST …/insights/propagate {"kind": "place", "value": {...}}` gives a range the place (locked
+skipped). UI: `components/place.tsx` (combobox + listbox, debounced search, "Name lat, lon" parsed
+client-side so a typed name wins over the nearest city), the pin icon → `PropagateDialog` with an
+`Offer` whose `value` is the label and `place` the place.
+
+**Suggestions** go through the insights plumbing (§5a); a place entry is `{"value": "Venice, Italy",
+"place": {...}, "confidence", "source", "state", "text"}` — `value` is the label accept / dismiss /
+review piles use, `place` what accepting stores, `text` why (the OCR'd line or "slides 11 and 14").
+`places.merge` replaces `insights.merge`'s old "newest wins" for places: a decision on the same
+place stands, an accepted place is never replaced, a slide with its own place gets nothing new
+(or `accepted` when it names that place).
+
+- *Text in the photo* (`OCR_ID = "ppocr-v5-latin"`): PaddleOCR's PP-OCRv3 mobile detector (2.4 MB)
+  + PP-OCRv5 Latin recogniser (7.9 MB) + its 502-character dict, ONNX from `monkt/paddleocr-onnx` at a
+  pinned revision, checksummed like CLIP's files (`insights.fetch_files`, the CLIP downloader made
+  generic). `POST /api/places/download {"ocr": true}` (job `ocr`) fetches them into
+  `<library>/models/ppocr/`, plus the gazetteer if missing. `places.Ocr` is PaddleOCR's pipeline in
+  ~80 lines on onnxruntime CPU: DB detection on the upright proxy shrunk to ≤ 960 px (multiples of
+  32, BGR, ImageNet mean/std as Paddle feeds it), threshold 0.3, contours → `minAreaRect`, box score
+  = mean probability inside ≥ 0.6, unclip = grow the rectangle by area × 1.5 / perimeter (what
+  pyclipper's offset does to a rectangle); each box is perspective-cropped from the 1600 px proxy
+  (turned when taller than 1.5× wide), resized to height 48, (x/255 − 0.5)/0.5, CTC greedy decode
+  (blank 0, dict, then space). ~0.2–0.5 s a slide. It runs inside `insights.analyse` only when
+  `ocr_on()` (text reader + gazetteer present; cached 2 s since `pending()` asks per slide); the
+  OCR id then joins `insights_key`, so downloading it re-analyses the trays (decisions kept). The
+  lines are kept as `insights.text` (the payload shows the strings).
+- *Matching* (`place_from_text`): every 1–3-word run of each line, and of each pair of consecutive
+  lines ("WELCOME TO" / "VENICE"), looked up by exact folded name, longest first. After a cue
+  (`CUES`: "welcome to", "bienvenue à", "grüsse aus", "benvenuti a" …, folded) base 0.9. Without
+  one it must have ≥ 4 letters, not be a sign word that is also some town's name (`COMMON`: bar,
+  nice, split, marina, kodak, fuji, europa …), not follow a street / business word (`NOT_AFTER`: via,
+  rue, hotel …) nor precede one (`NOT_BEFORE`: road, airlines, station …), and be a city's own name
+  or an alternate of a city ≥ 100k (`BIG`: "Wien", "Nizza" yes; GeoNames' alternates of small places
+  are full of words: "Coca", "Plage", "Metro"); base 0.6 (≥ 6 letters) or 0.45. Homonyms go to the
+  most populous city *called* that (own names first), and confidence = base × OCR confidence ×
+  (0.5 + 0.5 × its share of the homonyms' population): "WELCOME TO VENICE" → Venice, Italy at 0.65,
+  "Benvenuti a Firenze" → Florence at 0.90. Below 0.3 nothing is suggested. Checked on 163
+  everyday sign texts (against the real cities15000): no suggestion for sign words, streets, hotels, brands; what's left are real
+  place names (Verona, Wien, Brugge) and a few region / landmark names that are also some town's name
+  (Andalucia → a town in Colombia, Alhambra → Arizona, Florida → Cuba) at 0.4–0.6.
+- *Tray neighbours* (`suggest_between`, run after every place change: PATCH, decide, propagate): a
+  slide without a place between two slides with the same place and no other place between them
+  gets it suggested (source `tray`, 0.9, text "slides 11 and 14"). Tray suggestions that no longer
+  hold are withdrawn; a dismissed one stays dismissed; an open text suggestion is never overwritten.
+  It needs no model, so an open place suggestion is also shown (✓ / ×) in the Place field itself,
+  not only in the Insights section (which needs the tag model).
+- *Landmarks via CLIP*: **not done.** Zero-shot CLIP over a closed list of landmarks is softmax over
+  that list, so any tower or cathedral comes out as *some* landmark with a high share; keeping that
+  honest needs a calibration set of real slides (landmark and not) that the repo can't hold. Sign
+  text and neighbours carry the suggestions; a landmark list is the obvious next step once real
+  trays exist to calibrate against.
+
+**Where it goes.**
+- `store.meta_key` appends `{"gps": ["45.43713", "12.33265"]}` (coordinates formatted to 5
+  decimals, so `store.ts` hashes the same string; the name isn't sent anywhere) only when there is a
+  place, so slides uploaded before stay `uploaded`; a place edit after upload makes the slide
+  `changed`.
+- Export: EXIF GPS IFD (`workflow.gps_ifd`: version 2.3, N/S/E/W refs, degrees / minutes / seconds as
+  rationals); a pulled-in photo's own GPS is dropped first, so the slide's place decides. Immich reads
+  it on upload.
+- Metadata-only sync (§6a): `PUT /api/assets/{id}` gets `latitude` / `longitude` (UpdateAssetDto in
+  v3.2, also v1/v2) with the date and description. The API can't *remove* a location (the fields
+  aren't nullable), so a slide whose place was removed after upload is rendered and uploaded again
+  (replacing the old asset as usual). `pushed` gained `"place": [lat, lon] | null`.
+- Pull from Immich: `exifInfo.latitude / longitude` differing from `pushed.place` by > 1e-4° become
+  the slide's place (named after `exifInfo.city`, else its coordinates; `country`, `state` as admin);
+  records from before places compare against the slide's own. `pulled.places` counts them. Pull
+  back in: a photo with GPS starts with that place.
+
+**Browser version.** download.geonames.org sends no CORS headers, so the page can't fetch the
+gazetteer: `GET /api/places` answers `ready: false` and only typed coordinates; the field says so.
+Places are set, propagated (`/insights/propagate` for place / caption / date), keyed
+(`metaKey`), written as EXIF GPS (`exifSegment(…, gps)`, checked with Pillow), synced to Immich,
+pulled back and kept on pull-in exactly like the desktop app; `tests/web_flow.py` types a place,
+applies it to a range and checks the uploaded JPEGs' GPS. OCR and neighbour suggestions are not in
+the browser (no Insights there). **Swift app:** not ported (its `Slide` Codable drops `place`, and
+its meta key has no place).
+
+**Tests:** `tests/test_places.py` — a made-up GeoNames extract in the scratch library: search
+(ranking, narrowing, alternates, coordinates), the endpoint with / without the gazetteer, set /
+clear / validate, meta key, propagation, neighbours (suggest, accept, dismiss, withdraw), a typed
+place settling a suggestion, `place_from_text` rules, OCR through insights with a fake reader
+(suggested, re-analysis keeping decisions, stale without the reader, accept all), EXIF GPS + Immich
+lat / lon on upload, in-place update, removal re-uploading, no `asset.update` → re-upload, pull and
+pull-in, the gazetteer and text-reader downloads through `httpx.MockTransport`. `SS_REAL_OCR=1`
+downloads the real text reader and GeoNames and reads four rendered signs (verified: all four
+read word for word, Venice / Annecy / Florence found, "OPEN BAR" nothing). By hand, on 13
+synthetic 1600 px sign photos (faded, grainy, blurred, tilted ±6°): 13/13 right, including
+"Hotel Zürich" and "Via Roma 12" → nothing; and in the server app with the real CLIP + text
+reader: a "WELCOME TO VENICE" slide got Venice at 0.65 and, after placing slides 1 and 3 in Venice,
+slide 2 got the tray suggestion.
 
 ## 6. Immich integration facts (hard-won)
 

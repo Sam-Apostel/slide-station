@@ -58,28 +58,58 @@ function tiff(v: DataView, base: number): Partial<ScanInfo> {
 
 type Tag = [number, string];
 
-/** An APP1 EXIF segment (little endian) with the given ASCII tags in IFD0 and the Exif IFD. */
-export function exifSegment(ifd0: Tag[], exif: Tag[], orientation = 1): Uint8Array {
+type Entry = { t: number; type: number; data: Uint8Array | null; value?: number; count?: number };
+
+/** Degrees as three EXIF rationals (degrees, minutes, seconds / 10000), little endian. */
+function dms(x: number): Uint8Array {
+  const a = Math.abs(x);
+  const d = Math.floor(a);
+  const m = Math.floor(a * 60) % 60;
+  const s = Math.round(((a * 3600) % 60) * 10000);
+  const out = new Uint8Array(24);
+  const v = new DataView(out.buffer);
+  [d, 1, m, 1, s, 10000].forEach((n, i) => v.setUint32(i * 4, n, true));
+  return out;
+}
+
+/** The GPS IFD's entries for a place (workflow.gps_ifd): version 2.3, N/S + latitude, E/W + longitude. */
+function gpsEntries(lat: number, lon: number): Entry[] {
   const enc = new TextEncoder();
-  const entries0 = [
+  return [
+    { t: 0, type: 1, data: new Uint8Array([2, 3, 0, 0]) },
+    { t: 1, type: 2, data: enc.encode(lat >= 0 ? "N\0" : "S\0") },
+    { t: 2, type: 5, data: dms(lat), count: 3 },
+    { t: 3, type: 2, data: enc.encode(lon >= 0 ? "E\0" : "W\0") },
+    { t: 4, type: 5, data: dms(lon), count: 3 },
+  ];
+}
+
+/** An APP1 EXIF segment (little endian) with the given ASCII tags in IFD0 and the Exif IFD, and
+ *  GPS coordinates when the slide has a place. */
+export function exifSegment(ifd0: Tag[], exif: Tag[], orientation = 1, gps?: { lat: number; lon: number }): Uint8Array {
+  const enc = new TextEncoder();
+  const entries0: Entry[] = [
     ...ifd0.map(([t, s]) => ({ t, type: 2, data: enc.encode(s + "\0") })),
     { t: 274, type: 3, data: null, value: orientation },
   ];
-  const entriesX = exif.map(([t, s]) => ({ t, type: 2, data: enc.encode(s + "\0") }));
-  entries0.push({ t: 0x8769, type: 4, data: null, value: 0 }); // pointer, filled in below
+  const entriesX: Entry[] = exif.map(([t, s]) => ({ t, type: 2, data: enc.encode(s + "\0") }));
+  const entriesG = gps ? gpsEntries(gps.lat, gps.lon) : [];
+  entries0.push({ t: 0x8769, type: 4, data: null, value: 0 }); // pointers, filled in below
+  if (gps) entries0.push({ t: 0x8825, type: 4, data: null, value: 0 });
   entries0.sort((a, b) => a.t - b.t);
   entriesX.sort((a, b) => a.t - b.t);
   const ifdSize = (n: number) => 2 + n * 12 + 4;
-  const dataSize = (es: { data: Uint8Array | null }[]) =>
+  const dataSize = (es: Entry[]) =>
     es.reduce((s, e) => s + (e.data && e.data.length > 4 ? e.data.length + (e.data.length % 2) : 0), 0);
   const off0 = 8;
   const offX = off0 + ifdSize(entries0.length) + dataSize(entries0);
-  const total = offX + ifdSize(entriesX.length) + dataSize(entriesX);
+  const offG = offX + ifdSize(entriesX.length) + dataSize(entriesX);
+  const total = offG + (gps ? ifdSize(entriesG.length) + dataSize(entriesG) : 0);
   const b = new Uint8Array(total);
   const v = new DataView(b.buffer);
   b.set([0x49, 0x49, 0x2a, 0x00]);
   v.setUint32(4, off0, true);
-  const writeIfd = (at: number, es: { t: number; type: number; data: Uint8Array | null; value?: number }[]) => {
+  const writeIfd = (at: number, es: Entry[]) => {
     v.setUint16(at, es.length, true);
     let data = at + ifdSize(es.length);
     es.forEach((e, i) => {
@@ -87,7 +117,7 @@ export function exifSegment(ifd0: Tag[], exif: Tag[], orientation = 1): Uint8Arr
       v.setUint16(p, e.t, true);
       v.setUint16(p + 2, e.type, true);
       if (e.data) {
-        v.setUint32(p + 4, e.data.length, true);
+        v.setUint32(p + 4, e.count ?? e.data.length, true);
         if (e.data.length <= 4) b.set(e.data, p + 8);
         else {
           v.setUint32(p + 8, data, true);
@@ -97,13 +127,14 @@ export function exifSegment(ifd0: Tag[], exif: Tag[], orientation = 1): Uint8Arr
       } else {
         v.setUint32(p + 4, 1, true);
         if (e.type === 3) v.setUint16(p + 8, e.value ?? 0, true);
-        else v.setUint32(p + 8, e.t === 0x8769 ? offX : (e.value ?? 0), true);
+        else v.setUint32(p + 8, e.t === 0x8769 ? offX : e.t === 0x8825 ? offG : (e.value ?? 0), true);
       }
     });
     v.setUint32(at + 2 + es.length * 12, 0, true); // no next IFD
   };
   writeIfd(off0, entries0);
   writeIfd(offX, entriesX);
+  if (gps) writeIfd(offG, entriesG);
   const seg = new Uint8Array(4 + 6 + total);
   const sv = new DataView(seg.buffer);
   sv.setUint16(0, 0xffe1);

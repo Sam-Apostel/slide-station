@@ -14,6 +14,7 @@ import { canPickFolders, kvGet, kvSet, permission, pickDirectory, type Library }
 import { npy, readNpy } from "./npy";
 import {
   activeScans,
+  cleanPlace,
   dumpSession,
   groupStatus,
   metaKey,
@@ -29,6 +30,7 @@ import {
   toneKey,
   type GroupData,
   type ImmichRecord,
+  type Place,
   type Scan,
   type SessionData,
   type Snapshot,
@@ -323,6 +325,7 @@ async function payload(d: SessionData): Promise<SessionPayload> {
       date: g.date ?? "",
       caption: g.caption ?? "",
       tags: g.tags ?? [],
+      place: g.place ?? null,
       date_est: dates[i],
       active: activeScans(g),
       key: renderKey(g),
@@ -796,10 +799,15 @@ async function renderExport(sid: string, gid: string, quality: number): Promise<
   if (g.caption) ifd0.push([270, g.caption]); // ImageDescription: Immich shows it as the description
   const blob = await withExif(
     jpeg,
-    exifSegment(ifd0, [
-      [36867, when], // DateTimeOriginal (what Immich uses for the timeline)
-      [36868, when],
-    ]),
+    exifSegment(
+      ifd0,
+      [
+        [36867, when], // DateTimeOriginal (what Immich uses for the timeline)
+        [36868, when],
+      ],
+      1,
+      g.place ?? undefined, // the slide's place as EXIF GPS
+    ),
   );
   const name = `${slugify(d.name)}_${scans[0]}.jpg`;
   await lib.write(`${sessionDir(sid)}/export/${name}`, blob);
@@ -866,11 +874,41 @@ const isoDay = (t: Date) =>
 /** A slide's date for `PUT /assets/{id}`: naive local time, like the EXIF the upload carries. */
 const immichTime = (t: Date) => exifTime(t).replace(/^(\d{4}):(\d{2}):(\d{2}) /, "$1-$2-$3T");
 
+const gps = (g: GroupData): [number, number] | null => (g.place ? [g.place.lat, g.place.lon] : null);
+
 /** What Immich was told about a slide besides its pixels; pulling edits back compares against it. */
 const pushedMeta = (d: SessionData, g: GroupData, index: number) => ({
   date: isoDay(photoDate(d, g, index)),
   caption: g.caption ?? "",
+  place: gps(g),
 });
+
+/** A place from an Immich asset's exifInfo (workflow.immich_place). */
+function immichPlace(
+  x:
+    | {
+        latitude?: number | null;
+        longitude?: number | null;
+        city?: string | null;
+        country?: string | null;
+        state?: string | null;
+      }
+    | null
+    | undefined,
+): Place | null {
+  if (x?.latitude == null || x.longitude == null) return null;
+  try {
+    return cleanPlace({
+      name: x.city ?? "",
+      lat: x.latitude,
+      lon: x.longitude,
+      country: x.country ?? "",
+      admin: x.state ?? "",
+    });
+  } catch {
+    return null;
+  }
+}
 
 /** Immich has this slide's pixels already: only its date or caption can have changed. */
 const metaOnly = (g: GroupData) => !!g.immich && (!!g.locked || g.immich.key === renderKey(g));
@@ -922,7 +960,7 @@ async function finishSession(
   let todo = d.groups
     .filter((g) => !g.skip && (target === "disk" || redate || st[g.id] !== "uploaded") && (g.reviewed || !onlyReady))
     .map((g) => g.id);
-  // slides whose pixels Immich has only get their date / caption updated there
+  // slides whose pixels Immich has only get their date / caption / place updated there
   const meta = target === "immich" ? todo.filter((gid) => metaOnly(group(d, gid))) : [];
   todo = todo.filter((x) => !meta.includes(x));
   const lost: string[] = [];
@@ -948,7 +986,7 @@ async function finishSession(
   const hasStacks = async () => (stacks ??= await client!.hasStacks());
 
   for (const [n, gid] of meta.entries()) {
-    job.message = `Updating date and caption ${n + 1} of ${meta.length}`;
+    job.message = `Updating date, caption and place ${n + 1} of ${meta.length}`;
     job.done++;
     d = await loadSession(sid);
     const g = d.groups.find((x) => x.id === gid);
@@ -957,11 +995,19 @@ async function finishSession(
     const mk = slideMeta(d, g, idx);
     const asset = g.immich.asset_id;
     if (g.immich.meta === mk) continue; // only the tray date moved, and not this slide's
+    const fields: Record<string, unknown> = {
+      dateTimeOriginal: immichTime(photoDate(d, g, idx)),
+      description: g.caption ?? "",
+    };
+    if (g.place) Object.assign(fields, { latitude: g.place.lat, longitude: g.place.lon });
+    else if (g.immich.pushed?.place && !g.locked && !(await originalsMissing(d, g))) {
+      // Immich's API can set a location but not remove one: a new copy without GPS goes up
+      todo.push(gid);
+      job.total += 2;
+      continue;
+    }
     try {
-      await client!.updateAsset(asset, {
-        dateTimeOriginal: immichTime(photoDate(d, g, idx)),
-        description: g.caption ?? "",
-      });
+      await client!.updateAsset(asset, fields);
     } catch (e) {
       // a key without asset.update: upload it again with the new EXIF, as before
       console.warn("metadata update:", e);
@@ -1109,16 +1155,19 @@ async function finishSession(
         g.immich = null;
       }
     if (!onlyReady || fresh.groups.every((g) => g.reviewed || g.skip)) fresh.date_key = fresh.date; // every slide now carries the date
-    log(fresh, `Uploaded ${uploaded} slides to album '${fresh.album}'` + (synced ? `, updated ${synced} in place` : ""));
+    log(
+      fresh,
+      `Uploaded ${uploaded} slides to album '${fresh.album}'` + (synced ? `, updated ${synced} in place` : ""),
+    );
   });
   for (const x of stacksGone) await client!.deleteStack(x);
   await client!.trash(toTrash);
   if (!cfg.keep_originals) await dropLocalOriginals(sid);
   job.message =
     `Done - ${uploaded} slides uploaded to '${d.album}'` +
-    (synced ? `; ${synced} updated in place (date, caption)` : "") +
+    (synced ? `; ${synced} updated in place (date, caption, place)` : "") +
     (noUpdate
-      ? "; dates / captions went up as new copies: give the API key asset.update to change them in place"
+      ? "; dates / captions / places went up as new copies: give the API key asset.update to change them in place"
       : "") +
     (duplicates ? `; ${duplicates} were in Immich already, not sent again` : "") +
     (wantOriginals && uploaded && stacks === false
@@ -1166,7 +1215,8 @@ const PULLABLE = ["image/jpeg", "image/png"];
 
 function immichClient() {
   const cfg = loadConfig();
-  if (!cfg.immich_url || !cfg.immich_key) throw new HttpError(400, "Set your Immich URL and API key in Settings first.");
+  if (!cfg.immich_url || !cfg.immich_key)
+    throw new HttpError(400, "Set your Immich URL and API key in Settings first.");
   return new Immich(cfg.immich_url, cfg.immich_key);
 }
 
@@ -1194,7 +1244,7 @@ async function pullIn(job: Job, sid: string, ids: string[]) {
   job.total = ids.length;
   job.message = `Downloading ${ids.length} photos from Immich`;
   const records: Record<string, Scan> = {};
-  const fresh: { scanId: string; id: string; day: string; caption: string }[] = [];
+  const fresh: { scanId: string; id: string; day: string; caption: string; place: Place | null }[] = [];
   let skipped = 0;
   let unusable = 0;
   for (const id of ids) {
@@ -1213,7 +1263,8 @@ async function pullIn(job: Job, sid: string, ids: string[]) {
     const blob = await client.download(id);
     const sha = await sha1Blob(blob);
     const expected = b64Hex(a.checksum ?? "");
-    if (expected.length === 40 && expected !== sha) throw new Error(`The download of ${name} did not verify - try again`);
+    if (expected.length === 40 && expected !== sha)
+      throw new Error(`The download of ${name} did not verify - try again`);
     const scanId = `${slugify(stem(name)).slice(0, 40)}_${id.replace(/-/g, "").slice(0, 6)}`;
     const dest = `${sessionDir(sid)}/originals/${scanId}.jpg`;
     await lib.write(dest, blob);
@@ -1230,7 +1281,13 @@ async function pullIn(job: Job, sid: string, ids: string[]) {
       immich_asset: id,
     };
     const day = parseDate(local.slice(0, 10)) ? local.slice(0, 10) : "";
-    fresh.push({ scanId, id, day, caption: (a.exifInfo?.description ?? "").trim().slice(0, 2000) });
+    fresh.push({
+      scanId,
+      id,
+      day,
+      caption: (a.exifInfo?.description ?? "").trim().slice(0, 2000),
+      place: immichPlace(a.exifInfo), // the photo's location becomes the slide's place
+    });
     have.add(id);
   }
   d = (await update(sid, (f) => void Object.assign(f.scans, records))).d;
@@ -1243,6 +1300,7 @@ async function pullIn(job: Job, sid: string, ids: string[]) {
     await makeProxies(sid, x.scanId, (await lib.read(originalPath(d, x.scanId)))!);
     const g = newGroup(d, [x.scanId]);
     Object.assign(g, { date: x.day, caption: x.caption, source_asset: { id: x.id } });
+    if (x.place) g.place = x.place;
     const analysis = await jobs.call("analyse", {
       proxies: [{ key: `${sid}:${x.scanId}`, blob: await readCache(sid, `${x.scanId}.proxy.jpg`) }],
       fused: await fusedSrc(d, g, jobs),
@@ -1275,7 +1333,7 @@ async function pullMetadata(sid: string) {
   const d0 = await loadSession(sid);
   const found = new Map<string, Awaited<ReturnType<Immich["asset"]>>>();
   for (const g of d0.groups) if (g.immich) found.set(g.id, await client.asset(g.immich.asset_id));
-  const out = { checked: found.size, captions: 0, dates: 0, gone: 0 };
+  const out = { checked: found.size, captions: 0, dates: 0, places: 0, gone: 0 };
   const { d } = await update(sid, (fresh) => {
     const touched: GroupData[] = [];
     fresh.groups.forEach((g, i) => {
@@ -1283,7 +1341,8 @@ async function pullMetadata(sid: string) {
       const a = found.get(g.id);
       if (!a || a.isTrashed) return void out.gone++;
       if (a.id !== g.immich.asset_id || !a.exifInfo) return; // uploaded again meanwhile, or not read by Immich yet
-      const pushed = g.immich.pushed ?? pushedMeta(fresh, g, i);
+      let pushed = g.immich.pushed ?? pushedMeta(fresh, g, i);
+      if (!("place" in pushed)) pushed = { ...pushed, place: gps(g) }; // uploaded before places: the slide's stands in
       const caption = (a.exifInfo.description ?? "").trim().slice(0, 2000);
       const day = (a.localDateTime ?? "").slice(0, 10);
       const next = { ...pushed };
@@ -1295,7 +1354,14 @@ async function pullMetadata(sid: string) {
         g.date = next.date = day;
         out.dates++;
       }
-      if (next.caption !== pushed.caption || next.date !== pushed.date) {
+      const place = immichPlace(a.exifInfo);
+      const was = pushed.place;
+      if (place && !(was && Math.abs(place.lat - was[0]) < 1e-4 && Math.abs(place.lon - was[1]) < 1e-4)) {
+        g.place = place; // moved (or placed) on Immich's map
+        next.place = [place.lat, place.lon];
+        out.places++;
+      }
+      if (next.caption !== pushed.caption || next.date !== pushed.date || next.place !== pushed.place) {
         g.immich.pushed = next;
         touched.push(g);
       }
@@ -1305,7 +1371,8 @@ async function pullMetadata(sid: string) {
       const i = groupIndex(fresh, g.id);
       if (isoDay(photoDate(fresh, g, i)) === g.immich!.pushed!.date) g.immich!.meta = slideMeta(fresh, g, i);
     }
-    if (touched.length) log(fresh, `Pulled ${out.captions} captions and ${out.dates} dates from Immich`);
+    if (touched.length)
+      log(fresh, `Pulled ${out.captions} captions, ${out.dates} dates and ${out.places} places from Immich`);
   });
   return { d, pulled: out };
 }
@@ -1515,6 +1582,7 @@ export async function handle(method: string, url: string, body: Body = {}): Prom
       for (const k of ["reviewed", "skip"] as const) if (k in body) g[k] = !!body[k];
       if ("date" in body) g.date = cleanDate(body.date);
       if ("caption" in body) g.caption = String(body.caption).trim().slice(0, 2000);
+      if ("place" in body) setPlace(g, placeOf(body.place));
       await learn(d, g);
       if ("excluded" in body) {
         g.excluded = (body.excluded as string[]).filter((x) => g.scans.includes(x));
@@ -1536,6 +1604,47 @@ export async function handle(method: string, url: string, body: Body = {}): Prom
       }
     });
     return { ...(await payload(d)), dated };
+  }
+  if ((m = is("POST", /^\/api\/sessions\/([^/]+)\/insights\/propagate$/))) {
+    // tray-level propagation (server.insights_propagate) for what the browser version edits: a
+    // place, caption or date; tags stay the desktop app's
+    const kind = String(body.kind);
+    if (!["caption", "date", "place"].includes(kind)) throw new HttpError(400, "kind must be caption, date or place");
+    const value =
+      kind === "place"
+        ? placeOf(body.value)
+        : kind === "date"
+          ? cleanDate(body.value)
+          : String(body.value ?? "").trim();
+    let applied = 0;
+    const { d } = await update(m[1], (d) => {
+      const [a, b] = [groupIndex(d, String(body.from)), groupIndex(d, String(body.to))].sort((x, y) => x - y);
+      if (a < 0) throw new HttpError(404, "Slide not found");
+      for (const g of d.groups.slice(a, b + 1)) {
+        if (g.locked) continue;
+        if (kind === "place") setPlace(g, value as Place | null);
+        else if (kind === "date") g.date = value as string;
+        else g.caption = (value as string).slice(0, 2000);
+        applied++;
+      }
+    });
+    return { ...(await payload(d)), applied };
+  }
+  if (is("GET", /^\/api\/places$/)) {
+    // no gazetteer here: download.geonames.org doesn't allow other origins (no CORS), so a place is
+    // typed as coordinates
+    const q = u.searchParams.get("q") ?? "";
+    const ll = /^\s*(-?\d{1,2}(?:\.\d+)?)\s*[,; ]\s*(-?\d{1,3}(?:\.\d+)?)\s*$/.exec(q);
+    let results: Place[] = [];
+    if (ll) {
+      try {
+        const p = cleanPlace({ lat: ll[1], lon: ll[2] });
+        if (p) results = [p];
+      } catch {
+        results = [];
+      }
+    }
+    return { ready: false, downloading: false, mb: 4, results };
   }
   if ((m = is("POST", /^\/api\/sessions\/([^/]+)\/groups\/([^/]+)\/split$/))) {
     const [, sid, gid] = m;
@@ -1817,7 +1926,12 @@ export async function handle(method: string, url: string, body: Body = {}): Prom
   if (is("GET", /^\/api\/immich\/albums$/)) {
     const albums = await immichClient().albums();
     return albums
-      .map((a) => ({ id: a.id, name: a.albumName ?? "", count: a.assetCount ?? 0, thumb: a.albumThumbnailAssetId ?? null }))
+      .map((a) => ({
+        id: a.id,
+        name: a.albumName ?? "",
+        count: a.assetCount ?? 0,
+        thumb: a.albumThumbnailAssetId ?? null,
+      }))
       .sort((a, b) => a.name.toLowerCase().localeCompare(b.name.toLowerCase()));
   }
   if ((m = is("GET", /^\/api\/immich\/albums\/([^/]+)\/assets$/))) {
@@ -1864,6 +1978,19 @@ export async function handle(method: string, url: string, body: Body = {}): Prom
           : "Finished slides live in the browser's storage here; use “Save to disk” to get them out.",
     };
   throw new HttpError(404, `No such route: ${method} ${path}`);
+}
+
+function placeOf(v: unknown): Place | null {
+  try {
+    return cleanPlace(v);
+  } catch (e) {
+    throw new HttpError(400, (e as Error).message);
+  }
+}
+
+function setPlace(g: GroupData, p: Place | null) {
+  if (p) g.place = p;
+  else delete g.place;
 }
 
 function cleanDate(v: unknown): string {

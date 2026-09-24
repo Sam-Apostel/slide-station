@@ -216,7 +216,7 @@ class Session:
             "reviewed": False,
             "skip": False,
             "export": None,  # {"file","sha1","key"}
-            # {"asset_id", "key", "meta", "pushed": {"date", "caption"}, "stack_id", "originals": {scan: asset},
+            # {"asset_id", "key", "meta", "pushed": {"date", "caption", "place"}, "stack_id", "originals": {scan: asset},
             #  "own_originals": [assets this app uploaded]}; see ARCHITECTURE "Round trip with Immich"
             "immich": None,
         }
@@ -306,10 +306,13 @@ def slide_dates(d: dict) -> list[dict]:
 
 
 def meta_key(g: dict, date: dict) -> str:
-    """What besides the pixels goes to Immich with a slide: its date, caption and tags."""
+    """What besides the pixels goes to Immich with a slide: its date, caption, tags and place (its
+    coordinates: that's what Immich and the EXIF get)."""
     k = [date.get("value", ""), g.get("caption", "")]
     if g.get("tags"):  # left out when there are none, so slides uploaded before tags existed stay put
         k.append(sorted(g["tags"]))
+    if g.get("place"):  # likewise; formatted, so the browser version's key is the same string
+        k.append({"gps": [f"{g['place']['lat']:.5f}", f"{g['place']['lon']:.5f}"]})
     return hashlib.sha1(json.dumps(k).encode()).hexdigest()[:12]
 
 

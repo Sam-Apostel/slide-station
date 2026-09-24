@@ -5,8 +5,8 @@ deviceAssetId + deviceId, v3 rejects them). MOCK_IMMICH_CORS=1 lets other origin
 version calls Immich from the page).
 
 Beyond uploads it keeps what the round trip needs: assets with their bytes, checksum, favourite,
-trash flag and the description / date Immich would read from the EXIF (`PUT /assets/{id}` changes
-them), albums (`GET /albums/{id}` lists its assets before v3; v3 only answers `POST /search/metadata`,
+trash flag and the description / date / GPS Immich would read from the EXIF (`PUT /assets/{id}`
+changes them; latitude / longitude validated like v3.2's UpdateAssetDto, no reverse geocoding), albums (`GET /albums/{id}` lists its assets before v3; v3 only answers `POST /search/metadata`,
 paged by `PAGE`), bulk-upload-check, originals, thumbnails (not previews: the locked-slide test
 relies on the local fallback) and stacks (`STACKS = False` answers 404, like servers before them).
 """
@@ -50,29 +50,36 @@ def auth(k):
         raise HTTPException(401, "bad key")
 
 
-def _exif(data: bytes) -> tuple[str, str]:
-    """(description, DateTimeOriginal as ISO) read from a JPEG, as Immich's metadata extraction would."""
+def _exif(data: bytes) -> tuple[str, str, float | None, float | None]:
+    """(description, DateTimeOriginal as ISO, latitude, longitude) read from a JPEG, as Immich's
+    metadata extraction would."""
     try:
         from PIL import Image
 
         ex = Image.open(io.BytesIO(data)).getexif()
         when = ex.get_ifd(0x8769).get(36867) or ""
         iso = f"{when[:4]}-{when[5:7]}-{when[8:10]}T{when[11:19]}" if len(when) >= 19 else ""
-        return str(ex.get(270, "") or ""), iso
+        gps = ex.get_ifd(0x8825)
+        lat = lon = None
+        if 2 in gps and 4 in gps:
+            deg = lambda v: float(v[0]) + float(v[1]) / 60 + float(v[2]) / 3600  # noqa: E731
+            lat = round(deg(gps[2]) * (-1 if gps.get(1) == "S" else 1), 6)
+            lon = round(deg(gps[4]) * (-1 if gps.get(3) == "W" else 1), 6)
+        return str(ex.get(270, "") or ""), iso, lat, lon
     except Exception:
-        return "", ""
+        return "", "", None, None
 
 
 def add_asset(data: bytes, name: str = "photo.jpg", created: str = "2020-01-01T00:00:00.000Z", **extra) -> str:
     """Put an asset in as if some other tool had uploaded it; returns its id."""
     aid = str(uuid.uuid4())
-    desc, when = _exif(data)
+    desc, when, lat, lon = _exif(data)
     DB["data"][aid] = data
     DB["assets"][aid] = {
         "fields": {}, "bytes": len(data), "name": name, "sha1": hashlib.sha1(data).hexdigest(),
         "type": "IMAGE", "mime": "image/png" if name.lower().endswith(".png") else "image/jpeg",
         "favorite": False, "trashed": False, "description": desc,
-        "local": (when + ".000Z") if when else created, "stack": None, **extra,
+        "local": (when + ".000Z") if when else created, "stack": None, "lat": lat, "lon": lon, **extra,
     }
     return aid
 
@@ -85,7 +92,9 @@ def asset_dto(aid: str) -> dict:
         "checksum": base64.b64encode(bytes.fromhex(a["sha1"])).decode(), "isFavorite": a.get("favorite", False),
         "isTrashed": a.get("trashed", False), "localDateTime": a.get("local", ""),
         "fileCreatedAt": a["fields"].get("fileCreatedAt", a.get("local", "")),
-        "exifInfo": {"description": a.get("description", ""), "dateTimeOriginal": a.get("local", "")},
+        "exifInfo": {"description": a.get("description", ""), "dateTimeOriginal": a.get("local", ""),
+                     "latitude": a.get("lat"), "longitude": a.get("lon"), "city": a.get("city"),
+                     "state": None, "country": a.get("country")},
         "stack": {"id": st, "primaryAssetId": DB["stacks"][st]["primary"],
                   "assetCount": len(DB["stacks"][st]["assets"])} if st in DB["stacks"] else None,
     }
@@ -242,6 +251,13 @@ async def update_asset(aid: str, req: Request, x_api_key: str = Header(None)):
         a["local"] = body["dateTimeOriginal"][:19] + ".000Z"
     if "isFavorite" in body:
         a["favorite"] = bool(body["isFavorite"])
+    for k, key, lim in (("latitude", "lat", 90), ("longitude", "lon", 180)):
+        if k in body:
+            v = body[k]
+            if not isinstance(v, (int, float)) or isinstance(v, bool) or not -lim <= v <= lim:
+                raise HTTPException(400, f"{k} must be a number between -{lim} and {lim}")
+            a[key] = v
+            a["city"] = a["country"] = None  # Immich geocodes again; the mock doesn't
     DB["log"].append(("update", aid, body))
     return asset_dto(aid)
 

@@ -287,6 +287,19 @@ def main() -> None:
             rng.get_by_role("button", name="Date slides").click()
             expect(pg.get_by_role("dialog")).to_have_count(0)
 
+            # ---- a place, typed as coordinates (no gazetteer in the browser), given to slides 1-2 too
+            place = pg.get_by_role("combobox", name="Place")
+            place.fill("Venice 45.43713, 12.33265")
+            expect(pg.get_by_role("option", name=re.compile("Venice"))).to_be_visible()
+            place.press("Enter")
+            expect(pg.get_by_role("button", name="Remove place")).to_be_visible()
+            pg.get_by_role("button", name="Apply place to a range").click()
+            pr = pg.get_by_role("dialog")
+            pr.get_by_label("From slide").fill("1")
+            pr.get_by_role("button", name=re.compile(r"Apply to \d+ slides")).click()
+            expect(pg.get_by_role("dialog")).to_have_count(0)
+            expect(pg.get_by_text(re.compile(r"Placed in Venice: \d+ slides")).first).to_be_visible()
+
             # ---- connect the mock Immich and upload everything
             pg.get_by_role("button", name="Settings", exact=True).click()
             s = pg.get_by_role("dialog")
@@ -306,6 +319,9 @@ def main() -> None:
             assert len(assets) == SLIDES, f"{len(assets)} assets in Immich, expected {SLIDES}"
             assert all(a["bytes"] > 50_000 for a in assets), assets
             assert all("deviceAssetId" not in a["fields"] and a["fields"].get("filename") for a in assets), assets
+            # the placed slides' JPEGs carried EXIF GPS (the mock reads it like Immich does)
+            placed = [a for a in assets if a.get("lat") is not None]
+            assert len(placed) >= 2 and all((a["lat"], a["lon"]) == (45.43713, 12.33265) for a in placed), placed
             print(f"upload: {len(assets)} slides, {time.time() - t0:.1f}s")
             pg.screenshot(path=str(SHOTS / "03-uploaded.png"))
 

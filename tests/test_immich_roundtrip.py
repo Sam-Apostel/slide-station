@@ -190,7 +190,7 @@ def test_pull_captions_and_dates_back(api, tray, immich_db):
     a0["description"] = "Grandma's garden"  # edited in Immich
     a2["local"] = "1981-03-02T09:00:00.000Z"
     r = api.post(f"/api/sessions/{sid}/pull").json()
-    assert r["pulled"] == {"checked": 4, "captions": 1, "dates": 1, "gone": 0}
+    assert r["pulled"] == {"checked": 4, "captions": 1, "dates": 1, "places": 0, "gone": 0}
     out = r["groups"]
     assert out[0]["caption"] == "Grandma's garden" and out[1]["caption"] == "Old caption"
     assert out[2]["date"] == "1981-03-02" and out[3]["date"] == "1980"
