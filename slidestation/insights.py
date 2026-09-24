@@ -33,6 +33,7 @@ import numpy as np
 from PIL import Image
 
 from . import imaging as im
+from . import similar
 from . import workflow as wf
 from .store import Session, _atomic_write, active_scans, library, load_config, lock
 
@@ -310,9 +311,10 @@ def backend():
         return _clip
 
 
-def scene_tags(b, rgb: np.ndarray) -> list[tuple[str, float]]:
-    """Every label with its zero-shot probability (softmax over the label list), best first."""
-    logits = LOGIT_SCALE * (b.label_embeds() @ b.image_embed(rgb))
+def scene_tags(b, rgb: np.ndarray, emb: np.ndarray | None = None) -> list[tuple[str, float]]:
+    """Every label with its zero-shot probability (softmax over the label list), best first.
+    `emb`: the picture's embedding when it is already at hand."""
+    logits = LOGIT_SCALE * (b.label_embeds() @ (b.image_embed(rgb) if emb is None else emb))
     p = np.exp(logits - logits.max())
     p /= p.sum()
     return [(TAGS[i], float(p[i])) for i in np.argsort(-p)]
@@ -334,8 +336,9 @@ def learned() -> dict:
 
 
 def record(kind: str, value: str, action: str, n: int = 1) -> None:
-    """Count an accept / dismiss of a suggestion (tags only: that's what the threshold is per)."""
-    if kind != "tags" or action not in ("accept", "dismiss") or n <= 0:
+    """Count an accept / dismiss of a suggestion: tags per label (that's what the threshold is per),
+    look-alike suggestions per kind (`similar.KINDS`, value = the kind: similar.threshold reads them)."""
+    if kind not in ("tags", "duplicates", "split", "merge") or action not in ("accept", "dismiss") or n <= 0:
         return
     with lock:
         d = learned()
@@ -366,12 +369,19 @@ def needs_analysis(g: dict) -> bool:
 
 def analyse(s, g: dict, b) -> dict:
     """Fresh suggestions for one slide (no decisions merged in yet)."""
+    return _analyse(s, g, b)[0]
+
+
+def _analyse(s, g: dict, b) -> tuple[dict, np.ndarray, np.ndarray]:
+    """(suggestions, the upright blend's CLIP embedding, the upright blend): the embedding is also
+    what near-duplicates and scenes are found with (similar.py)."""
     rgb = im.rotate_arr(wf.fused_proxy(s, g), g["rotation"])
     stats = learned()
-    ranked = scene_tags(b, rgb)
+    emb = b.image_embed(rgb)
+    ranked = scene_tags(b, rgb, emb)
     tags = [{"value": t, "confidence": round(p, 3), "source": MODEL_ID, "state": "suggested"}
             for t, p in ranked if p >= threshold(t, stats)][:MAX_TAGS]
-    return {"key": insights_key(g), "tags": tags}
+    return {"key": insights_key(g), "tags": tags}, emb, rgb
 
 
 def merge(old: dict | None, new: dict, own_tags: list[str]) -> dict:
@@ -399,7 +409,8 @@ def analyse_slide(sid: str, gid: str) -> bool:
         return False
     s = Session(sid)
     g = s.group(gid)
-    new = analyse(s, g, b)  # the slow part, outside the lock
+    new, emb, rgb = _analyse(s, g, b)  # the slow part, outside the lock
+    similar.record_slide(sid, g, emb, rgb)
 
     def commit(fresh):
         try:
@@ -439,7 +450,9 @@ def step() -> bool:
         except FileNotFoundError:
             s = None
         g = next((g for g in s.data["groups"] if needs_analysis(g)), None) if s else None
-        if g is None:  # nothing left to do there
+        if g is None:  # tags done there: then the embeddings for look-alikes (slides from before, scans)
+            if s and similar.step(s, backend()):
+                return True
             if sid in queued:
                 queued.remove(sid)
             continue

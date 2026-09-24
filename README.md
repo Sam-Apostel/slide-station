@@ -154,7 +154,8 @@ Importing the same card twice never duplicates: every scan is fingerprinted.
   restore, crop and re-date. Uploading one replaces it in Immich (same albums, favourite kept, the
   old one to the trash; with "keep the scans" on it stays, stacked under the new one).
 
-Look-alike detection ("a scan you uploaded in 2021") isn't done: only exact duplicates are.
+Photos Immich already has byte for byte are recognised on upload; a slide that only *looks like* one
+you uploaded before ("a scan from 2021") is found by the optional look-alike check below.
 
 ## Tag suggestions (optional)
 
@@ -176,6 +177,29 @@ own:
 - Tags go to Immich as tags on upload (give the API key `tag.create` and `tag.asset` too; an Immich
   older than v1.113 just skips them) and into the JPEG's keywords (XMP). Changing a slide's tags
   after upload uploads it again, like a caption.
+
+### Look-alikes
+
+The same model also notices slides that belong together, shown under Insights (and in Review
+suggestions) as suggestions you accept with one click or dismiss:
+
+- **The same shot twice** — "Slides 12, 13 and 15 look like the same shot": **Keep 13, skip the
+  rest** keeps the sharpest, least blown-out one (click another thumbnail to keep that one instead;
+  X brings a skipped slide back). Which eyes are open isn't judged.
+- **Grouping mistakes** — a stack whose scans show different pictures ("may be another slide" →
+  Split), or two neighbouring slides that are one slide at two brightnesses (→ Merge).
+- **Scenes** — the filmstrip is divided into runs of similar slides ("Scene 2 · mountains · 4–6");
+  **Apply to scene…** gives all of them a tag, date or caption at once.
+- **Already in Immich?** Settings → "After uploading, look for photos in Immich that look like the new
+  slides" (off by default). After each upload the app asks Immich for similar photos (its search by
+  image; on servers without it, the photos taken around the slide's date) and compares them on this
+  computer. A match shows as "Looks like a photo already in Immich": **Replace it** moves the old one
+  to Immich's trash and puts the new one in its albums (a favourite stays a favourite), **Keep both**
+  leaves them. Immich needs a moment to index a new upload; slides it hasn't yet are checked again
+  with "Check". The API key needs `asset.read` and `asset.view` for this.
+
+Look-alikes aren't in the browser version either. The thresholds were set on synthetic pictures, so
+expect to dismiss the odd suggestion; dismissing "same shot" often makes it stricter.
 
 Not in the browser version yet.
 
@@ -204,7 +228,8 @@ dialog. Names are only ever added, never removed from Immich.
 
 `~/.slidestation/config.json` - settings (incl. API key, readable only by you).
 Library folder → `sessions/<tray>/originals`, `cache` (previews), `export` (finished JPEGs),
-`session.json` (all edits; safe to back up), `faces.json` (faces found, when people are on);
+`session.json` (all edits; safe to back up), `faces.json` (faces found, when people are on),
+`embeddings.json` (what the tag model saw, for look-alikes; recomputed if deleted);
 `people.json` (who is who) and `models/` (the downloaded face model) at the top.
 
 Face detection uses OpenCV's YuNet model (MIT licence, from opencv_zoo), bundled in

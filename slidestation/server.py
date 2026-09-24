@@ -14,6 +14,7 @@ from fastapi.staticfiles import StaticFiles
 
 from . import insights, learning
 from . import people
+from . import similar
 from . import workflow as wf
 from . import imaging as im
 from .imaging import Params
@@ -56,7 +57,7 @@ def state():
 def set_config(body: dict = Body(...)):
     cfg = load_config()
     for k in ("library", "immich_url", "immich_key", "keep_originals", "keep_exports", "jpeg_quality",
-              "learning_enabled", "upload_originals_stacked", "insights_enabled", "people_enabled"):
+              "learning_enabled", "upload_originals_stacked", "insights_enabled", "people_enabled", "lookalike_enabled"):
         if k in body and not (k == "immich_key" and body[k] == ""):
             cfg[k] = body[k]
     if "stats_target" in body:  # slides to digitise in all, for the stats' projected finish
@@ -209,6 +210,8 @@ def _session_payload(s: Session) -> dict:
             "caption": g.get("caption", ""),
             "tags": g.get("tags", []),
             "insights": _slide_insights(g),
+            # after upload: photos already in Immich that look like this one (similar.check_lookalikes)
+            "lookalike": similar.lookalike_view(g),
             "date_est": dates[i],  # {"value", "source": own|between|near|tray|scan, "from": [indices]}
             "active": active_scans(g),
             "key": render_key(g),  # preview cache key: the UI must use this, not its own guess
@@ -226,8 +229,19 @@ def _session_payload(s: Session) -> dict:
         "groups": groups,
         "cleanup_blockers": wf.cleanup_blockers(s),
         "log": d.get("log", [])[-20:],
-        "insights": {"enabled": insights.enabled(), "ready": insights.model_ready(), "pending": insights.pending(d)},
+        **_insights_payload(s),
     }
+
+
+def _insights_payload(s: Session) -> dict:
+    """Top-level insights state, and the look-alike suggestions (tray-level: duplicates, split,
+    merge, scenes) once the model is there. `pending` counts slides to tag plus slides and scans to
+    embed: the UI keeps reloading the tray while it's above 0."""
+    on, ready = insights.enabled(), insights.model_ready()
+    sim = similar.payload(s) if on and ready else None
+    pending = insights.pending(s.data) + (sim["pending"] if sim else 0)
+    return {"insights": {"enabled": on, "ready": ready, "pending": pending},
+            "similar": {k: v for k, v in sim.items() if k != "pending"} if sim else None}
 
 
 @app.post("/api/sessions")
@@ -528,8 +542,13 @@ def insights_decide(sid: str, body: dict = Body(...)):
     dismiss), optionally `value` (one tag, say "beach") and `groups` (slide ids; default: the whole
     tray, the review view's "accept all"). Locked slides can't take accepted values."""
     kind, action, value = body.get("kind"), body.get("action"), body.get("value")
-    if kind not in insights.KINDS or action not in ("accept", "dismiss"):
-        raise HTTPException(400, "kind must be tags, caption, date or place; action accept or dismiss")
+    if action not in ("accept", "dismiss") or kind not in insights.KINDS + similar.KINDS + ("lookalike",):
+        raise HTTPException(400, "kind must be tags, caption, date, place, duplicates, split, merge or lookalike; "
+                                 "action accept or dismiss")
+    if kind in similar.KINDS:
+        return _decide_similar(sid, kind, action, str(value or ""), body.get("keep"))
+    if kind == "lookalike":
+        return _decide_lookalike(sid, action, str(value or ""), body.get("groups") or [])
     with lock:
         s = _session(sid)
         gids = body.get("groups")
@@ -543,6 +562,88 @@ def insights_decide(sid: str, body: dict = Body(...)):
             n += _decide(g, kind, action, value)
         s.save()
     return {**_session_payload(s), "decided": n}
+
+
+def _decide_similar(sid: str, kind: str, action: str, value: str, keep: str | None) -> dict:
+    """A look-alike suggestion (similar.py), by its id. Accept: duplicates keep one slide (`keep`,
+    default the best) and skip the rest; split cuts the stack before the odd scan; merge joins the
+    two neighbours. Dismiss: it isn't suggested again. Counted for the duplicate threshold."""
+    with lock:
+        s = _session(sid)
+        sug = next((x for x in similar.suggest(s)[kind] if x["id"] == value), None)
+        if sug is None:
+            raise HTTPException(404, "That suggestion no longer applies (the slides changed)")
+        if action == "dismiss":
+            similar.dismiss(s.data, sug)
+        elif kind == "duplicates":
+            keep = keep if keep in sug["groups"] else sug["best"]
+            for gid in sug["groups"]:
+                if gid != keep:
+                    g = s.group(gid)
+                    g["skip"] = True
+                    _learn(s, g)
+        elif kind == "split":
+            g = s.group(sug["groups"][0])
+            _editable(g)
+            _split(s, g, sug["scan"])
+        else:
+            i = s.group_index(sug["groups"][0])
+            if i + 1 >= len(s.data["groups"]) or s.data["groups"][i + 1]["id"] != sug["groups"][1]:
+                raise HTTPException(409, "These slides are no longer next to each other")
+            _merge_next(s, i)
+        s.save()
+    insights.record(kind, kind, action)
+    return {**_session_payload(s), "decided": 1}
+
+
+def _decide_lookalike(sid: str, action: str, value: str, gids: list) -> dict:
+    """A photo in Immich that looks like this slide's upload (`value`: its asset id). Accept =
+    replace it: the new upload joins its albums (and becomes a favourite if it was), it goes to the
+    Immich trash. Dismiss: keep both."""
+    if len(gids) != 1:
+        raise HTTPException(400, "Give the slide (groups: [id])")
+    s = _session(sid)
+    g = s.group(gids[0])
+    rec = g.get("immich") or {}
+    match = next((m for m in (rec.get("lookalike") or {}).get("matches", []) if m["id"] == value), None)
+    if match is None or match.get("state") != "suggested":
+        raise HTTPException(404, "No such look-alike for this slide")
+    if action == "accept":
+        cfg = load_config()
+        client = Immich(cfg["immich_url"], cfg["immich_key"])
+        try:
+            carry = wf._carry_over(client, value)
+            for a in carry["albums"]:
+                client.add_to_album(a, [rec["asset_id"]])
+            if carry["favorite"]:
+                client.update_asset(rec["asset_id"], isFavorite=True)
+            client.trash([value])
+        except ImmichError as e:
+            return _err(e, 502)
+        finally:
+            client.close()
+
+    def commit(fresh: Session):
+        for m in ((fresh.group(g["id"]).get("immich") or {}).get("lookalike") or {}).get("matches", []):
+            if m["id"] == value:
+                m["state"] = "accepted" if action == "accept" else "dismissed"
+
+    s = wf.update_session(sid, commit)
+    return {**_session_payload(s), "decided": 1}
+
+
+@app.post("/api/sessions/{sid}/lookalikes")
+def lookalikes(sid: str, body: dict = Body(default={})):
+    """Look for photos in Immich that look like this tray's uploaded slides (a job): the ones not
+    checked yet or waiting for Immich to index them; `all`: every uploaded slide again."""
+    _session(sid)
+    if insights.backend() is None:
+        return _err(RuntimeError("Download the tag model first (Settings → Suggest tags): it compares the photos."))
+    try:
+        wf.start_job("lookalike", sid, wf.check_lookalikes, sid, bool(body.get("all")))
+    except RuntimeError as e:
+        return _err(e, 409)
+    return {"ok": True}
 
 
 @app.post("/api/sessions/{sid}/insights/propagate")
@@ -590,19 +691,25 @@ def split_group(sid: str, gid: str, body: dict = Body(...)):
         s = _session(sid)
         g = s.group(gid)
         _editable(g)
-        at = g["scans"].index(body["scan"])
-        if at == 0:
-            return _session_payload(s)
-        tail = s.new_group(g["scans"][at:], g["rotation"], g["rot_reason"])
-        tail["params"] = dict(g["params"])
-        tail["excluded"] = [x for x in g.get("excluded", []) if x in tail["scans"]]
-        if g.get("tags"):
-            tail["tags"] = list(g["tags"])
-        g["scans"] = g["scans"][:at]
-        g["excluded"] = [x for x in g.get("excluded", []) if x in g["scans"]]
-        s.data["groups"].insert(s.group_index(gid) + 1, tail)
+        _split(s, g, body["scan"])
         s.save()
     return _session_payload(s)
+
+
+def _split(s: Session, g: dict, scan: str) -> bool:
+    """Scans from `scan` on become a new slide right after this one (same rotation and settings)."""
+    at = g["scans"].index(scan)
+    if at == 0:
+        return False
+    tail = s.new_group(g["scans"][at:], g["rotation"], g["rot_reason"])
+    tail["params"] = dict(g["params"])
+    tail["excluded"] = [x for x in g.get("excluded", []) if x in tail["scans"]]
+    if g.get("tags"):
+        tail["tags"] = list(g["tags"])
+    g["scans"] = g["scans"][:at]
+    g["excluded"] = [x for x in g.get("excluded", []) if x in g["scans"]]
+    s.data["groups"].insert(s.group_index(g["id"]) + 1, tail)
+    return True
 
 
 @app.post("/api/sessions/{sid}/groups/{gid}/merge_next")
@@ -614,18 +721,23 @@ def merge_next(sid: str, gid: str):
             raise HTTPException(400, "No next slide to merge with")
         _editable(s.data["groups"][i])
         _editable(s.data["groups"][i + 1])
-        nxt = s.data["groups"].pop(i + 1)
-        g = s.data["groups"][i]
-        g["scans"] += nxt["scans"]
-        g["excluded"] += nxt.get("excluded", [])
-        if nxt.get("tags"):
-            g["tags"] = g.get("tags", []) + [t for t in nxt["tags"] if t not in g.get("tags", [])]
-        if nxt.get("immich"):
-            s.data.setdefault("orphan_assets", []).append(nxt["immich"]["asset_id"])
-            if nxt["immich"].get("stack_id"):  # its scans get stacked under the merged slide's upload
-                s.data.setdefault("orphan_stacks", []).append(nxt["immich"]["stack_id"])
+        _merge_next(s, i)
         s.save()
     return _session_payload(s)
+
+
+def _merge_next(s: Session, i: int) -> None:
+    """The slide after slide i becomes more scans of it (its Immich copy goes at the next upload)."""
+    nxt = s.data["groups"].pop(i + 1)
+    g = s.data["groups"][i]
+    g["scans"] += nxt["scans"]
+    g["excluded"] += nxt.get("excluded", [])
+    if nxt.get("tags"):
+        g["tags"] = g.get("tags", []) + [t for t in nxt["tags"] if t not in g.get("tags", [])]
+    if nxt.get("immich"):
+        s.data.setdefault("orphan_assets", []).append(nxt["immich"]["asset_id"])
+        if nxt["immich"].get("stack_id"):  # its scans get stacked under the merged slide's upload
+            s.data.setdefault("orphan_stacks", []).append(nxt["immich"]["stack_id"])
 
 
 @app.post("/api/sessions/{sid}/apply")

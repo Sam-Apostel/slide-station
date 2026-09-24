@@ -222,7 +222,7 @@ export function CommandPalette({
         },
         {
           id: "review-insights",
-          label: "Review suggestions (tags)…",
+          label: "Review suggestions (tags, look-alikes)…",
           icon: <ListChecks />,
           hidden: !session || !onReview || !session.insights?.enabled,
           run: () => onReview?.(),
@@ -233,6 +233,19 @@ export function CommandPalette({
           icon: <ListChecks />,
           hidden: !session || !onReview || !session.insights?.ready || !session.insights.enabled,
           run: () => app.analyseTray(true),
+        },
+        {
+          id: "lookalikes",
+          label: "Look for this tray's slides among the photos already in Immich",
+          icon: <ListChecks />,
+          // the look-alike check (desktop app, needs the tag model); runs by itself after uploads when turned on
+          hidden:
+            !session ||
+            !onReview ||
+            !session.insights?.ready ||
+            busy ||
+            !session.groups.some((x) => x.status === "uploaded" || x.status === "changed"),
+          run: () => app.checkLookalikes(true),
         },
         { id: "reveal", label: "Show files", icon: <FolderOpen />, hidden: !session, run: app.reveal },
         {

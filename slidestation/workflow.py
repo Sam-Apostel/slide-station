@@ -884,6 +884,9 @@ def finish_session(job: Job, sid: str, only_ready: bool = False) -> None:
         people_tagged, problem = 0, ""
         if cfg.get("people_enabled") and sent:  # named people go along as tags (People/<name>)
             people_tagged, problem = _tag_people(client, sid, sent, people.slide_names(people.refresh()))
+        look_note = ""
+        if cfg.get("lookalike_enabled") and sent:  # photos in Immich that look like what just went up
+            look_note = _lookalikes_quietly(client, sid, list(sent), job)
         if not cfg.get("keep_originals", True):
             _drop_local_originals(Session(sid))
         job.message = f"Done - {uploaded} slides uploaded to '{s.data['album']}'" + (
@@ -895,9 +898,52 @@ def finish_session(job: Job, sid: str, only_ready: bool = False) -> None:
             "stack.create" if want_originals and uploaded and stacks and not stacks[0] else "") + (
             f"; {len(lost)} skipped: their original scans were deleted after the last upload" if lost else "") + tag_note + (
             f"; {people_tagged} tagged with the people on them" if people_tagged else "") + (
-            f"; names not sent: {problem}" if problem else "")
+            f"; names not sent: {problem}" if problem else "") + look_note
     finally:
         client.close()
+
+
+def _slides(n: int) -> str:
+    return f"{n} slide{'' if n == 1 else 's'}"
+
+
+def _lookalike_note(n: dict) -> str:
+    return ((f"; {_slides(n['found'])} may already be in Immich (see Insights)" if n["found"] else "")
+            + (f"; {_slides(n['pending'])} to check for look-alikes once Immich has indexed them"
+               if n["pending"] else ""))
+
+
+def _lookalikes_quietly(client: Immich, sid: str, gids: list[str], job: Job) -> str:
+    """The look-alike check after an upload: best effort, never fails the upload."""
+    from . import insights, similar
+
+    b = insights.backend()
+    if b is None:
+        return "; look-alikes not checked: the tag model isn't downloaded"
+    try:
+        return _lookalike_note(similar.check_lookalikes(client, sid, gids, b, job))
+    except Exception as e:  # the upload stands whatever happens here
+        print("look-alikes:", e)
+        return f"; look-alikes not checked ({e})"
+
+
+def check_lookalikes(job: Job, sid: str, everything: bool = False) -> None:
+    """A job: look for photos in Immich like this tray's uploaded slides - those not checked yet or
+    that Immich hadn't indexed at the last check (`everything`: all of them again)."""
+    from . import insights, similar
+
+    cfg = load_config()
+    s = Session(sid)
+    gids = [g["id"] for g in s.data["groups"] if not g.get("skip") and (g.get("immich") or {}).get("asset_id")
+            and (everything or (similar.lookalike_view(g) or {}).get("state") in (None, "pending"))]
+    job.total = len(gids)
+    client = Immich(cfg["immich_url"], cfg["immich_key"])
+    try:
+        n = similar.check_lookalikes(client, sid, gids, insights.backend(), job)
+    finally:
+        client.close()
+    job.done = job.total
+    job.message = f"Checked {_slides(n['checked'])} for look-alikes in Immich" + _lookalike_note(n)
 
 
 def _drop_local_originals(s: Session) -> None:

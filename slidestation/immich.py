@@ -12,6 +12,14 @@ class ImmichError(RuntimeError):
     pass
 
 
+class NotIndexed(ImmichError):
+    """Immich hasn't computed this asset's CLIP embedding yet (its machine learning runs after upload)."""
+
+
+class Unsupported(ImmichError):
+    """This Immich can't search by image: older than `queryAssetId`, or smart search is turned off."""
+
+
 # What the API key needs. Uploading needs the first part; the rest is for the round trip (metadata
 # sync, pulling back in, duplicates, stacks), and each of those says so when it's missing.
 PERMISSIONS = ("asset.upload, asset.delete, album.read, album.create and albumAsset.create; for the round trip "
@@ -102,6 +110,29 @@ class Immich:
             else:
                 break
         return out
+
+    # ------------------------------------------------------------------ search
+    def similar_assets(self, asset_id: str, size: int = 8) -> list[dict]:
+        """The assets nearest to this one by Immich's own CLIP embeddings, nearest first (the asset
+        itself included; Immich gives no distances). `POST /search/smart {"queryAssetId"}` (v2+,
+        needs asset.read). NotIndexed while Immich hasn't embedded the asset yet ("has no
+        embedding"); Unsupported when the server rejects the field (older) or smart search is off."""
+        r = self.client.post(self.base + "/search/smart", json={"queryAssetId": asset_id, "size": size})
+        if r.status_code == 400:
+            text = r.text
+            if "embedding" in text.lower():
+                raise NotIndexed(f"Immich hasn't indexed {asset_id} yet")
+            raise Unsupported(f"smart search by image: {text[:200]}")
+        if r.status_code in (404, 405, 501):
+            raise Unsupported(f"smart search by image: {r.status_code}")
+        return self._check(r).json().get("assets", {}).get("items", [])
+
+    def taken_between(self, after: str, before: str, size: int = 200) -> list[dict]:
+        """Photos taken in a time window (ISO timestamps), one page of at most `size`
+        (`POST /search/metadata` with takenAfter / takenBefore: deprecated in 3.2 like albumIds, still working)."""
+        body = {"takenAfter": after, "takenBefore": before, "size": min(size, 1000), "type": "IMAGE"}
+        page = self._check(self.client.post(self.base + "/search/metadata", json=body)).json()["assets"]
+        return page.get("items", [])[:size]
 
     # ------------------------------------------------------------------ tags
     def tag_each(self, tags: dict[str, list[str]]) -> None:

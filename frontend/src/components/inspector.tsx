@@ -267,7 +267,7 @@ export function Inspector({
 
             {insights && (
               <ProDisclosureGroup title="Insights" summary={insightsNote(g, session)} {...section("insights")}>
-                <InsightsPanel app={app} session={session} {...insights} />
+                <InsightsPanel app={app} session={session} sessionId={sessionId} {...insights} />
               </ProDisclosureGroup>
             )}
           </div>
