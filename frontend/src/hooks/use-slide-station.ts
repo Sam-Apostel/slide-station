@@ -293,8 +293,8 @@ export function useSlideStation() {
     if (!editable()) return;
     const { session: s, sel: i } = ref.current;
     if (!s || i === 0) return;
-    // colour only: crop and straighten belong to each slide
-    const { crop: _c, angle: _a, ...colour } = s.groups[i - 1].params;
+    // colour only: crop, straighten and local adjustments belong to each slide
+    const { crop: _c, angle: _a, local: _l, ...colour } = s.groups[i - 1].params;
     patchGroup({ params: colour });
     toast(`Copied colour from slide ${i}`);
   };

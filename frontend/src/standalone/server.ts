@@ -7,7 +7,7 @@ import { DEFAULT_TARGET, libraryStats, slideTimes } from "@/lib/stats";
 import { jobs, ui } from "./engine";
 import type { Src } from "./engine.worker";
 import { exifSegment, readExif, withExif } from "./exif";
-import { cleanParams, groupSequence, MOUNT_AUTO, rotateBox, weakScans, type Quality } from "./imaging";
+import { cleanParams, groupSequence, MOUNT_AUTO, rotateBox, turnLocal, weakScans, type Quality } from "./imaging";
 import { Immich, ImmichError } from "./immich";
 import { Model } from "./learning";
 import { canPickFolders, kvGet, kvSet, permission, pickDirectory, type Library } from "./library";
@@ -236,13 +236,17 @@ function editable(g: GroupData) {
   if (g.locked) throw new HttpError(409, LOCKED);
 }
 
-const FRAMING = { angle: 0, crop: null };
+// each slide's own: Copy previous, Apply to rest, presets, "develop like" and learning never carry
+// these over (local adjustments are drawn on this picture, like a crop)
+const FRAMING = { angle: 0, crop: null, local: [] };
+/** A slide's own framing, to keep when another look is applied to it. */
+const framing = (p: Params) => ({ angle: p.angle ?? 0, crop: p.crop ?? null, local: p.local ?? [] });
 
 // ------------------------------------------------------------------ looks: presets, develop like
 
-/** A slide's look without its framing: crop and straighten are each slide's own. */
+/** A slide's look without its framing: crop, straighten and local adjustments are each slide's own. */
 function colour(p: Params): Preset["params"] {
-  const { angle: _a, crop: _c, ...rest } = cleanParams(p);
+  const { angle: _a, crop: _c, local: _l, ...rest } = cleanParams(p);
   return rest;
 }
 
@@ -1500,7 +1504,9 @@ export async function handle(method: string, url: string, body: Body = {}): Prom
             : null;
       if (what) remember(g, what);
       if ("rotation" in body) {
-        g.rotation = ((Math.trunc(Number(body.rotation)) % 360) + 360) % 360;
+        const rot = ((Math.trunc(Number(body.rotation)) % 360) + 360) % 360;
+        if (g.params.local?.length) g.params.local = turnLocal(g.params.local, rot - g.rotation); // masks turn with the picture
+        g.rotation = rot;
         g.rot_reason = "manual";
       }
       if ("params" in body) {
@@ -1577,10 +1583,10 @@ export async function handle(method: string, url: string, body: Body = {}): Prom
         if (body.scope === "all" || (!g.reviewed && (body.scope !== "rest" || i > start))) {
           // colour carries over, framing (crop / straighten) is each slide's own
           remember(g, "apply");
-          g.params = { ...p, angle: g.params.angle ?? FRAMING.angle, crop: g.params.crop ?? FRAMING.crop };
+          g.params = { ...p, ...framing(g.params) };
         }
       });
-      if (body.as_default) d.defaults = { ...p, ...FRAMING };
+      if (body.as_default) d.defaults = { ...p, ...FRAMING, local: [] };
     });
     return payload(d);
   }
@@ -1637,7 +1643,7 @@ export async function handle(method: string, url: string, body: Body = {}): Prom
       for (const [i, g] of d.groups.entries()) {
         if (g.locked || i < start || (i > start && (!rest || g.reviewed))) continue;
         remember(g, what);
-        g.params = cleanParams({ ...c, angle: g.params.angle ?? FRAMING.angle, crop: g.params.crop ?? FRAMING.crop });
+        g.params = cleanParams({ ...c, ...framing(g.params) });
         g.params_source = source;
         await learn(d, g);
         applied++;

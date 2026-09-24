@@ -242,6 +242,81 @@ full-resolution export mark the same specks:
   `tone_key` appends dust only when it is on. Not learned (the colour features say nothing about
   dust); "Apply to rest" and "Copy previous" carry it like the colour settings.
 
+### Local adjustments (ROADMAP §6)
+
+`Params.local`: a list (≤ 16) of adjustments, applied in order. Each has `kind` and its own
+`exposure`, `contrast`, `warmth`, `tint`, `saturation` (-1..1) plus a mask:
+
+```
+graduated {"start": [x, y], "end": [x, y]}              full effect at start, none from end on
+radial    {"center": [x, y], "rx", "ry", "angle", "feather", "invert"}
+brush     {"strokes": [{"points": [[x, y], ...], "radius", "hardness", "flow", "erase"}]}
+```
+
+Pixel code exists three times — `imaging.py` (`clean_local`, `local_mask`, `local_look`,
+`apply_local`, `turn_local`), `frontend/src/lib/local.ts` (`localMask`, shared with the stage's
+mask overlay) + `standalone/imaging.ts`, `SlideKit/LocalAdjustments.swift` — pinned by `local.png`,
+`developed_local.f32` and the `local_*` / `params_local` keys of `golden.json`. Python tests:
+`tests/test_local.py`.
+
+- **Where masks live.** Points are 0..1 of the *picture*: the trimmed, turned scan before
+  straightening and cropping. Storing them in the straightened frame (like `crop`) would keep them
+  put under a new crop but let them slide across the picture when the angle changes; in the
+  picture frame they stay on what they cover through both. Each output pixel is traced back
+  through the crop offset and the straighten exactly as `straighten()` samples (index coordinates
+  about `w / 2`, the same zoom; angles under 0.01° count as none). Lengths (`rx`, `ry`, brush
+  `radius`) are fractions of the picture's longer edge, so circles stay round. A quarter turn
+  (`PATCH … {"rotation"}`) turns the masks with it (`turn_local`: (x, y) → (1 − y, x) per 90°,
+  radial angle + 90), in `server.py`, `server.ts` and `AppModel.rotate`.
+- **Resolution independence.** Each mask is drawn on a grid of `MASK_EDGE` (1024) cells along the
+  picture's longer edge (`ceil` of each side), whatever the image's size, and sampled bilinearly
+  (edge cells repeated) at each pixel; the proxy, previews and the full-resolution export get the
+  same mask. Cell (i, j) is centred on picture point ((i + 0.5) / kx, (j + 0.5) / ky), kx = 1024 ×
+  w / max(w, h). Graduated: `1 − smoothstep(t)`, t the projection on start→end. Radial: d = the
+  elliptical distance in the ellipse's own axes (turned `angle`° clockwise), `smoothstep((1 − d) /
+  feather)` (feather 0 = hard edge, clamped to 1e-3), `1 − m` when inverted. Brush: per stroke
+  the distance to its polyline (each segment only in its own box grown by the radius), coverage
+  `flow × (1 − smoothstep((d / radius − hardness) / (1 − hardness)))`; strokes combine like
+  layers of paint (`m + c(1 − m)`), an erase stroke multiplies by `1 − c`. Masks are computed in
+  float64, stored float32.
+- **After the global develop** (`develop()`: `tone_base(crop=False)`, cut to the crop, curves,
+  `finish`, then `apply_local`): the adjustment acts on the photo as it looks, so a dodge does
+  the same thing whatever the global settings, and the histogram, curve fit and eyedropper
+  (which read the image before `finish`) don't move when you paint. Per pixel, `local_look`
+  runs the global formulas with the adjustment's values (white-balance gammas, contrast, a
+  saturation factor of `1 + s`) and the result is blended in by the mask: `out += (look − out) ×
+  m`. Exposure is asymmetric on purpose: a lift is a gamma `x^(2^(−1.5e))` (shadows come up,
+  white stays white: dodging never clips), a cut scales `x × 2^(1.5e)` (whites come down too:
+  burning a pale sky back in works like a grad ND filter). Python works in bands of 256 rows and
+  only on the pixels a mask reaches, so a full-resolution export makes no full-size temporaries
+  (13.5 MP, three masks: ~2 s extra).
+- **Keys.** `store.NEUTRAL_EXTRAS` has `"local": []`, so `render_key` of slides without local
+  adjustments (and of trays from before) doesn't change; `tone_key` ignores them. Every number is
+  a float (`_num` rounds to 4 places and never gives `-0.0`) so `store.ts` hashes the same bytes;
+  `store.test.ts` pins a key with all three kinds. SlideKit appends its sorted-key JSON to its own
+  render key when there are any.
+- **Framing-like, per slide.** `local` is in `server.FRAMING` (and `server.ts`' `framing()`):
+  Apply to rest, tray defaults, presets and "develop like" keep each slide's own; learning never
+  sees it; Copy previous (client side, `copyPrev`) leaves it out; `0` (reset colour) keeps it.
+- **UI** (`components/local.tsx`). The inspector's **Local** section: add Graduated / Radial /
+  Brush, the list (click selects and opens the tool), the selected one's sliders (the Adjust
+  panel's `AdjustSlider`, named "Local exposure" … for screen readers), feather + invert for a
+  radial, brush size / hardness / flow / paint-erase (tool state, stored per stroke). **A** (or the
+  section's sun button, or ⌘K) opens the Local tool over the photo: `LocalOverlay` draws in the
+  picture's own frame — a layer the size of the straightened frame, shifted by the crop, CSS
+  `rotate(angle) scale(zoom)` — so its handles, lines and the red mask wash (`localMask` at 256
+  cells, on a canvas) sit where the renderer puts them; pointer positions go back to the picture
+  through `PictureView.fromShown`. Graduated: start, middle (moves both) and end handles; radial:
+  centre, and one handle per radius whose direction also turns it; brush: drag to paint (a point
+  every quarter radius, committed on release). While `.ss-local` exists the app's keyboard map
+  stands aside (like the crop tool); the tool takes Esc, A and Enter (not on a button) to close, O
+  (mask), ⌫ (delete). Edits go through `setParam("local", …)` — optimistic, debounced, one undo step per
+  drag (`_remember` coalesces `params:local`). The split view and loupe are off while it's open,
+  and moving to another slide closes it.
+- **Not done:** auto masks (sky / subject), a mask per adjustment kind combination (e.g. radial ∩
+  brush), feathering a graduated filter separately from its length. The iPad app decodes, renders
+  and keeps local adjustments (uncompiled here) but has no UI for them yet.
+
 ### Tactile details
 
 Filmstrip tiles are slide mounts (`.ss-mount`), the filmstrip header shows the tray from above
@@ -430,7 +505,7 @@ standalone/
   `parity.test.ts` (`npm test`) runs the TypeScript pipeline on SlideKit's golden fixtures with the
   same tolerances as `ParityTests.swift`: restore, trim, develop, crop, curves, fit, eyedropper,
   grouping, best of bracket, fusion, alignment, straighten, learning (incl. learned curves), mount
-  detection and dust repair.
+  detection, dust repair and local adjustments.
 - **Images.** Preview URLs stay the same; `imageSrc()` / `useImageSrc()` in `lib/api.ts` render them
   in the worker and hand out object URLs, cached only when the render matches the URL's key (the
   server's cache rule). The stage asks with high priority, filmstrip tiles only once scrolled into

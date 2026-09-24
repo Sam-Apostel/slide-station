@@ -21,8 +21,31 @@ export type Params = {
   crop: [number, number, number, number] | null;
   /** Dust & scratch repair 0..1 (0 = off). */
   dust: number;
+  /** Local adjustments, applied in order after the global ones (imaging.clean_local); per slide. */
+  local?: Local[];
 };
-export type ParamKey = Exclude<keyof Params, "trim" | "curves" | "crop" | "angle">;
+export type ParamKey = Exclude<keyof Params, "trim" | "curves" | "crop" | "angle" | "local">;
+
+/** A point in 0..1 of the picture: the trimmed, turned scan before straightening and cropping. */
+export type Pt = [number, number];
+export type LocalSliders = { exposure: number; contrast: number; warmth: number; tint: number; saturation: number };
+export type LocalSlider = keyof LocalSliders;
+export type BrushStroke = {
+  points: Pt[];
+  /** Fraction of the picture's longer edge. */
+  radius: number;
+  hardness: number;
+  flow: number;
+  erase: boolean;
+};
+/** One local adjustment: a mask plus its own sliders (-1..1). Lengths are fractions of the
+ *  picture's longer edge; `angle` is degrees clockwise. */
+export type Local = LocalSliders &
+  (
+    | { kind: "graduated"; start: Pt; end: Pt }
+    | { kind: "radial"; center: Pt; rx: number; ry: number; angle: number; feather: number; invert: boolean }
+    | { kind: "brush"; strokes: BrushStroke[] }
+  );
 
 /** The slide mount's inner edge: how far the picture is turned in it (degrees clockwise; straighten
  *  by -angle), how sure that is (0..1), and its sides [l, t, r, b] in 0..1 of the unturned scan. */
@@ -198,7 +221,7 @@ export type ImmichAsset = { id: string; name: string; date: string; favorite: bo
 export type Pulled = { checked: number; captions: number; dates: number; gone: number };
 
 /** A named colour look (never framing), library-wide. */
-export type Preset = { name: string; params: Omit<Params, "crop" | "angle">; created: number };
+export type Preset = { name: string; params: Omit<Params, "crop" | "angle" | "local">; created: number };
 
 /** The full-resolution render of a slide, for 1:1 zoom: loaded in `tile`-pixel squares. */
 export type FullInfo = { width: number; height: number; tile: number; key: string };

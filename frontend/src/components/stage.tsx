@@ -87,6 +87,7 @@ export function Stage({
   onPicked,
   cropping,
   onCropEnd,
+  localOverlay,
   onAngle,
   onUndo,
   onRedo,
@@ -114,6 +115,8 @@ export function Stage({
   cropping: boolean;
   /** rect: the new crop (null = whole photo), or undefined when cancelled. */
   onCropEnd: (rect: Rect | null | undefined, restoreAngle?: number) => void;
+  /** The Local tool open: draws its overlay over the photo (null = closed). */
+  localOverlay: ((img: HTMLImageElement | null) => React.ReactNode) | null;
   onAngle: (a: number) => void;
   onUndo: () => void;
   onRedo: () => void;
@@ -137,7 +140,8 @@ export function Stage({
   );
 
   // ---- split compare: the "before" render is framed like the developed one, so they line up
-  const comparing = compare && !cropping && !before && !picking;
+  const localOn = !!localOverlay && !cropping && !zoom;
+  const comparing = compare && !cropping && !before && !picking && !localOn;
   const beforeView = usePreloadedImage(g && comparing ? previewUrl(sessionId, g, 1600, true) : null, null);
   const [divider, setDivider] = React.useState(50);
   const moveDivider = (e: React.PointerEvent) => {
@@ -148,7 +152,7 @@ export function Stage({
   // ---- loupe: where the pointer is, in the stage (px) and on the photo (0..1)
   const [loupeAt, setLoupeAt] = React.useState<{ x: number; y: number; fx: number; fy: number } | null>(null);
   const zooming = !!zoom && !cropping;
-  const looking = loupe && !zooming && !cropping && !picking;
+  const looking = loupe && !zooming && !cropping && !picking && !localOn;
   const track = (e: React.PointerEvent<HTMLDivElement>) => {
     if (!looking || !imgEl) return;
     const pt = photoPoint(imgEl, e.clientX, e.clientY);
@@ -357,6 +361,9 @@ export function Stage({
         )}
         {cropping && shown && (
           <CropOverlay img={imgEl} rect={rect} ratio={aspect.ratio} onChange={setRect} />
+        )}
+        {localOn && shown && g && (
+          <React.Fragment key={g.id}>{localOverlay!(imgEl)}</React.Fragment>
         )}
         {g && zooming && <ZoomView key={g.id} sid={sessionId} g={g} start={zoom!} onClose={() => onZoom(null)} />}
         {g && looking && <Loupe sid={sessionId} g={g} at={loupeAt} onFail={() => onLoupe(false)} />}

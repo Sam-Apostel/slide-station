@@ -2,8 +2,9 @@
 // function by function (same names, same maths), by way of the Swift port in apple/SlideKit.
 // Keep all three in step; frontend/src/standalone/parity.test.ts checks this one against the
 // same golden fixtures SlideKit uses.
-import type { Params } from "@/lib/api";
+import type { BrushStroke, Local, Params, Pt } from "@/lib/api";
 import type { Curves, Point } from "@/lib/curves";
+import { LOCAL_MAX, LOCAL_SLIDERS, MASK_EDGE, localMask } from "@/lib/local";
 import {
   cropped,
   gaussianBlur,
@@ -36,19 +37,21 @@ export const DEFAULT_PARAMS: Params = {
   angle: 0,
   crop: null,
   dust: 0,
+  local: [],
 };
 
 const NUMERIC = ["strength", "brightness", "contrast", "warmth", "tint", "saturation", "angle"] as const;
 
 /** Params.from_dict(d).to_dict(): unknown keys dropped, types coerced, curves and crop validated. */
 export function cleanParams(d: Partial<Params> | Record<string, unknown> | null | undefined): Params {
-  const p: Params = { ...DEFAULT_PARAMS, curves: {} };
+  const p: Params = { ...DEFAULT_PARAMS, curves: {}, local: [] };
   const src = (d ?? {}) as Record<string, unknown>;
   for (const k of NUMERIC) if (k in src) p[k] = Number(src[k]) || 0;
   if ("trim" in src) p.trim = !!src.trim;
   if ("curves" in src) p.curves = cleanCurves(src.curves);
   if ("crop" in src) p.crop = cleanCrop(src.crop);
   if ("dust" in src) p.dust = clamp01(Number(src.dust) || 0);
+  if ("local" in src) p.local = cleanLocal(src.local);
   return p;
 }
 
@@ -308,21 +311,18 @@ export function straighten(a: RGB, angle: number): RGB {
   return out;
 }
 
+/** Rows top..bottom and columns left..right of a straightened h x w frame that `crop` keeps. */
+type Box = [number, number, number, number];
+export function cropBox(h: number, w: number, crop: Box): Box {
+  const [l, t, r, b] = crop;
+  const top = Math.trunc(t * h);
+  const left = Math.trunc(l * w);
+  return [top, Math.max(top + 1, Math.trunc(b * h)), left, Math.max(left + 1, Math.trunc(r * w))];
+}
+
 export function geometry(a: RGB, p: Params, crop = true): RGB {
-  let out = straighten(a, p.angle ?? 0);
-  if (crop && p.crop) {
-    const [l, t, r, b] = p.crop;
-    const top = Math.trunc(t * out.height);
-    const left = Math.trunc(l * out.width);
-    out = cropped(
-      out,
-      top,
-      Math.max(top + 1, Math.trunc(b * out.height)),
-      left,
-      Math.max(left + 1, Math.trunc(r * out.width)),
-    );
-  }
-  return out;
+  const out = straighten(a, p.angle ?? 0);
+  return crop && p.crop ? cropped(out, ...cropBox(out.height, out.width, p.crop)) : out;
 }
 
 /** The image the tone curve works on: auto-restored, trimmed, dust repaired, straightened and cropped. */
@@ -663,10 +663,19 @@ export function repairDust(a: RGB, amount: number, inPlace = false): RGB {
  * caller's pixels may be overwritten (full-resolution export, where a second copy costs 250 MB).
  */
 export function develop(a: RGB, p: Params, crop = true, inPlace = false): RGB {
-  let out = toneBase(a, p, crop, inPlace);
+  let out = toneBase(a, p, false, inPlace);
+  // the picture's frame, which local masks are drawn in (straighten keeps the size)
+  const frame: [number, number] = [out.width, out.height];
+  let at: [number, number] = [0, 0];
+  if (crop && p.crop) {
+    const [t, b, l, r] = cropBox(out.height, out.width, p.crop);
+    out = cropped(out, t, b, l, r);
+    at = [l, t];
+  }
   if (out === a && !inPlace) out = rgb(a.width, a.height, Float32Array.from(a.data)); // never write into the caller's pixels
   applyCurves(out, p.curves ?? {});
   finish(out, p);
+  if (p.local?.length) applyLocal(out, p.local, frame, at, p.angle ?? 0);
   return out;
 }
 
@@ -715,6 +724,173 @@ export function beforeView(a: RGB, p: Params, crop = true): RGB {
   let out = a;
   if (p.trim) out = cropped(a, ...trimBounds(autoRestore(a, p.strength)));
   return geometry(out, p, crop);
+}
+
+// ------------------------------------------------------------------ local adjustments
+
+const BRUSH_STROKES = 64;
+const BRUSH_POINTS = 400;
+const EXPOSURE_STOPS = 1.5; // what a local exposure of ±1 does (see localLook)
+
+/** imaging._num: a number clamped to lo..hi and rounded to 4 places; junk is the default. */
+function num(v: unknown, lo: number, hi: number, dflt = 0): number {
+  if (typeof v === "string" ? !v.trim() : typeof v !== "number" && typeof v !== "boolean") return dflt;
+  const x = Number(v);
+  if (!Number.isFinite(x)) return dflt;
+  return round(Math.min(hi, Math.max(lo, x)), 4) || 0; // || 0: never -0 in the render key
+}
+
+function point(v: unknown): Pt | null {
+  if (!Array.isArray(v) || v.length !== 2) return null;
+  return [num(v[0], -1, 2, 0.5), num(v[1], -1, 2, 0.5)];
+}
+
+/** imaging.clean_local: validate local adjustments (masks in 0..1 of the picture before straightening). */
+export function cleanLocal(v: unknown): Local[] {
+  const out: Local[] = [];
+  if (!Array.isArray(v)) return out;
+  for (const a of v.slice(0, LOCAL_MAX) as Record<string, unknown>[]) {
+    if (!a || typeof a !== "object" || !["graduated", "radial", "brush"].includes(a.kind as string)) continue;
+    const sliders = Object.fromEntries(LOCAL_SLIDERS.map((k) => [k, num(a[k] ?? 0, -1, 1)])) as Record<
+      (typeof LOCAL_SLIDERS)[number],
+      number
+    >;
+    if (a.kind === "graduated") {
+      const [start, end]: Pt[] = [point(a.start) ?? [0.5, 0.15], point(a.end) ?? [0.5, 0.55]];
+      out.push({ kind: "graduated", ...sliders, start, end });
+    } else if (a.kind === "radial") {
+      out.push({
+        kind: "radial",
+        ...sliders,
+        center: point(a.center) ?? [0.5, 0.5],
+        rx: num(a.rx ?? 0.25, 0.005, 2, 0.25),
+        ry: num(a.ry ?? 0.25, 0.005, 2, 0.25),
+        angle: num(a.angle ?? 0, -180, 180),
+        feather: num(a.feather ?? 0.5, 0, 1, 0.5),
+        invert: !!(a.invert ?? false),
+      });
+    } else {
+      const strokes: BrushStroke[] = [];
+      for (const s of Array.isArray(a.strokes) ? (a.strokes as Record<string, unknown>[]) : []) {
+        if (strokes.length >= BRUSH_STROKES) break;
+        if (!s || typeof s !== "object" || !Array.isArray(s.points)) continue;
+        const pts = s.points.slice(0, BRUSH_POINTS).flatMap((q) => {
+          const p = point(q);
+          return p ? [p] : [];
+        });
+        if (pts.length)
+          strokes.push({
+            points: pts,
+            radius: num(s.radius ?? 0.05, 0.002, 0.5, 0.05),
+            hardness: num(s.hardness ?? 0.5, 0, 1, 0.5),
+            flow: num(s.flow ?? 1, 0, 1, 1),
+            erase: !!(s.erase ?? false),
+          });
+      }
+      out.push({ kind: "brush", ...sliders, strokes });
+    }
+  }
+  return out;
+}
+
+/** imaging.turn_local: the adjustments of a slide turned clockwise by `rot` more degrees. */
+export function turnLocal(local: Local[], rot: number): Local[] {
+  const k = Math.trunc((((rot % 360) + 360) % 360) / 90);
+  if (!k || !local.length) return local;
+  const pt = (p: Pt): Pt => {
+    for (let i = 0; i < k; i++) p = [round(1 - p[1], 4) || 0, p[0]];
+    return p;
+  };
+  return local.map((a) => {
+    if (a.kind === "graduated") return { ...a, start: pt(a.start), end: pt(a.end) };
+    if (a.kind === "radial") {
+      const angle = round(((((a.angle + 90 * k + 180) % 360) + 360) % 360) - 180, 4) || 0;
+      return { ...a, center: pt(a.center), angle };
+    }
+    return { ...a, strokes: a.strokes.map((s) => ({ ...s, points: s.points.map(pt) })) };
+  });
+}
+
+/**
+ * imaging.local_look on one pixel, in place in `px`: white balance, exposure (a gamma lift up, a
+ * scale down), contrast, saturation.
+ */
+function localLook(px: Float64Array, adj: Local) {
+  const eps = 1e-5;
+  const c01 = (v: number) => Math.min(1, Math.max(eps, v));
+  if (adj.warmth !== 0 || adj.tint !== 0) {
+    px[0] = Math.pow(c01(px[0]), 1 - 0.25 * adj.warmth);
+    px[1] = Math.pow(c01(px[1]), 1 + 0.25 * adj.tint);
+    px[2] = Math.pow(c01(px[2]), 1 + 0.25 * adj.warmth);
+  }
+  const e = adj.exposure;
+  if (e > 0) {
+    const g = Math.pow(2, -EXPOSURE_STOPS * e);
+    for (let c = 0; c < 3; c++) px[c] = Math.pow(c01(px[c]), g);
+  } else if (e < 0) {
+    const f = Math.pow(2, EXPOSURE_STOPS * e);
+    for (let c = 0; c < 3; c++) px[c] *= f;
+  }
+  const con = adj.contrast;
+  if (con > 0) for (let c = 0; c < 3; c++) px[c] += (px[c] * px[c] * (3 - 2 * px[c]) - px[c]) * con * 1.5;
+  else if (con < 0) for (let c = 0; c < 3; c++) px[c] += (0.5 - px[c]) * -con * 0.5;
+  if (adj.saturation !== 0) {
+    const lum = px[0] * 0.299 + px[1] * 0.587 + px[2] * 0.114;
+    for (let c = 0; c < 3; c++) px[c] = lum + (px[c] - lum) * (1 + adj.saturation);
+  }
+  for (let c = 0; c < 3; c++) px[c] = clamp01(px[c]);
+}
+
+/**
+ * imaging.apply_local, in place: after the global develop. `frame` = [w, h] of the straightened
+ * frame `out` was cut from at `at` = [left, top]; each pixel is traced back through the straighten
+ * to the picture, where the masks are sampled bilinearly from their grids.
+ */
+export function applyLocal(out: RGB, local: Local[], frame: [number, number], at: [number, number], angle: number) {
+  const [w, h] = frame;
+  const k = MASK_EDGE / Math.max(w, h); // picture pixels -> cells
+  const masks = local.map((adj) => localMask(adj, w, h));
+  const { width: gw, height: gh } = masks[0];
+  const turned = Math.abs(angle) >= 0.01; // straighten() leaves tiny angles alone
+  const th = (Math.abs(angle) * Math.PI) / 180;
+  const scale = Math.cos(th) + (Math.sin(th) * Math.max(w, h)) / Math.min(w, h);
+  const cs = Math.cos((angle * Math.PI) / 180) / scale;
+  const sn = Math.sin((angle * Math.PI) / 180) / scale;
+  const o = out.data;
+  const px = new Float64Array(3);
+  for (let y = 0; y < out.height; y++) {
+    for (let x = 0; x < out.width; x++) {
+      let sx = x + at[0];
+      let sy = y + at[1];
+      if (turned) {
+        const dx = sx - w / 2;
+        const dy = sy - h / 2;
+        sx = w / 2 + cs * dx + sn * dy;
+        sy = h / 2 - sn * dx + cs * dy;
+      }
+      const gx = (sx + 0.5) * k - 0.5;
+      const gy = (sy + 0.5) * k - 0.5;
+      const ix = Math.floor(gx);
+      const iy = Math.floor(gy);
+      const fx = gx - ix;
+      const fy = gy - iy;
+      const xa = Math.min(gw - 1, Math.max(0, ix));
+      const xb = Math.min(gw - 1, Math.max(0, ix + 1));
+      const ya = Math.min(gh - 1, Math.max(0, iy)) * gw;
+      const yb = Math.min(gh - 1, Math.max(0, iy + 1)) * gw;
+      const i = (y * out.width + x) * 3;
+      for (let n = 0; n < local.length; n++) {
+        const g = masks[n].data;
+        const m = (g[ya + xa] * (1 - fx) + g[ya + xb] * fx) * (1 - fy) + (g[yb + xa] * (1 - fx) + g[yb + xb] * fx) * fy;
+        if (!(m > 0)) continue;
+        px[0] = o[i];
+        px[1] = o[i + 1];
+        px[2] = o[i + 2];
+        localLook(px, local[n]);
+        for (let c = 0; c < 3; c++) o[i + c] += (px[c] - o[i + c]) * m;
+      }
+    }
+  }
 }
 
 // ------------------------------------------------------------------ analysis

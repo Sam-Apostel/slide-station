@@ -231,13 +231,13 @@ def active_scans(g: dict) -> list[str]:
     return s or g["scans"][:1]
 
 
-NEUTRAL_EXTRAS = {"curves": {}, "angle": 0.0, "crop": None, "dust": 0.0}
+NEUTRAL_EXTRAS = {"curves": {}, "angle": 0.0, "crop": None, "dust": 0.0, "local": []}
 
 
 def render_key(g: dict) -> str:
     """Identifies the exact output of a group; changes whenever the result would change."""
     # settings still at their neutral value are left out, so slides uploaded before a setting
-    # existed (curves, straighten, crop, dust) don't become "changed"
+    # existed (curves, straighten, crop, dust, local adjustments) don't become "changed"
     params = {k: v for k, v in g["params"].items() if not (k in NEUTRAL_EXTRAS and v == NEUTRAL_EXTRAS[k])}
     k = json.dumps([active_scans(g), g["rotation"], params], sort_keys=True)
     return hashlib.sha1(k.encode()).hexdigest()[:12]

@@ -185,4 +185,33 @@ final class ParityTests: XCTestCase {
         XCTAssertLessThan(worst, 1e-3)
         XCTAssertEqual(Develop.repairDust(dusty, amount: 0).data, dusty.data)
     }
+
+    struct Local: Decodable {
+        struct MaskStats: Decodable { var shape: [Int], sum: Double, samples: [Double] }
+        var params_local: Params, developed_local_shape: [Int]
+        var local_masks: [MaskStats], local_mask_size: [Int], local_turned: [LocalAdjustment]
+    }
+
+    lazy var local: Local = try! JSONDecoder().decode(Local.self, from: Data(contentsOf: Self.dir.appendingPathComponent("golden.json")))
+
+    func testLocalAdjustmentMasks() {
+        let (w, h) = (local.local_mask_size[0], local.local_mask_size[1])
+        let cells = [(0, 0), (300, 400), (500, 200), (100, 900), (600, 1000), (437, 409), (437, 609), (156, 859), (156, 767)]
+        for (adj, want) in zip(local.params_local.local, local.local_masks) {
+            let m = Develop.localMask(adj, width: w, height: h)
+            XCTAssertEqual([m.height, m.width], want.shape)
+            XCTAssertEqual(m.data.reduce(0.0) { $0 + Double($1) }, want.sum, accuracy: max(1, want.sum) * 1e-5)
+            for ((j, i), v) in zip(cells, want.samples) { XCTAssertEqual(Double(m.data[j * m.width + i]), v, accuracy: 1e-6) }
+        }
+        XCTAssertEqual(LocalAdjustment.turned(local.params_local.local, by: 90), local.local_turned)
+        XCTAssertEqual(LocalAdjustment.turned(LocalAdjustment.turned(local.params_local.local, by: 180), by: 180), local.params_local.local)
+    }
+
+    func testDevelopWithLocalAdjustments() throws {
+        let out = Develop.develop(try image("local.png"), local.params_local)
+        XCTAssertEqual([out.height, out.width], local.developed_local_shape)
+        let (mean, worst) = diff(out.data, try floats("developed_local.f32"))
+        XCTAssertLessThan(mean, 0.003)
+        XCTAssertLessThan(worst, 0.06)
+    }
 }

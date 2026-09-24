@@ -174,12 +174,17 @@ public enum Develop {
         return out
     }
 
+    /// Rows `top..<bottom` and columns `left..<right` of a straightened `h` x `w` frame that `crop` keeps.
+    public static func cropBox(_ h: Int, _ w: Int, _ c: [Double]) -> (top: Int, bottom: Int, left: Int, right: Int) {
+        let t = Int(c[1] * Double(h)), l = Int(c[0] * Double(w))
+        return (t, max(t + 1, Int(c[3] * Double(h))), l, max(l + 1, Int(c[2] * Double(w))))
+    }
+
     public static func geometryInPlace(_ a: inout RGBImage, _ p: Params, crop: Bool = true) {
         if abs(p.angle) >= 0.01 { a = straighten(a, angle: p.angle) }
         if crop, let c = p.crop {
-            let h = Double(a.height), w = Double(a.width)
-            let t = Int(c[1] * h), l = Int(c[0] * w)
-            a.cropInPlace(top: t, bottom: max(t + 1, Int(c[3] * h)), left: l, right: max(l + 1, Int(c[2] * w)))
+            let b = cropBox(a.height, a.width, c)
+            a.cropInPlace(top: b.top, bottom: b.bottom, left: b.left, right: b.right)
         }
     }
 
@@ -209,9 +214,18 @@ public enum Develop {
 
     /// The whole develop without a second full-size buffer (except when straightening).
     public static func developInPlace(_ a: inout RGBImage, _ p: Params, crop: Bool = true) {
-        toneBaseInPlace(&a, p, crop: crop)
+        toneBaseInPlace(&a, p, crop: false)
+        // the picture's frame, which local masks are drawn in (straighten keeps the size)
+        let frame = (w: a.width, h: a.height)
+        var at = (x: 0, y: 0)
+        if crop, let c = p.crop {
+            let b = cropBox(a.height, a.width, c)
+            a.cropInPlace(top: b.top, bottom: b.bottom, left: b.left, right: b.right)
+            at = (b.left, b.top)
+        }
         Curves.applyInPlace(&a, p.curves)
         finish(&a, p)
+        if !p.local.isEmpty { applyLocal(&a, p.local, frame: frame, at: at, angle: p.angle) }
     }
 
     /// Everything after the tone curves: white balance, brightness, contrast, saturation.
