@@ -39,7 +39,11 @@ describe("keys match the Python app", () => {
     expect(renderKey(group({ scans: ["a"] }))).toBe("d4ec29362fa2");
     expect(toneKey(group({ scans: ["a"] }))).toBe("2d865f31c02a");
   });
-  it("meta key", () => expect(metaKey(g, { value: "1978-08", source: "own" })).toBe("468575a4ce75"));
+  it("meta key", () => {
+    expect(metaKey(g, { value: "1978-08", source: "own" })).toBe("468575a4ce75");
+    const tagged = { ...g, tags: ["snow", "beach", "café"] };
+    expect(metaKey(tagged, { value: "1978-08", source: "own" })).toBe("9a725df29165");
+  });
   it("sha1", () => expect(sha1Hex("abc")).toBe("a9993e364706816aba3e25717850c26c9cd0d89d"));
   it("dates between, near", () => {
     const d = {

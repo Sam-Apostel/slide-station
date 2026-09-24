@@ -85,6 +85,31 @@ async def trash(req: Request, x_api_key: str = Header(None)):
     DB["log"].append(("trash", await req.json()))
 
 
+TAGS = True  # False: an Immich without the tag API (404), like before v1.113
+
+
+@app.put("/api/tags")
+async def upsert_tags(req: Request, x_api_key: str = Header(None)):
+    auth(x_api_key)
+    if not TAGS:
+        raise HTTPException(404, "Cannot PUT /api/tags")
+    tags = DB.setdefault("tags", {})
+    out = []
+    for name in (await req.json())["tags"]:
+        tid = next((k for k, v in tags.items() if v["value"] == name), None) or str(uuid.uuid4())
+        tags.setdefault(tid, {"value": name, "assets": []})
+        out.append({"id": tid, "name": name.split("/")[-1], "value": name, "createdAt": "", "updatedAt": ""})
+    return out
+
+
+@app.put("/api/tags/{tid}/assets")
+async def tag_assets(tid: str, req: Request, x_api_key: str = Header(None)):
+    auth(x_api_key)
+    ids = (await req.json())["ids"]
+    DB["tags"][tid]["assets"] += [i for i in ids if i not in DB["tags"][tid]["assets"]]
+    return [{"id": i, "success": True} for i in ids]
+
+
 @app.get("/debug")
 def debug():
     return DB

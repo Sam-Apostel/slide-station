@@ -1,6 +1,7 @@
 import * as React from "react";
 import { Lock, RotateCw } from "lucide-react";
 import { ProScope, ProScopebar } from "@/components/ui/pro-toolbar";
+import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select";
 import {
   needsReview,
   plural,
@@ -62,12 +63,28 @@ export const STATUS_TEXT: Record<GroupStatus, string> = {
 
 const matches = (g: Group, f: Filter) => (f === "todo" ? needsReview(g) : f === "multi" ? g.scans.length > 1 : true);
 
+/** A slide's tags plus the ones suggested for it and not dismissed: what the tag filter looks at. */
+const tagsOf = (g: Group) => {
+  const t = new Set(g.tags ?? []);
+  for (const e of g.insights?.tags ?? []) if (e.state === "suggested") t.add(e.value);
+  return t;
+};
+
+/** Every tag in the tray (own or suggested) with how many slides have it, most common first. */
+export function trayTags(groups: Group[]): [string, number][] {
+  const n = new Map<string, number>();
+  for (const g of groups) for (const t of tagsOf(g)) n.set(t, (n.get(t) ?? 0) + 1);
+  return [...n].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+}
+
 export function Filmstrip({
   session,
   sessionId,
   sel,
   filter,
   onFilter,
+  tag,
+  onTag,
   onSelect,
   slideMenu,
 }: {
@@ -76,12 +93,17 @@ export function Filmstrip({
   sel: number;
   filter: Filter;
   onFilter: (f: Filter) => void;
+  /** Only slides with this tag (their own or suggested); "" = any. */
+  tag: string;
+  onTag: (t: string) => void;
   onSelect: (i: number) => void;
   /** Wraps a tile in the slide's right-click menu. */
   slideMenu: (index: number, el: React.ReactElement) => React.ReactElement;
 }) {
   const sm = session.summary;
-  const groups = session.groups.filter((g) => matches(g, filter));
+  const tags = trayTags(session.groups);
+  const tagOn = tags.some(([t]) => t === tag) ? tag : "";
+  const groups = session.groups.filter((g) => matches(g, filter) && (!tagOn || tagsOf(g).has(tagOn)));
   const selRef = React.useRef<HTMLButtonElement>(null);
 
   // slides that were just developed get one sweep of light across their new gold mount
@@ -110,7 +132,7 @@ export function Filmstrip({
     if (tile && tile !== document.activeElement && document.activeElement?.closest(".ss-mount")) {
       tile.focus({ preventScroll: true });
     }
-  }, [sel, filter]);
+  }, [sel, filter, tagOn]);
 
   return (
     <aside className="flex size-full min-h-0 flex-col border-r border-border bg-[var(--pro-canvas)]">
@@ -128,6 +150,18 @@ export function Filmstrip({
           </ProScope>
         ))}
       </ProScopebar>
+      {tags.length > 0 && (
+        <div className="border-b border-border bg-(--ss-panel) px-2.5 py-1.5">
+          <NativeSelect size="sm" aria-label="Filter by tag" value={tagOn} onChange={(e) => onTag(e.target.value)}>
+            <NativeSelectOption value="">Any tag</NativeSelectOption>
+            {tags.map(([t, n]) => (
+              <NativeSelectOption key={t} value={t}>
+                {t} · {n}
+              </NativeSelectOption>
+            ))}
+          </NativeSelect>
+        </div>
+      )}
       <div className="grid min-h-0 flex-1 auto-rows-min grid-cols-[repeat(auto-fill,minmax(104px,1fr))] gap-3 overflow-y-auto p-3 scrollbar-thin">
         {groups.map((g) => {
           const isSel = g.index === sel;

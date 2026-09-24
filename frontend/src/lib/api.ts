@@ -24,6 +24,28 @@ export type ParamKey = Exclude<keyof Params, "trim" | "curves" | "crop" | "angle
 
 export type GroupStatus = "new" | "reviewed" | "uploaded" | "changed" | "skipped";
 
+/** Kinds of suggestion a slide can get (ARCHITECTURE "Insights"); only tags have a model so far. */
+export type InsightKind = "tags" | "caption" | "date" | "place";
+export type Suggestion = {
+  value: string;
+  /** 0..1: the model's share for this value. */
+  confidence: number;
+  /** Which model said so, e.g. "clip-vit-b32". */
+  source: string;
+  /** Suggestions are never applied silently: accepted ones became the slide's own, dismissed ones stay away. */
+  state: "suggested" | "accepted" | "dismissed";
+};
+export type SlideInsights = {
+  tags: Suggestion[];
+  caption: Suggestion | null;
+  date: Suggestion | null;
+  place: Suggestion | null;
+  /** Computed from other scans or another rotation: being analysed again. */
+  stale: boolean;
+  /** Why the slide couldn't be analysed ("" when it was). */
+  error: string;
+};
+
 export type Group = {
   id: string;
   index: number;
@@ -51,6 +73,10 @@ export type Group = {
   /** The slide's own date ("" = none) and caption. */
   date: string;
   caption: string;
+  /** The slide's own tags: go to Immich as tags and into the JPEG's XMP keywords. */
+  tags: string[];
+  /** What the models suggest (desktop app only); null until analysed. */
+  insights?: SlideInsights | null;
   /** The date it goes to Immich with: its own, or estimated from the dated slides around it. */
   date_est: { value: string; source: "own" | "between" | "near" | "tray" | "scan"; from?: number[] };
 };
@@ -79,6 +105,17 @@ export type SessionPayload = {
   groups: Group[];
   cleanup_blockers: string[];
   log: unknown[];
+  /** Background analysis (desktop app only): turned on, model downloaded, slides still to analyse. */
+  insights?: { enabled: boolean; ready: boolean; pending: number };
+};
+
+export type InsightsState = {
+  enabled: boolean;
+  ready: boolean;
+  downloading: boolean;
+  model_mb: number;
+  labels: string[];
+  learned: Record<string, { accepted: number; dismissed: number }>;
 };
 
 export type Source = {
@@ -110,6 +147,7 @@ export type Config = {
   keep_originals: boolean;
   keep_exports: boolean;
   learning_enabled?: boolean;
+  insights_enabled?: boolean;
 };
 
 export type AppState = {

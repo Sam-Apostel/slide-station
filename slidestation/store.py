@@ -265,8 +265,11 @@ def slide_dates(d: dict) -> list[dict]:
 
 
 def meta_key(g: dict, date: dict) -> str:
-    """What besides the pixels goes to Immich with a slide: its date and caption."""
-    return hashlib.sha1(json.dumps([date.get("value", ""), g.get("caption", "")]).encode()).hexdigest()[:12]
+    """What besides the pixels goes to Immich with a slide: its date, caption and tags."""
+    k = [date.get("value", ""), g.get("caption", "")]
+    if g.get("tags"):  # left out when there are none, so slides uploaded before tags existed stay put
+        k.append(sorted(g["tags"]))
+    return hashlib.sha1(json.dumps(k).encode()).hexdigest()[:12]
 
 
 def group_status(g: dict, meta: str | None = None) -> str:

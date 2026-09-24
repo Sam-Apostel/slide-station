@@ -12,6 +12,7 @@ import {
   HardDriveDownload,
   Keyboard,
   Layers,
+  ListChecks,
   Merge,
   PanelLeft,
   PanelRight,
@@ -62,6 +63,7 @@ export function CommandPalette({
   handlers,
   onClean,
   onDateRange,
+  onReview,
   busy,
 }: {
   open: boolean;
@@ -71,6 +73,8 @@ export function CommandPalette({
   onClean: () => void;
   /** Opens the "date a range of slides" dialog. */
   onDateRange: () => void;
+  /** Opens the tray's "review suggestions" (desktop app only). */
+  onReview?: () => void;
   busy: boolean;
 }) {
   const { state, session, sessionId, sel } = app;
@@ -153,6 +157,20 @@ export function CommandPalette({
           keys: sm?.ready_upload ? undefined : `${mod}U`,
           hidden: !sm?.pending_upload || sm.pending_upload === sm.ready_upload || busy,
           run: handlers.uploadAll,
+        },
+        {
+          id: "review-insights",
+          label: "Review suggestions (tags)…",
+          icon: <ListChecks />,
+          hidden: !session || !onReview || !session.insights?.enabled,
+          run: () => onReview?.(),
+        },
+        {
+          id: "analyse",
+          label: "Analyse the tray again",
+          icon: <ListChecks />,
+          hidden: !session || !onReview || !session.insights?.ready || !session.insights.enabled,
+          run: () => app.analyseTray(true),
         },
         { id: "reveal", label: "Show files", icon: <FolderOpen />, hidden: !session, run: app.reveal },
         {

@@ -37,6 +37,7 @@ slidestation/
   workflow.py             import, preview/export rendering, upload, card cleanup, job runner
   imaging.py              signatures/grouping, rotation guessing, HDR fusion, colour pipeline
   learning.py             learns colour settings from approved slides (§5)
+  insights.py             suggestions per slide: scene tags from CLIP, background analysis (§5a)
   store.py                config + session persistence (JSON on disk)
   immich.py               minimal Immich client (v1/v2/v3 compatible)
   models/                 YuNet face detector (MIT, from opencv_zoo)
@@ -372,6 +373,116 @@ once real edits exist.
 
 Worth doing next: surface it in the UI (a "learned from N slides" badge on the inspector plus an
 undo), and consider learning rotation corrections per film type once enough examples exist.
+
+## 5a. Insights: suggestions from local models (ROADMAP §1)
+
+`insights.py`. Models look at each slide in the background and make **suggestions**; nothing is
+applied until the user accepts it. Opt-in: config `insights_enabled` (Settings → "Suggest tags
+(downloads a ~155 MB model)"), off by default. The first model is zero-shot CLIP scene tags; the
+plumbing is shared by what comes next (VLM captions, mount OCR dates, places).
+
+**Data.** Per slide, next to the slide's own `date` / `caption` and new `g["tags"]` (a list of
+lower-case strings):
+
+```
+g["insights"] = {"key": "<active scans + rotation + model + labels>",
+                 "tags": [{"value": "beach", "confidence": 0.41, "source": "clip-vit-b32", "state": "suggested"}, ...],
+                 "caption": null | {value, confidence, source, state}, "date": ..., "place": ...,
+                 "error": "..."}          # only when the slide couldn't be analysed
+```
+
+`state` is `suggested`, `accepted` (the value became the slide's own tag / caption / date; a place
+is kept as `g["place"]`, not sent anywhere yet) or `dismissed`. A stale `key` (other scans, a
+rotation) means "analyse again": `insights.merge` keeps every accepted / dismissed entry, so a
+dismissed suggestion never comes back for that slide, and a fresh suggestion of a tag the slide
+already has counts as accepted. Removing a tag in the Details section dismisses its suggestion.
+
+**Background analysis.** A daemon thread like the background renderer (§3): `insights.step()`
+analyses one slide at a time — the open tray (`wf.active_session`) first, then trays queued with
+`POST …/insights/run` — only while no job runs (imports reshape slides; uploads need the memory).
+Each slide: `fused_proxy` (the blended 1600 px proxy) rotated upright → CLIP → commit through
+`update_session`, only if the slide's key still matches (never a stale save). A slide that throws
+gets `error` and the key, so it isn't retried forever. The UI reloads the tray every poll while
+`payload.insights.pending` > 0.
+
+**Scene tags (CLIP).** `Xenova/clip-vit-base-patch32` at a pinned revision, the quantized vision
+(89 MB) and text (65 MB) ONNX models plus `vocab.json` / `merges.txt`, run with `onnxruntime`
+(CPU, half the cores). `insights.Tokenizer` is CLIP's BPE in ~40 lines (checked token-for-token
+against Hugging Face's tokenizer for the label prompts). `LABELS` is a fixed English list of
+(tag, prompt) pairs — beach, sea, lake, snow, skiing, mountains, forest, landscape, sunset, city,
+street, village, church, castle, wedding, birthday, christmas, party, car, train, airplane, boat,
+dog, cat, horse, garden, flowers, family group, portrait, children, baby, interior, food, camping,
+swimming pool. The prompts' text embeddings are computed once and cached as
+`models/clip-vit-b32/labels-<hash>.npy` (the text model is only loaded for that). Per slide: CLIP's
+preprocessing (short side 224 bicubic, centre crop, CLIP mean/std), cosine × 100, softmax over the
+labels; up to 4 labels whose share ≥ the threshold (0.12) are suggested with that share as
+`confidence`. Changing `LABELS` changes every slide's key, so trays are re-analysed.
+
+**Download.** `POST /api/insights/model` starts a `model` job (progress in MB in the activity
+pill) that fetches the files into `<library>/models/clip-vit-b32/` — never into the repo. Each file
+goes to `<name>.part`, resumed with an HTTP Range request on the next attempt, checked against its
+sha256 (LFS files) or git blob sha1 (small files), then `os.replace`d into place; a mismatch
+deletes the part. Offline (any `httpx.TransportError`) the job fails with "Couldn't reach
+huggingface.co … the download continues where it stopped". `model_ready()` = every file present
+at its exact size.
+
+**Learning.** Every accept / dismiss of a tag is counted per label in `<library>/insights.json`
+(`{"labels": {"beach": {"accepted": n, "dismissed": m}}}`). A label's threshold is
+`0.12 × clamp((1 + dismissed) / (1 + accepted), 1, 4)`: a label you keep dismissing needs up to 4×
+the confidence before it is suggested again. `GET /api/insights` shows the counts.
+
+**API.**
+- `GET /api/insights` — enabled, ready, downloading, model size, labels, learned counts.
+- `POST /api/sessions/{sid}/insights/run` (`{"force": true}`: analyse every slide again, keeping decisions).
+- `POST /api/sessions/{sid}/insights/decide` `{"kind": "tags"|"caption"|"date"|"place", "action":
+  "accept"|"dismiss", "value"?, "groups"?: [gid]}` — only open (`suggested`) entries; without
+  `groups`, the whole tray (the review view's "accept all"); locked slides don't take accepted values.
+- `POST /api/sessions/{sid}/insights/propagate` `{"kind": "tags"|"caption"|"date", "value", "from",
+  "to"}` — tray-level propagation: every unlocked slide from..to gets the tag (added) / caption /
+  date (replaced, validated like `/dates`); the same suggestion there turns accepted.
+- `PATCH …/groups/{gid}` takes `"tags": [...]` (trimmed, lower case, deduped, ≤ 30 × 40 chars).
+- Session payload: per slide `tags` and `insights` (without the key, plus `stale` and `error`);
+  top level `insights: {enabled, ready, pending}`.
+
+**Tags leave the app** two ways. `store.meta_key` includes the sorted tags *when there are any*
+(so untagged slides uploaded earlier don't turn `changed`; `store.ts` mirrors it byte for byte), so a
+tag edit after upload makes the slide `changed` and it goes up again. The export writes them as XMP
+`dc:subject` (Pillow ≥ 11's `xmp=`; Immich also reads those as tags), and after uploading,
+`finish_session` calls `Immich.tag_assets`: `PUT /api/tags` (upsert by name) then
+`PUT /api/tags/{id}/assets {"ids": [...]}` for the assets uploaded in that run. Needs the
+`tag.create` and `tag.asset` permissions; on a 404 (Immich before v1.113, no tag API) or 403 the
+upload still succeeds and the job message ends "tags not sent (…)". `tests/fake_immich.py` has both
+endpoints (`fake_immich.TAGS = False` plays an old server).
+
+**UI** (`components/insights.tsx`). The inspector's **Insights** section: off → "Turn on in
+Settings"; no model → "Download model"; else this slide's open suggestions with a confidence meter,
+✓ accept / × dismiss, "Accept all" and "Review tray…". Details shows the slide's **tags** as chips
+(× removes, a field adds). Accepting on one slide shows a toast "Apply to 12–31…" that opens
+`PropagateDialog` (the "Date a range" pattern: from / to slide numbers); the offered run is the
+neighbours that have or were suggested the same value (a date: up to the next slide with its own
+date, `rangeEnd`), else just the next slide. **Review suggestions** (`ReviewDialog`, also in ⌘K)
+lists the tray's open suggestions in piles by value ("mountains · 3 slides · ≈48 %") with Accept
+all / Dismiss all and per-slide × — click a thumbnail to go to that slide; "Analyse again" forces a
+re-run. The filmstrip gets a **tag filter** (own tags and open suggestions, with counts) under the
+status scopes.
+
+**Not ported.** The browser version (§4c) hides the Insights section, review view and setting (the
+models would have to run in the page through onnxruntime-web: a follow-up); it shows a library's
+tags read-only and keeps them in `session.json` and the meta key. The Swift app (§4b) is not
+ported: its `Slide` Codable only encodes the keys it knows, so a tray saved there loses `tags` /
+`insights`, and its meta key doesn't include tags. On the iPad the roadmap's route is Vision
+classification (`VNClassifyImageRequest`) rather than this model.
+
+**Tests** (`tests/test_insights.py`): CLIP replaced by a fake embedding (labels are one-hot
+directions), the background thread kept out (`insights.step` patched; the tests call the real one):
+suggestions never applied, accept / dismiss and re-analysis keeping them, rotation making a slide
+stale, skipped slides, a failing slide not retried, tag removal dismissing, the threshold learning,
+accept-all, caption / date plumbing, propagation, tags to Immich + XMP + `changed` after a tag edit,
+an Immich without the tag API, the meta key, and the download (resume with Range, verify, offline,
+corrupt part) through `httpx.MockTransport`. `SS_REAL_CLIP=1` adds a smoke test that downloads the
+real model into the scratch library and checks a synthetic beach scene gets "beach" in its top 2
+and a snowy mountain scene gets "snow" or "mountains" (not "beach") in its top 3 (verified:
+beach → beach, sea; snow → mountains, snow, forest).
 
 ## 6. Immich integration facts (hard-won)
 

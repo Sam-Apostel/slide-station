@@ -381,6 +381,18 @@ def export_fresh(s: Session, g: dict, index: int) -> bool:
 _export_lock = threading.Lock()
 
 
+def xmp_subjects(tags: list[str]) -> bytes:
+    """An XMP packet with the slide's tags as dc:subject (keywords; Immich reads them as tags too)."""
+    from xml.sax.saxutils import escape
+
+    items = "".join(f"<rdf:li>{escape(t)}</rdf:li>" for t in tags)
+    return ('<?xpacket begin="\ufeff" id="W5M0MpCehiHzreSzNTczkc9d"?>'
+            '<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">'
+            '<rdf:Description rdf:about="" xmlns:dc="http://purl.org/dc/elements/1.1/">'
+            f"<dc:subject><rdf:Bag>{items}</rdf:Bag></dc:subject></rdf:Description></rdf:RDF></x:xmpmeta>"
+            '<?xpacket end="w"?>').encode("utf-8")
+
+
 def originals_missing(s: Session, g: dict) -> bool:
     """With "keep originals" off they're deleted after upload: such a slide can still be previewed
     (from the cached proxies) but not rendered at full resolution again."""
@@ -415,7 +427,8 @@ def render_export(sid: str, gid: str, quality: int) -> Path | None:
     name = f"{slugify(s.data['name'])}_{scans[0]}.jpg"
     s.export_dir.mkdir(exist_ok=True)
     tmp = s.export_dir / (name + ".part")
-    out.save(tmp, "JPEG", quality=quality, exif=exif.tobytes(), subsampling=0)
+    extra = {"xmp": xmp_subjects(g["tags"])} if g.get("tags") else {}  # Pillow >= 11 writes it
+    out.save(tmp, "JPEG", quality=quality, exif=exif.tobytes(), subsampling=0, **extra)
     os.replace(tmp, s.export_dir / name)
     sha = sha1_file(s.export_dir / name)
     ok = []
@@ -474,7 +487,7 @@ def finish_session(job: Job, sid: str, only_ready: bool = False) -> None:
         job.message = f"Connecting to Immich {client.version()}"
         album = client.find_or_create_album(s.data["album"] or s.data["name"])
         update_session(sid, lambda f: f.data.__setitem__("immich_album_id", album))
-        to_trash, uploaded = [], 0
+        to_trash, uploaded, tagged = [], 0, {}  # tagged: tag -> asset ids uploaded now
         for n, gid in enumerate(todo, 1):
             job.message = f"Rendering slide {n} of {len(todo)}"
             path = None
@@ -508,6 +521,8 @@ def finish_session(job: Job, sid: str, only_ready: bool = False) -> None:
                 fg["immich"] = {"asset_id": asset_id, "key": rkey, "status": status, "meta": meta}
 
             update_session(sid, commit)
+            for t in g.get("tags", []):
+                tagged.setdefault(t, []).append(asset_id)
             if not cfg.get("keep_exports", False):
                 path.unlink(missing_ok=True)  # it's in Immich; can be re-rendered from the originals
             uploaded += 1
@@ -526,10 +541,18 @@ def finish_session(job: Job, sid: str, only_ready: bool = False) -> None:
 
         update_session(sid, tidy)
         client.trash(to_trash)
+        tag_note = ""
+        if tagged:
+            job.message = "Tagging in Immich"
+            try:
+                client.tag_assets(tagged)
+            except ImmichError as e:  # an older Immich or a key without tag permissions: the upload stands
+                print("immich tags:", e)
+                tag_note = f"; tags not sent ({e})"
         if not cfg.get("keep_originals", True):
             _drop_local_originals(Session(sid))
         job.message = f"Done - {uploaded} slides uploaded to '{s.data['album']}'" + (
-            f"; {len(lost)} skipped: their original scans were deleted after the last upload" if lost else "")
+            f"; {len(lost)} skipped: their original scans were deleted after the last upload" if lost else "") + tag_note
     finally:
         client.close()
 

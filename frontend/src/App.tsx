@@ -16,9 +16,10 @@ import { SlideMenu } from "@/components/slide-menu";
 import { CommandPalette } from "@/components/command-palette";
 import { DateRangeDialog, HelpDialog, NewTrayDialog, SettingsDialog } from "@/components/dialogs";
 import { PanelToggles, WindowTitlebar } from "@/components/window-titlebar";
+import { PropagateDialog, ReviewDialog, propagationOffer, type Offer } from "@/components/insights";
 import { useSlideStation, type SlideStation } from "@/hooks/use-slide-station";
 import { useDesktop, useFolderDrop, type DesktopHandlers } from "@/hooks/use-desktop";
-import { needsReview, plural, standalone, type Source } from "@/lib/api";
+import { needsReview, plural, standalone, type Group, type InsightKind, type Source } from "@/lib/api";
 import { desktop, isMac } from "@/lib/desktop";
 
 type Panels = { filmstrip: boolean; inspector: boolean };
@@ -67,6 +68,7 @@ function SlideStationApp() {
   const { state, session, sessionId } = app;
 
   const [filter, setFilter] = React.useState<Filter>("all");
+  const [tag, setTag] = React.useState("");
   const [before, setBefore] = React.useState(false);
   // the neutral-point eyedropper: the next click on the photo sets the white balance
   const [picking, setPicking] = React.useState(false);
@@ -81,6 +83,8 @@ function SlideStationApp() {
   const [helpOpen, setHelpOpen] = React.useState(false);
   const [paletteOpen, setPaletteOpen] = React.useState(false);
   const [dateRangeOpen, setDateRangeOpen] = React.useState(false);
+  const [reviewOpen, setReviewOpen] = React.useState(false);
+  const [offer, setOffer] = React.useState<Offer | null>(null);
   const [newTray, setNewTray] = React.useState<{ open: boolean; source?: Source; folder?: string }>({ open: false });
   const [panels, setPanels] = React.useState(storedPanels);
   // What focus mode hid, so the same shortcut brings exactly that back.
@@ -195,6 +199,16 @@ function SlideStationApp() {
     const path = await desktop?.pickFolder({ title: "Folder with this tray's scans", buttonLabel: "Import" });
     if (path) return app.startImport(sessionId, path);
     if (!desktop) toast("Connect the scanner (or use the desktop app to pick a folder) to re-import");
+  };
+
+  /** A suggestion accepted on one slide: offer it to the run of neighbours ("Apply 'beach' to 12–31?"). */
+  const offerNeighbours = (kind: InsightKind, value: string, groups: Group[], index: number) => {
+    const what = kind === "tags" ? `“${value}”` : kind === "date" ? value : "the caption";
+    const o = kind === "place" ? null : propagationOffer(groups, index, kind, value);
+    toast(`Accepted ${what}`, {
+      action: o ? { label: `Apply to ${o.from + 1}–${o.to + 1}…`, onClick: () => setOffer(o) } : undefined,
+      duration: o ? 8000 : 2000,
+    });
   };
 
   const clean = async () => {
@@ -315,6 +329,8 @@ function SlideStationApp() {
                     sel={app.sel}
                     filter={filter}
                     onFilter={setFilter}
+                    tag={tag}
+                    onTag={setTag}
                     onSelect={app.select}
                     slideMenu={slideMenu}
                   />
@@ -375,6 +391,16 @@ function SlideStationApp() {
                     onReimport={reimport}
                     onSave={standalone ? save : undefined}
                     onDateRange={() => setDateRangeOpen(true)}
+                    insights={
+                      standalone
+                        ? undefined // needs its models in the page (onnxruntime-web): a follow-up
+                        : {
+                            downloading: state?.job?.kind === "model" && !state.job.finished,
+                            onAccepted: offerNeighbours,
+                            onReview: () => setReviewOpen(true),
+                            onSettings: () => setSettingsOpen(true),
+                          }
+                    }
                   />
                 </ResizablePanel>
               </>
@@ -415,7 +441,10 @@ function SlideStationApp() {
         open={settingsOpen}
         onOpenChange={setSettingsOpen}
         config={state?.config}
-        onSaved={app.refreshState}
+        onSaved={() => {
+          app.refreshState();
+          if (sessionId) app.loadSession(sessionId, true); // e.g. the Insights section follows "Suggest tags"
+        }}
       />
       <NewTrayDialog
         open={newTray.open}
@@ -434,6 +463,7 @@ function SlideStationApp() {
         handlers={handlers}
         onClean={clean}
         onDateRange={() => setDateRangeOpen(true)}
+        onReview={standalone ? undefined : () => setReviewOpen(true)}
         busy={busy}
       />
       {session && (
@@ -444,6 +474,23 @@ function SlideStationApp() {
           sel={app.sel}
           onApply={app.dateRange}
         />
+      )}
+      {session && !standalone && (
+        <>
+          <ReviewDialog
+            open={reviewOpen}
+            onOpenChange={setReviewOpen}
+            app={app}
+            session={session}
+            sessionId={sessionId}
+          />
+          <PropagateDialog
+            offer={offer}
+            onOpenChange={(open) => !open && setOffer(null)}
+            count={session.groups.length}
+            onApply={app.propagate}
+          />
+        </>
       )}
       {dropping && (
         <div className="ss-drop pointer-events-none fixed inset-0 z-50 flex items-center justify-center">
