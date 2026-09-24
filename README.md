@@ -44,8 +44,12 @@ Nothing leaves your computer except what you send to your own Immich.
 - **Saving to disk.** The download button next to "Clean card" saves the developed slides (with
   their dates in EXIF) into a folder you pick (Chrome, Edge) or as a zip.
 - **Cleaning the card** works in Chrome and Edge when the card was picked or dropped as a folder.
+- **Developed slides are rendered in the background** while you keep working on the tray, as in
+  the desktop app, so uploading or saving is mostly the time it takes to send them.
+- **Large scans** that are more than a browser can hold in one canvas (Safari on iPad and iPhone
+  stops at about 16 megapixels) are read and written in strips instead: slower, but they work.
 - **Not in the browser version:** scanner detection (pick the card's folder instead), eject,
-  rotation from faces (the sky rule still runs), background pre-rendering, "show in Finder".
+  rotation from faces (the sky rule still runs), "show in Finder".
 
 **Connecting Immich.** Immich only answers requests from its own web address (it allows other
 origins in development builds only), so the page has to reach it in one of two ways:

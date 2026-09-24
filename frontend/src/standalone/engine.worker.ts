@@ -4,9 +4,11 @@
 // a small cache, so moving a slider re-renders without decoding again.
 import type { Params } from "@/lib/api";
 import * as im from "./imaging";
+import { readExif } from "./exif";
 import { fuseSources, materialise, rgba8Source, type RowSource } from "./fusion";
 import { features } from "./learning";
 import { fitting, rgb, rotated, type RGB } from "./pixels";
+import { assembleStrips, encodeJpegJS, stripRows, STRIP_AREA } from "./strips";
 
 /** An image to work on: `key` names its decoded pixels in the cache, `blob` decodes them on a miss. */
 export type Src = { key: string; blob: Blob };
@@ -28,14 +30,80 @@ async function jpegSize(blob: Blob): Promise<[number, number] | null> {
   return null;
 }
 
+// Canvases this big may not exist (Safari on iPad / iPhone: about 16.7 MP). Tests set a small
+// limit to run the strip fallback anywhere (engine.ts, localStorage "slide-station-canvas-limit").
+let canvasLimit = Infinity;
+
+/** A 2D context of that size, or null where the browser can't make one (strips.ts takes over). */
+function context(width: number, height: number, read: boolean): OffscreenCanvasRenderingContext2D | null {
+  if (width * height > canvasLimit) return null;
+  try {
+    const ctx = new OffscreenCanvas(width, height).getContext("2d", { willReadFrequently: read });
+    if (!ctx || width * height <= STRIP_AREA) return ctx;
+    // an oversized canvas can also come back fine on paper and draw nothing: try its far corner
+    ctx.fillStyle = "#fff";
+    ctx.fillRect(width - 1, height - 1, 1, 1);
+    const ok = ctx.getImageData(width - 1, height - 1, 1, 1).data[3] === 255;
+    ctx.clearRect(width - 1, height - 1, 1, 1);
+    return ok ? ctx : null;
+  } catch {
+    return null;
+  }
+}
+
+/** RGBA bytes of a bitmap, through one canvas or, failing that, strip by strip. Closes the bitmap. */
+async function bitmapRGBA(bmp: ImageBitmap, canvas?: OffscreenCanvasRenderingContext2D) {
+  const { width, height } = bmp;
+  const ctx = canvas ?? context(width, height, true);
+  let bytes: Uint8ClampedArray;
+  if (ctx) {
+    ctx.drawImage(bmp, 0, 0);
+    bytes = ctx.getImageData(0, 0, width, height).data;
+  } else {
+    const rows = stripRows(width, Math.min(STRIP_AREA, canvasLimit));
+    const strip = context(width, rows, true)!;
+    bytes = await assembleStrips(width, height, rows, async (sy, sh) => {
+      strip.clearRect(0, 0, width, rows);
+      strip.drawImage(bmp, 0, sy, width, sh, 0, 0, width, sh);
+      return strip.getImageData(0, 0, width, sh).data;
+    });
+  }
+  bmp.close();
+  return { width, height, bytes };
+}
+
+/** Full resolution without a full-size canvas or bitmap: each strip is decoded from the file. */
+async function decodeStrips(blob: Blob, width: number, height: number) {
+  // strips are cut in the file's own frame; a scan turned by its EXIF tag would come out scrambled
+  // (scanner scans never are, and the Python app ignores the tag as well)
+  if ((readExif(await blob.slice(0, 128 * 1024).arrayBuffer()).orientation ?? 1) !== 1)
+    throw new Error("This scan is too large for this browser and turned by its EXIF orientation");
+  const rows = stripRows(width, Math.min(STRIP_AREA, canvasLimit));
+  const strip = context(width, rows, true);
+  if (!strip) throw new Error("This browser can't make a canvas for decoding the scan");
+  const bytes = await assembleStrips(width, height, rows, async (sy, sh) => {
+    const bmp = await createImageBitmap(blob, 0, sy, width, sh, { colorSpaceConversion: "none" });
+    strip.clearRect(0, 0, width, rows);
+    strip.drawImage(bmp, 0, 0);
+    bmp.close();
+    return strip.getImageData(0, 0, width, sh).data;
+  });
+  return { width, height, bytes };
+}
+
 /** RGBA bytes of an image, optionally shrunk on decode (the browser's fast path, like PIL's draft). */
 async function decodeRGBA(
   blob: Blob,
   maxEdge?: number,
 ): Promise<{ width: number; height: number; bytes: Uint8ClampedArray }> {
   let opts: ImageBitmapOptions = { colorSpaceConversion: "none" };
+  const size = await jpegSize(blob);
+  let ctx: OffscreenCanvasRenderingContext2D | null | undefined;
+  if (!maxEdge && size && size[0] * size[1] > Math.min(STRIP_AREA, canvasLimit)) {
+    ctx = context(size[0], size[1], true);
+    if (!ctx) return decodeStrips(blob, size[0], size[1]); // too big for one canvas here
+  }
   if (maxEdge) {
-    const size = await jpegSize(blob);
     if (size && Math.max(...size) > maxEdge) {
       const s = maxEdge / Math.max(...size);
       opts = {
@@ -47,12 +115,7 @@ async function decodeRGBA(
     }
   }
   const bmp = await createImageBitmap(blob, opts);
-  const c = new OffscreenCanvas(bmp.width, bmp.height);
-  const ctx = c.getContext("2d", { willReadFrequently: true })!;
-  ctx.drawImage(bmp, 0, 0);
-  bmp.close();
-  const d = ctx.getImageData(0, 0, c.width, c.height);
-  return { width: c.width, height: c.height, bytes: d.data };
+  return bitmapRGBA(bmp, ctx?.canvas.width === bmp.width && ctx.canvas.height === bmp.height ? ctx : undefined);
 }
 
 async function decode(blob: Blob, maxEdge?: number): Promise<RGB> {
@@ -90,9 +153,16 @@ async function encode(a: RGB, quality: number, maxEdge?: number): Promise<Blob> 
     px[i * 4 + 2] = s.data[i * 3 + 2] * 255;
     px[i * 4 + 3] = 255;
   }
-  const c = new OffscreenCanvas(s.width, s.height);
-  c.getContext("2d")!.putImageData(new ImageData(px, s.width, s.height), 0, 0);
-  return c.convertToBlob({ type: "image/jpeg", quality: quality / 100 });
+  const ctx = context(s.width, s.height, false);
+  if (ctx) {
+    ctx.putImageData(new ImageData(px, s.width, s.height), 0, 0);
+    try {
+      return await (ctx.canvas as OffscreenCanvas).convertToBlob({ type: "image/jpeg", quality: quality / 100 });
+    } catch {
+      /* the browser's encoder gave up on the size: the one in JS below */
+    }
+  }
+  return encodeJpegJS(s.width, s.height, px, quality);
 }
 
 /** Clockwise rotation of RGBA bytes (a quarter of the memory of rotating floats). */
@@ -221,7 +291,11 @@ async function pump() {
   running = false;
 }
 
-self.onmessage = (e: MessageEvent<Task | { drop: string }>) => {
+self.onmessage = (e: MessageEvent<Task | { drop: string } | { canvasLimit: number }>) => {
+  if ("canvasLimit" in e.data) {
+    canvasLimit = e.data.canvasLimit;
+    return;
+  }
   if ("drop" in e.data) {
     // a slide's scans changed: forget its decoded pixels
     for (const k of [...cache.keys()]) if (k.startsWith(e.data.drop)) cache.delete(k);

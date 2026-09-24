@@ -12,6 +12,10 @@ save to disk and card cleanup run through the same File System Access code as wi
 SS_NO_FS_ACCESS=1 runs it the way Firefox and Safari do: no folder picker API, so the scans come in
 through a folder <input>, "save to disk" downloads a zip, and the card can't be cleaned.
 
+SS_CANVAS_LIMIT=250000 pretends canvases stop at that many pixels, as Safari's do on iPad / iPhone
+(about 16.7 MP): full-resolution scans are then decoded in strips and the JPEGs encoded in
+JavaScript (standalone/strips.ts), which the saved files are checked for.
+
 Env: SS_BROWSER_PATH (default /opt/pw-browsers/chromium if present), SS_SHOTS (screenshots,
 default /tmp/ss-web-shots), SS_SLIDES (default 6).
 """
@@ -41,6 +45,7 @@ SITE = ROOT / "frontend" / "dist-web"
 SHOTS = Path(os.environ.get("SS_SHOTS", "/tmp/ss-web-shots"))
 SLIDES = int(os.environ.get("SS_SLIDES", "6"))
 NO_FS = bool(os.environ.get("SS_NO_FS_ACCESS"))
+CANVAS_LIMIT = int(os.environ.get("SS_CANVAS_LIMIT") or 0)
 sys.path.insert(0, str(ROOT / "tests"))
 from synthetic import make_scans  # noqa: E402
 
@@ -158,6 +163,8 @@ def main() -> None:
             browser = p.chromium.launch(executable_path=exe)
             ctx = browser.new_context(viewport={"width": 1440, "height": 900}, accept_downloads=True)
             ctx.add_init_script("delete window.showDirectoryPicker;" if NO_FS else PICKERS)
+            if CANVAS_LIMIT:
+                ctx.add_init_script(f"localStorage.setItem('slide-station-canvas-limit', '{CANVAS_LIMIT}')")
             pg = ctx.new_page()
             pg.on("console", lambda m: m.type == "error" and errors.append(m.text))
             pg.on("pageerror", lambda e: errors.append(str(e)))
@@ -261,14 +268,21 @@ def main() -> None:
                     pg.get_by_role("button", name="Save to disk").click()
                 z = zipfile.ZipFile(dl.value.path())
                 saved = sorted(z.namelist())
-                first = z.read(saved[0])
+                files = [z.read(n) for n in saved]
             else:
                 pg.get_by_role("button", name="Save to disk").click()
                 expect(pg.get_by_text(re.compile(r"Saved \d+ slides")).first).to_be_visible(timeout=300_000)
                 saved = pg.evaluate(LIST, "saved")
-                first = base64.b64decode(pg.evaluate(READ, ["saved", saved[0]]))
+                files = [base64.b64decode(pg.evaluate(READ, ["saved", n])) for n in saved]
             assert len(saved) >= 3, saved
-            jpeg = Image.open(io.BytesIO(first))
+            jpegs = [Image.open(io.BytesIO(f)) for f in files]
+            for j in jpegs:
+                j.load()  # the whole file decodes
+            sizes = {j.size for j in jpegs}
+            assert sizes & {(1200, 800), (800, 1200)}, sizes  # the slides left uncropped: the scan's size
+            if CANVAS_LIMIT:  # encoded by jpeg-js (4:4:4), not the browser's encoder (4:2:0)
+                assert all(all(c[1:3] == (1, 1) for c in j.layer) for j in jpegs), [j.layer for j in jpegs]
+            jpeg = jpegs[0]
             exif = jpeg.getexif()
             when = exif.get_ifd(0x8769).get(36867, "")
             assert exif.get(271) == "GCMC" and exif.get(305) == "Slide Station", dict(exif)

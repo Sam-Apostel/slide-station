@@ -2,6 +2,16 @@
 // eyedropper), a second does imports and exports, so browsing stays quick while a job runs.
 import type { Op, Ops } from "./engine.worker";
 
+// Tests: pretend canvases stop at this many pixels, so the large-scan fallback (strips.ts) runs in
+// any browser, as it would for a big scan in Safari on iPad / iPhone.
+const canvasLimit = (() => {
+  try {
+    return Number(localStorage.getItem("slide-station-canvas-limit")) || 0;
+  } catch {
+    return 0;
+  }
+})();
+
 type Pending = { resolve: (v: unknown) => void; reject: (e: Error) => void };
 
 export class Engine {
@@ -28,6 +38,7 @@ export class Engine {
         this.worker?.terminate();
         this.worker = null;
       };
+      if (canvasLimit) this.worker.postMessage({ canvasLimit });
     }
     return this.worker;
   }

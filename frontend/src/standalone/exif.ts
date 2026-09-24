@@ -1,7 +1,7 @@
 // Just enough EXIF: read make / model / date from a scan, and write the tags Immich reads into a
 // finished JPEG (canvas encoders drop all metadata). Mirrors what workflow.render_export writes.
 
-export type ScanInfo = { make: string; model: string; datetime: string };
+export type ScanInfo = { make: string; model: string; datetime: string; orientation?: number };
 
 /** Make (271), Model (272) and DateTime (306, else DateTimeOriginal) of a JPEG, "" when absent. */
 export function readExif(buf: ArrayBuffer): ScanInfo {
@@ -25,6 +25,7 @@ function tiff(v: DataView, base: number): Partial<ScanInfo> {
     const u16 = (o: number) => v.getUint16(base + o, le);
     const u32 = (o: number) => v.getUint32(base + o, le);
     const tags = new Map<number, string>();
+    let orientation = 1;
     const ascii = (entry: number) => {
       const n = u32(entry + 4);
       const at = n <= 4 ? entry + 8 : u32(entry + 8);
@@ -43,11 +44,13 @@ function tiff(v: DataView, base: number): Partial<ScanInfo> {
         const tag = u16(e);
         const type = u16(e + 2);
         if (type === 2) tags.set(tag, ascii(e));
+        else if (tag === 274 && type === 3 && depth === 0) orientation = u16(e + 8);
         else if (tag === 0x8769 && depth === 0) ifd(u32(e + 8), 1);
       }
     };
     ifd(u32(4), 0);
-    return { make: tags.get(271) ?? "", model: tags.get(272) ?? "", datetime: tags.get(306) || tags.get(36867) || "" };
+    const datetime = tags.get(306) || tags.get(36867) || "";
+    return { make: tags.get(271) ?? "", model: tags.get(272) ?? "", datetime, orientation };
   } catch {
     return {};
   }

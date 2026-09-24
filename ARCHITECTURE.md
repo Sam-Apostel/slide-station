@@ -297,6 +297,7 @@ standalone/
   learning.ts        learning.py, same learning.json
   engine.worker.ts   the pixel work in a worker; engine.ts talks to it (one worker for the UI,
                      one for jobs, so browsing stays quick during an import or upload)
+  strips.ts          scans bigger than a canvas: strip decode, JPEG encoder in JS (§4d)
   library.ts         the library: a folder on disk (File System Access) or the browser's OPFS
   boot.tsx, pick.ts  start-up (re-allowing a disk folder takes a click) and picking / dropping folders
   exif.ts, npy.ts,   reading scan EXIF / writing the export's; the .sig.npy signature cache;
@@ -326,10 +327,37 @@ standalone/
 - **Card cleanup** keeps the safety rules: only folders picked or dropped as a directory with
   `DCIM` at the root are removable (their handle is remembered in IndexedDB), write access is asked
   for at cleanup time, and each file is re-hashed before it is deleted.
-- **Not ported:** YuNet faces (the sky rule runs), scanner detection and eject, the background
-  renderer, reveal in Finder. Full resolution decodes and encodes through one canvas, so Safari on
-  iPad / iPhone tops out around 16 MP (ROADMAP §0).
+- **Not ported:** YuNet faces (the sky rule runs), scanner detection and eject, reveal in Finder.
+  The background renderer and scans bigger than a canvas are in §4d.
 - Config (Immich URL and key, keep originals, learning) is in `localStorage` of that browser only.
+
+## 4d. Browser version: background renders, large scans, crop keys
+
+- **Background renderer** (`server.ts`, after `renderExport`): the Python `_background_renderer`
+  in the page. `GET /api/sessions/{id}` marks the open tray (`watchTray`); every 1.5 s, if no job
+  runs and no render is in flight, the first developed, not skipped, not locked, not uploaded slide
+  (by `statuses`, so a re-dated upload counts) whose export isn't fresh is rendered by
+  `renderExport` in the jobs worker. One at a time; it reads the session only, and `renderExport`
+  commits through `update` only if the slide's render and export keys still match, so an edit
+  during the render leaves it for the next round. A job started while a render is in flight waits
+  for it ("Finishing a background render") — full resolution stays one at a time. The upload then
+  finds the export fresh and only sends it. `tests/web_flow.py` waits for three exports after
+  developing three slides, before uploading.
+- **Scans bigger than a canvas** (`strips.ts`, `engine.worker.ts`): Safari on iPad / iPhone
+  refuses canvases over ~16.7 MP. `context()` tries the canvas (and, above 4 MP, that its far
+  corner really draws); when it can't, a full-resolution decode reads the file in horizontal strips
+  (`createImageBitmap(blob, 0, y, w, h)` per strip into one small canvas, never a full-size bitmap)
+  and the encode falls back to jpeg-js (4:4:4, lazily loaded, needs a `Buffer.from` shim in the
+  browser). Strips use the JPEG frame header's size, so an EXIF-turned scan would fail loudly
+  (scanner scans aren't turned; Python ignores the tag too). To run the fallback anywhere, set
+  `localStorage["slide-station-canvas-limit"]` (pixels): `SS_CANVAS_LIMIT=250000 python
+  tests/web_flow.py` does, and checks the saved JPEGs decode, have the scan's size and are 4:4:4.
+  `strips.test.ts` covers strip assembly and the encoder. Not tried on a real iPad yet.
+- **Crop keys on Windows / Linux:** Alt+← is also the browser's Back. The crop tool's capture-phase
+  `keydown` handler calls `preventDefault`, which is enough in Chromium: with real key presses
+  (XTEST under Xvfb, headed Chromium on Linux) Alt+← goes back outside the crop tool and resizes
+  the frame inside it. Playwright's `keyboard.press` never reaches the browser's own shortcuts, so
+  `web_flow.py` only checks the page side. Firefox and Edge on Windows untested.
 
 ## 5. Learning from past edits (new, working, untested in the wild)
 
