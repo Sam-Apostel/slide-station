@@ -81,7 +81,9 @@ import {
   todo as todoEmbeddings,
   unpack,
   type Embeddings,
+  type SlideEmb,
 } from "./similar";
+import { LANDMARKS, MODEL_ID as EYES_MODEL, type EyesEntry } from "./eyes";
 import {
   activeScans,
   cleanPlace,
@@ -134,6 +136,8 @@ type StoredConfig = {
   lookalike_enabled: boolean;
   /** Faces -> people (downloads SFace), names to Immich as tags. */
   people_enabled: boolean;
+  /** Look-alikes prefer the shot with open eyes (downloads the face mesh; with the tag model only). */
+  eyes_enabled: boolean;
 };
 
 const CONFIG_KEY = "slide-station-config";
@@ -149,6 +153,7 @@ const DEFAULT_CONFIG: StoredConfig = {
   insights_enabled: false,
   lookalike_enabled: false,
   people_enabled: false,
+  eyes_enabled: false,
 };
 
 function loadConfig(): StoredConfig {
@@ -348,6 +353,22 @@ async function modelReady(): Promise<boolean> {
   return ready;
 }
 
+// The eye model (eyes.ts, eyes.py): MediaPipe's face mesh into models/face-landmarks-478/, on only
+// with the tag model; look-alikes prefer the shot where nobody blinked.
+const EYES_DIR = `models/${EYES_MODEL}`;
+const eyesSource = () => source(EYES_MODEL, LANDMARKS);
+let eyesReady: { t: number; lib: Library; ready: boolean } | null = null;
+
+async function eyesModelReady(): Promise<boolean> {
+  if (eyesReady?.lib === lib && Date.now() - eyesReady.t < 2000) return eyesReady.ready;
+  const ready = await filesReady(lib, EYES_DIR, eyesSource());
+  eyesReady = { t: Date.now(), lib, ready };
+  return ready;
+}
+
+const eyesEnabled = () => !!loadConfig().eyes_enabled && !!loadConfig().insights_enabled;
+const eyesOn = async () => eyesEnabled() && (await eyesModelReady());
+
 /** What analyses a slide now (insights.active_models): the tag model turned on and downloaded; the
  *  text reader once it and the place names are there. Part of every slide's insights key. */
 async function activeModels(): Promise<string[]> {
@@ -519,11 +540,24 @@ function updateEmb(sid: string, fn: (e: Embeddings) => void): Promise<void> {
   return run;
 }
 
-/** Keep a slide's embedding (of its upright blend) and the blend's sharpness / clipping. */
-const recordSlide = (sid: string, g: GroupData, emb: Float32Array, q: Quality) => {
-  const entry = { key: slideKey(g), emb: pack(emb), q };
+/** Keep a slide's embedding (of its upright blend) and the blend's sharpness / clipping, and how open
+ *  its faces' eyes are when the eye model is on (similar.record_slide). */
+const recordSlide = async (sid: string, d: SessionData, g: GroupData, emb: Float32Array, q: Quality) => {
+  const entry: SlideEmb = { key: slideKey(g), emb: pack(emb), q };
+  if (await eyesOn()) entry.eyes = await measureEyes(d, g);
   return updateEmb(sid, (e) => void (e.slides[g.id] = entry));
 };
+
+/** eyes.measure in the jobs worker; a failure noted (so it isn't retried forever) rather than thrown. */
+async function measureEyes(d: SessionData, g: GroupData): Promise<EyesEntry> {
+  try {
+    const model = await modelFile(LANDMARKS.files[0][1], EYES_DIR);
+    return await jobs.call("eyes", { model, src: await fusedSrc(d, g, jobs), rotation: g.rotation }, -1);
+  } catch (e) {
+    console.warn("eyes:", e);
+    return { model: EYES_MODEL, ear: [], error: (e instanceof Error ? e.message : String(e)) || "error" };
+  }
+}
 
 /** A scan's grouping signature, for the merge check (null when it isn't cached). */
 const sigOf = (sid: string) => async (scan: string) => {
@@ -541,7 +575,7 @@ async function analyseSlide(sid: string, gid: string, models: string[]) {
     const model = await modelFile("vision.onnx");
     const r = await jobs.call("clipImage", { model, src: await fusedSrc(d, g, jobs), rotation: g.rotation }, -1);
     fresh.tags = tagSuggestions(await labelEmbeds(), r.emb, await learned());
-    await recordSlide(sid, g, r.emb, r.quality);
+    await recordSlide(sid, d, g, r.emb, r.quality);
   }
   if (models.includes(OCR_ID)) {
     // signs: the text in the photo, and a place it names
@@ -562,13 +596,13 @@ async function analyseSlide(sid: string, gid: string, models: string[]) {
 /** The embeddings of slides from before (or turned since) and of every scan (similar.step). A slide or
  *  scan that fails gets an entry with `error`, so it isn't tried forever. */
 async function similarStep(d: SessionData): Promise<boolean> {
-  const { g, scan } = todoEmbeddings(d, await loadEmb(d.id));
+  const { g, scan, look } = todoEmbeddings(d, await loadEmb(d.id), await eyesOn());
   const why = (e: unknown) => (e instanceof Error ? e.message : String(e)) || "error";
   if (g) {
     try {
       const model = await modelFile("vision.onnx");
       const r = await jobs.call("clipImage", { model, src: await fusedSrc(d, g, jobs), rotation: g.rotation }, -1);
-      await recordSlide(d.id, g, r.emb, r.quality);
+      await recordSlide(d.id, d, g, r.emb, r.quality);
     } catch (e) {
       console.warn("similar:", e);
       const entry = { key: slideKey(g), error: why(e) };
@@ -588,6 +622,15 @@ async function similarStep(d: SessionData): Promise<boolean> {
       entry = { error: why(e) };
     }
     await updateEmb(d.id, (x) => void (x.scans[scan] = entry));
+    return true;
+  }
+  if (look) {
+    // the eye model came later: measure the slide's eyes, kept only if it is still the same slide
+    const found = await measureEyes(d, look);
+    const key = slideKey(look);
+    await updateEmb(d.id, (x) => {
+      if (x.slides[look.id]?.key === key) x.slides[look.id].eyes = found;
+    });
     return true;
   }
   return false;
@@ -665,7 +708,10 @@ async function insightsPayload(d: SessionData, models: string[]) {
     enabled: on,
     ready,
     pending: pendingInsights(d.groups, models),
-    missing: (on && !ready ? ["tags"] : []) as SuggestionModel[],
+    missing: [
+      ...(on && !ready ? ["tags"] : []),
+      ...(eyesEnabled() && !(await eyesModelReady()) ? ["eyes"] : []),
+    ] as SuggestionModel[],
   };
   if (!ready) return { insights: status, similar: null };
   const e = await loadEmb(d.id);
@@ -674,7 +720,7 @@ async function insightsPayload(d: SessionData, models: string[]) {
   const overlap = d.groups.filter(
     (g) => !g.skip && needsAnalysis(g, models) && e.slides[g.id]?.key !== slideKey(g),
   ).length;
-  status.pending += pendingEmbeddings(d, e) - overlap;
+  status.pending += pendingEmbeddings(d, e, await eyesOn()) - overlap;
   return { insights: status, similar: all };
 }
 
@@ -2496,6 +2542,7 @@ export async function handle(method: string, url: string, body: Body = {}): Prom
       insights_enabled: cfg.insights_enabled,
       lookalike_enabled: cfg.lookalike_enabled,
       people_enabled: cfg.people_enabled,
+      eyes_enabled: cfg.eyes_enabled,
     };
     return { config, sources: await sourceList(), sessions: await listSessions(), job: current } satisfies AppState;
   }
@@ -2512,6 +2559,7 @@ export async function handle(method: string, url: string, body: Body = {}): Prom
       "insights_enabled",
       "lookalike_enabled",
       "people_enabled",
+      "eyes_enabled",
     ] as const)
       if (k in body && !(k === "immich_key" && body[k] === "")) (cfg as Record<string, unknown>)[k] = body[k];
     if ("stats_target" in body) {
@@ -2755,6 +2803,8 @@ export async function handle(method: string, url: string, body: Body = {}): Prom
       learned: (await learned()).labels ?? {},
       // captions (a 276 MB model with a decoder loop) are made by the desktop app only
       captions: { enabled: false, ready: false, model_mb: 276 },
+      // look-alikes prefer the shot with open eyes (eyes.ts)
+      eyes: { enabled: eyesEnabled(), ready: await eyesModelReady(), model_mb: megabytes(eyesSource()) },
       // place suggestions from signs: the text reader + the place names
       ocr_ready: await ocrOn(),
       ocr_mb: megabytes(ocrSource()) + ((await gazetteerReady()) ? 0 : GAZETTEER_MB),
@@ -2762,15 +2812,31 @@ export async function handle(method: string, url: string, body: Body = {}): Prom
     };
   }
   if (is("POST", /^\/api\/insights\/model$/)) {
-    const want = Array.isArray(body.models) && body.models.length ? body.models.map(String) : ["tags"];
-    if (want.some((k) => k !== "tags"))
-      throw new HttpError(400, "Only the tag model runs in the browser; captions are made by the desktop app");
-    if (await modelReady()) return { ok: true, ready: true };
+    // by default the ones turned on (server.insights_model): the tag model, and the eye model with it
+    const want: string[] =
+      Array.isArray(body.models) && body.models.length
+        ? body.models.map(String)
+        : eyesEnabled()
+          ? ["tags", "eyes"]
+          : ["tags"];
+    if (want.some((k) => k !== "tags" && k !== "eyes"))
+      throw new HttpError(400, "Only the tag and eye models run in the browser; captions are made by the desktop app");
+    const tags = want.includes("tags") && !(await modelReady());
+    const eyes = want.includes("eyes") && !(await eyesModelReady());
+    if (!tags && !eyes) return { ok: true, ready: true };
     startJob("model", null, async (job) => {
       const l = lib;
-      await fetchFiles(l, job, clipSource(), CLIP_DIR, "tag model");
-      clipReady = null;
-      job.message = "Tag model ready: slides are analysed in the background";
+      // the small eye model first: the job ends saying what the tag model's arrival means
+      if (eyes) {
+        await fetchFiles(l, job, eyesSource(), EYES_DIR, "eye model");
+        eyesReady = null;
+        job.message = "Eye model ready: look-alikes now prefer open eyes";
+      }
+      if (tags) {
+        await fetchFiles(l, job, clipSource(), CLIP_DIR, "tag model");
+        clipReady = null;
+        job.message = "Tag model ready: slides are analysed in the background";
+      }
     });
     return { ok: true, ready: false };
   }

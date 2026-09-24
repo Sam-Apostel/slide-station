@@ -53,7 +53,8 @@ Nothing leaves your computer except what you send to your own Immich.
   stops at about 16 megapixels) are read and written in strips instead: slower, but they work.
 - **Suggestions run in the page too:** tag suggestions and look-alikes (Settings → Suggest tags,
   a ~155 MB download), place names and places read from signs (the Download buttons under Place
-  and in Insights, ~4 + ~10 MB), and recognising people (Settings, 39 MB) — the same models as the
+  and in Insights, ~4 + ~10 MB), open eyes for look-alikes (~5 MB) and recognising people
+  (Settings, 39 MB) — the same models as the
   desktop app, downloaded from Hugging Face into the library (a library folder on disk shares them
   with the desktop app) and run in the background in this browser. A download that stops continues
   where it stopped. Rotation from faces, film stock and date guesses need no download.
@@ -270,7 +271,12 @@ suggestions) as suggestions you accept with one click or dismiss:
 
 - **The same shot twice** — "Slides 12, 13 and 15 look like the same shot": **Keep 13, skip the
   rest** keeps the sharpest, least blown-out one (click another thumbnail to keep that one instead;
-  X brings a skipped slide back). Which eyes are open isn't judged.
+  X brings a skipped slide back).
+- **Eyes open** — with Settings → "Prefer the shot with open eyes" (under Suggest tags; a ~5 MB face
+  model, Google's MediaPipe face mesh, downloaded once), the one to keep is the sharpest where nobody
+  blinked, and the card says "Eyes closed on slide 13". Only faces at least half as big as the
+  largest one count, so someone blinking in the background doesn't decide. A shot with closed eyes
+  still wins if the others are far blurrier (under 40 % as sharp).
 - **Grouping mistakes** — a stack whose scans show different pictures ("may be another slide" →
   Split), or two neighbouring slides that are one slide at two brightnesses (→ Merge).
 - **Scenes** — the filmstrip is divided into runs of similar slides ("Scene 2 · mountains · 4–6");
@@ -376,6 +382,8 @@ Library folder → `sessions/<tray>/originals`, `cache` (previews), `export` (fi
 Face detection uses OpenCV's YuNet model (MIT licence, from opencv_zoo), bundled in
 `slidestation/models`. Tag suggestions download OpenAI's CLIP (MIT licence) into the library's
 `models` folder when turned on; `insights.json` in the library remembers which tags you accept and dismiss.
+"Prefer the shot with open eyes" downloads Google's MediaPipe face landmarks model (Apache 2.0, as
+ONNX) into `models/face-landmarks-478`.
 `stocks.json` in the library holds the slides whose film stock you set (for the film stock guess).
 Places use GeoNames' `cities15000` (CC BY 4.0, <https://www.geonames.org>), downloaded into the
 library's `data/geonames` folder, and reading signs uses PaddleOCR's models (Apache 2.0) in `models/ppocr`.

@@ -4,7 +4,8 @@ The scene-tag model (insights.py) already embeds every slide's upright blend; th
 here, per tray, in `sessions/<id>/embeddings.json` (derived data next to session.json, never in it,
 like faces.json):
 
-    {"slides": {gid: {"key", "emb", "q": {"sharp", "clipped"}}},   the upright blend (+ its quality)
+    {"slides": {gid: {"key", "emb", "q": {"sharp", "clipped"},     the upright blend (+ its quality,
+                      "eyes": {"model", "ear": [...]}}},           and its faces' eyes: eyes.py)
      "scans": {scan: {"emb", "lum"}}}                               each scan unturned, exposure-normalised
 
 `emb` is a unit vector as base64 float16. A slide's `key` is its active scans + rotation: turned or
@@ -14,7 +15,8 @@ From those, suggestions (all tray-level, none applied silently; accepted / dismi
 `POST …/insights/decide` like the tags):
 
 - **duplicates**: slides a few places apart whose blends are nearly the same picture (the same shot
-  taken twice, not a bracket): "keep the best, skip the rest", best = sharpest and least clipped.
+  taken twice, not a bracket): "keep the best, skip the rest", best = sharpest and least clipped,
+  and - with the eye model on (eyes.py) - the one where nobody blinked.
 - **split**: a bracket the structural signature merged whose scans CLIP says are different pictures.
 - **merge**: neighbouring slides the signature kept apart whose scans CLIP says are one frame at
   two exposures.
@@ -34,6 +36,7 @@ from pathlib import Path
 
 import numpy as np
 
+from . import eyes
 from . import imaging as im
 from .store import Session, _atomic_write, active_scans, library, parse_date, slide_dates
 
@@ -58,6 +61,10 @@ MERGE_STOPS = 0.3  # ... at exposures at least this far apart (log2 of mean brig
 MERGE_STRUCT = 0.6  # ... and structurally close (imaging.similarity of the signatures)
 SCENE = 0.80  # a slide this unlike its scene's last few slides (and so is the next): a new scene
 SCENE_SPAN = 4  # the scene's "last few"
+# "keep the best" of duplicates with faces: quality (as a share of the cluster's best) x
+# (1 - EYES_WEIGHT + EYES_WEIGHT x how open the eyes are). Eyes closed keep 40 %: a blink loses unless
+# the open-eyed shot is under 40 % as sharp (best-of-bracket already drops a scan below 60 %).
+EYES_WEIGHT = 0.6
 
 _lock = threading.RLock()
 
@@ -104,10 +111,28 @@ def slide_key(g: dict) -> str:
 
 
 def record_slide(sid: str, g: dict, emb: np.ndarray, rgb: np.ndarray) -> None:
-    """Keep a slide's embedding (of its upright blend `rgb`) and the blend's sharpness / clipping."""
-    q = im.scan_quality(rgb)
-    key, gid = slide_key(g), g["id"]
-    update(sid, lambda d: d["slides"].__setitem__(gid, {"key": key, "emb": _pack(emb), "q": q}))
+    """Keep a slide's embedding (of its upright blend `rgb`) and the blend's sharpness / clipping,
+    and how open its faces' eyes are when the eye model is on."""
+    entry = {"key": slide_key(g), "emb": _pack(emb), "q": im.scan_quality(rgb)}
+    if eyes.on():
+        entry["eyes"] = measure_eyes(rgb)
+    gid = g["id"]
+    update(sid, lambda d: d["slides"].__setitem__(gid, entry))
+
+
+def measure_eyes(rgb: np.ndarray) -> dict:
+    """eyes.measure, a failure noted (so it isn't retried forever) rather than raised."""
+    try:
+        return eyes.measure(rgb)
+    except Exception as ex:
+        print("eyes:", ex)
+        return {"model": eyes.MODEL_ID, "ear": [], "error": str(ex) or "error"}
+
+
+def _eyes_todo(g: dict, entry: dict | None) -> bool:
+    """An embedded slide whose eyes weren't measured (the eye model came later), or by another model."""
+    return (bool(entry) and entry.get("key") == slide_key(g) and "emb" in entry
+            and (entry.get("eyes") or {}).get("model") != eyes.MODEL_ID)
 
 
 def normalise(rgb: np.ndarray) -> np.ndarray:
@@ -126,34 +151,41 @@ def embed_scan(s: Session, scan: str, b) -> dict:
     return {"emb": _pack(b.image_embed(normalise(a))), "lum": round(float(a.mean()), 4)}
 
 
-def _todo(s: Session, e: dict) -> tuple[dict | None, str | None]:
-    """The next slide whose embedding is missing or stale, else the next scan without one."""
+def _todo(s: Session, e: dict) -> tuple[dict | None, str | None, dict | None]:
+    """The next slide whose embedding is missing or stale, else the next scan without one, else
+    (the eye model on) the next slide whose eyes weren't measured."""
     groups = [g for g in s.data["groups"] if not g.get("skip")]
     for g in groups:
         if e["slides"].get(g["id"], {}).get("key") != slide_key(g):
-            return g, None
+            return g, None, None
     for g in groups:
         for x in active_scans(g):
             if x not in e["scans"]:
-                return None, x
-    return None, None
+                return None, x, None
+    if eyes.on():
+        for g in groups:
+            if _eyes_todo(g, e["slides"].get(g["id"])):
+                return None, None, g
+    return None, None, None
 
 
 def pending(s: Session) -> int:
     e = load(s.id)
     groups = [g for g in s.data["groups"] if not g.get("skip")]
     return (sum(e["slides"].get(g["id"], {}).get("key") != slide_key(g) for g in groups)
-            + sum(x not in e["scans"] for g in groups for x in active_scans(g)))
+            + sum(x not in e["scans"] for g in groups for x in active_scans(g))
+            + (sum(_eyes_todo(g, e["slides"].get(g["id"])) for g in groups) if eyes.on() else 0))
 
 
 def step(s: Session, b) -> bool:
-    """Embed one slide or scan of this tray that needs it (the background helper, after the tags).
-    A slide or scan that fails gets an entry with `error`, so it isn't retried forever."""
+    """Embed one slide or scan of this tray that needs it (the background helper, after the tags), or
+    measure one slide's eyes. A slide or scan that fails gets an entry with `error`, so it isn't
+    retried forever."""
     from . import workflow as wf
 
     if b is None:
         return False
-    g, scan = _todo(s, load(s.id))
+    g, scan, look = _todo(s, load(s.id))
     if g is not None:
         try:
             rgb = im.rotate_arr(wf.fused_proxy(s, g), g["rotation"])
@@ -170,6 +202,20 @@ def step(s: Session, b) -> bool:
             print("similar:", ex)
             entry = {"error": str(ex) or "error"}
         update(s.id, lambda d: d["scans"].__setitem__(scan, entry))
+        return True
+    if look is not None:
+        try:
+            found = measure_eyes(im.rotate_arr(wf.fused_proxy(s, look), look["rotation"]))
+        except Exception as ex:  # an unreadable scan
+            print("eyes:", ex)
+            found = {"model": eyes.MODEL_ID, "ear": [], "error": str(ex) or "error"}
+        key, gid = slide_key(look), look["id"]
+
+        def put(d):
+            if (d["slides"].get(gid) or {}).get("key") == key:  # still the same slide
+                d["slides"][gid]["eyes"] = found
+
+        update(s.id, put)
         return True
     return False
 
@@ -198,6 +244,15 @@ def score(q: dict | None) -> float:
     best of a bracket) times the share that isn't clipped."""
     q = q or {}
     return float(q.get("sharp", 0)) * (1 - float(q.get("clipped", 0)))
+
+
+def best_of(scores: dict[str, float], opened: dict[str, float]) -> str:
+    """The duplicate to keep: the best quality `scores`, weighed with how open the eyes are (`opened`:
+    the slides with faces measured; the others count as eyes open). Each slide's quality as a share
+    of the cluster's best, x (1 - EYES_WEIGHT + EYES_WEIGHT x open); the first wins a tie. Without
+    faces that is simply the best quality."""
+    top = max(scores.values()) or 1.0
+    return max(scores, key=lambda x: scores[x] / top * (1 - EYES_WEIGHT + EYES_WEIGHT * opened.get(x, 1.0)))
 
 
 def _vec(entry: dict | None) -> np.ndarray | None:
@@ -301,9 +356,14 @@ def suggest(s: Session, e: dict | None = None, dup_threshold: float | None = Non
             continue
         gids = [groups[i]["id"] for i in members]
         scores = {gid: round(score(e["slides"][gid].get("q")), 4) for gid in gids}
-        best = max(gids, key=lambda x: scores[x])
+        opened = {gid: v for gid in gids if (v := eyes.slide_open(e["slides"][gid].get("eyes"))) is not None}
+        best = best_of(scores, opened)
         conf = np.mean([c for (i, j), c in sims.items() if i in members])
-        duplicates.append(sug("duplicates", "dup:" + ",".join(gids), gids, conf, best=best, scores=scores))
+        extra = {}
+        if opened:  # faces: how open each slide's eyes are, and the slides where someone blinked
+            extra = {"eyes": {gid: round(v, 2) for gid, v in opened.items()},
+                     "closed": [gid for gid in gids if opened.get(gid, 1.0) < eyes.CLOSED]}
+        duplicates.append(sug("duplicates", "dup:" + ",".join(gids), gids, conf, best=best, scores=scores, **extra))
 
     return {"duplicates": duplicates, "split": split, "merge": merge, "scenes": scenes(groups, e)}
 
@@ -360,7 +420,7 @@ def payload(s: Session) -> dict:
     """What the session payload carries: the suggestions plus how many slides / scans are still to
     embed. Cached per tray by the files' modification times (the payload is polled)."""
     f = emb_file(s.id)
-    stamp = (f.stat().st_mtime_ns if f.exists() else 0, (s.dir / "session.json").stat().st_mtime_ns,
+    stamp = (f.stat().st_mtime_ns if f.exists() else 0, (s.dir / "session.json").stat().st_mtime_ns, eyes.on(),
              json.dumps((s.data.get("similar"), [g["id"] for g in s.data["groups"]])))
     hit = _cache.get(s.id)
     if hit and hit[0] == stamp:

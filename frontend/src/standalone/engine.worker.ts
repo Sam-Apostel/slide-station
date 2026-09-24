@@ -11,6 +11,7 @@ import { cropped, fitting, resized, rgb, rotated, type RGB } from "./pixels";
 import { assembleStrips, encodeJpegJS, stripRows, STRIP_AREA } from "./strips";
 import { detect, detectorFrame, faceVotes, freeInputSize, type Run } from "./yunet";
 import * as people from "./people";
+import * as eyes from "./eyes";
 import { preprocess, toBytes, unit } from "./clip";
 import * as ocr from "./ocr";
 import { levels, normalise } from "./similar";
@@ -470,6 +471,42 @@ const ops = {
       });
     }
     return out;
+  },
+
+  /** How open the eyes are on a slide's blend turned upright (eyes.measure): YuNet as for people, the
+   *  faces that count cut out to 256 px, the face mesh, each face's eye aspect ratio. */
+  async eyes({ model, src, rotation }: { model: ModelRef; src: Src; rotation: number }) {
+    const run = await faceDetector();
+    if (!run) throw new Error("Face detection is unavailable in this browser");
+    const a = rotated(await load(src), rotation);
+    const frame = detectorFrame(a);
+    const [sx, sy] = [Math.fround(a.width / frame.width), Math.fround(a.height / frame.height)]; // numpy: float32
+    const found = (await detect(frame, 0, run)).map((f) => ({
+      // the detector's row in the picture's own pixels, float32 like the numpy array it is in Python
+      row: [...f.box, ...f.landmarks.slice(0, 4)].map((v, i) => Math.fround(v * (i % 2 ? sy : sx))),
+      w: Math.fround(f.box[2] * sx),
+      score: f.score,
+    }));
+    const faces = eyes.prominent(found, a.width);
+    const ear: number[] = [];
+    let img: { width: number; height: number; data: Uint8Array } | null = null;
+    for (const f of faces) {
+      if (!img) {
+        const data = new Uint8Array(a.data.length);
+        for (let i = 0; i < data.length; i++)
+          data[i] = Math.trunc(Math.fround(Math.min(1, Math.max(0, a.data[i])) * 255));
+        img = { width: a.width, height: a.height, data };
+      }
+      const crop = people.warpAffine(img, eyes.cropMatrix(f.row), eyes.SIZE);
+      const [ort, s] = [await onnx(), await session(model)]; // loaded once there is a face
+      const out = await s.run({
+        [s.inputNames[0]]: new ort.Tensor("float32", eyes.landmarkInput(crop), [1, eyes.SIZE, eyes.SIZE, 3]),
+      });
+      const [pts, presence] = [out[s.outputNames[0]].data as Float32Array, out[s.outputNames[1]].data as Float32Array];
+      if (eyes.sigmoid(presence[0]) < eyes.PRESENCE) continue;
+      ear.push(eyes.round3(eyes.faceEar(pts)));
+    }
+    return { model: eyes.MODEL_ID, ear };
   },
 
   /** A face cut from the picture for the People dialog (people.face_crop): 128 px JPEG. */

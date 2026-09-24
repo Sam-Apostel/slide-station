@@ -69,6 +69,17 @@ detector and PP-OCRv5 Latin-script recogniser (Apache 2.0, <https://github.com/P
 as ONNX files converted by monkt (<https://huggingface.co/monkt/paddleocr-onnx>, a pinned revision,
 Apache 2.0) into the library's `models/ppocr/` folder. Nothing of it is committed or bundled.
 
+## MediaPipe face landmarks (eyes open) — downloaded, not in the repo
+
+When "Prefer the shot with open eyes" is turned on, the app downloads the face landmarks model of
+Google's MediaPipe Face Landmarker (the 478-point face mesh; Apache 2.0, © Google LLC,
+<https://ai.google.dev/edge/mediapipe/solutions/vision/face_landmarker>) as an ONNX file converted
+from the TFLite original with the weights unchanged by senty-au
+(<https://huggingface.co/senty-au/face_landmarks_detector-ONNX>, Apache 2.0, a pinned revision; its
+model card names the source bundle and its checksums) into the library's `models/face-landmarks-478/`
+folder. Nothing of it is committed or bundled. (Ready-made open / closed eye classifiers were not
+used: the usual ones on Hugging Face are licensed for non-commercial use only, CC BY-NC.)
+
 ## Python and JavaScript dependencies
 
 See `pyproject.toml` and `frontend/package.json`; each keeps its own licence.

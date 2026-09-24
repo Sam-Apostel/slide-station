@@ -140,7 +140,8 @@ async () => {
       if (s.kind !== "directory") continue;
       try {
         const e = JSON.parse(await (await (await s.getFileHandle("embeddings.json")).getFile()).text());
-        trays[id] = { slides: Object.keys(e.slides).length, scans: Object.keys(e.scans).length };
+        trays[id] = { slides: Object.keys(e.slides).length, scans: Object.keys(e.scans).length,
+                      eyes: Object.values(e.slides).filter((x) => x.eyes?.model === "face-landmarks-478").length };
       } catch {}
     }
   } catch {}
@@ -248,8 +249,13 @@ def main() -> None:
     (site / "sface").mkdir()
     sface = (ROOT / "tests" / "fake_clip" / "vision.onnx").read_bytes()
     (site / "sface" / "face_recognition_sface_2021dec.onnx").write_bytes(sface)
+    # the eye model (a face mesh): any ONNX file stands in as well (no faces, it is never run)
+    (site / "eyes").mkdir()
+    (site / "eyes" / "model.onnx").write_bytes(sface)
     port = serve(site)
     models = {"clip-vit-b32": {"repo": f"http://127.0.0.1:{port}/clip/", "files": clip_files},
+              "face-landmarks-478": {"repo": f"http://127.0.0.1:{port}/eyes/", "files": [
+                  ["model.onnx", "model.onnx", len(sface), "sha256:" + hashlib.sha256(sface).hexdigest()]]},
               "sface": {"repo": f"http://127.0.0.1:{port}/sface/", "files": [
                   ["face_recognition_sface_2021dec.onnx", "face_recognition_sface_2021dec.onnx", len(sface),
                    "sha256:" + hashlib.sha256(sface).hexdigest()]]},
@@ -517,6 +523,7 @@ def main() -> None:
             s = pg.get_by_role("dialog")
             s.get_by_label(re.compile(r"^Suggest tags")).check()
             s.get_by_label(re.compile(r"^After uploading, look for photos in Immich")).check()
+            s.get_by_label(re.compile(r"^Prefer the shot with open eyes")).check()
             s.get_by_role("button", name="Save").click()
             expect(pg.get_by_role("dialog")).to_have_count(0)
             expect(pg.get_by_text("Tag model ready").first).to_be_visible(timeout=600_000)
@@ -530,7 +537,8 @@ def main() -> None:
             done = None
             while time.time() - t0 < 600:  # every slide and scan embedded for the look-alikes
                 done = pg.evaluate(ANALYSED)
-                if any(t["slides"] >= SLIDES - 1 and t["scans"] >= len(names) - 2 for t in done["trays"].values()):
+                if any(t["slides"] >= SLIDES - 1 and t["scans"] >= len(names) - 2 and t["eyes"] >= t["slides"]
+                       for t in done["trays"].values()):
                     break
                 pg.wait_for_timeout(1000)
             assert any(n.startswith("labels-") and n.endswith(".npy") for n in done["models"]), done
