@@ -10,8 +10,10 @@ import {
   useImageSrc,
   type Group,
   type GroupStatus,
+  type Scene,
   type SessionPayload,
 } from "@/lib/api";
+import { Tip } from "@/components/tip";
 import { cn } from "@/lib/utils";
 
 export type Filter = "all" | "todo" | "multi";
@@ -87,6 +89,7 @@ export function Filmstrip({
   onTag,
   onSelect,
   slideMenu,
+  onScene,
 }: {
   session: SessionPayload;
   sessionId: string;
@@ -99,8 +102,13 @@ export function Filmstrip({
   onSelect: (i: number) => void;
   /** Wraps a tile in the slide's right-click menu. */
   slideMenu: (index: number, el: React.ReactElement) => React.ReactElement;
+  /** "Apply to this scene…" on a scene's separator (scene number n, 1-based). */
+  onScene: (scene: Scene, n: number) => void;
 }) {
   const sm = session.summary;
+  // scenes of the tray (desktop app, look-alikes): a separator before the first shown slide of each
+  const scenes = session.similar?.scenes ?? [];
+  const sceneOf = (i: number) => scenes.findIndex((sc) => sc.start <= i && i <= sc.end);
   const tags = trayTags(session.groups);
   const tagOn = tags.some(([t]) => t === tag) ? tag : "";
   const groups = session.groups.filter((g) => matches(g, filter) && (!tagOn || tagsOf(g).has(tagOn)));
@@ -163,10 +171,12 @@ export function Filmstrip({
         </div>
       )}
       <div className="grid min-h-0 flex-1 auto-rows-min grid-cols-[repeat(auto-fill,minmax(104px,1fr))] gap-3 overflow-y-auto p-3 scrollbar-thin">
-        {groups.map((g) => {
+        {groups.map((g, k) => {
           const isSel = g.index === sel;
           const autoRot = g.rot_reason && g.rot_reason !== "manual" && g.rotation;
-          return slideMenu(
+          const scene = sceneOf(g.index);
+          const newScene = scene >= 0 && (k === 0 || sceneOf(groups[k - 1].index) !== scene);
+          const tile = slideMenu(
             g.index,
             <button
               key={g.id}
@@ -224,6 +234,28 @@ export function Filmstrip({
                 ) : null}
               </span>
             </button>,
+          );
+          if (!newScene) return tile;
+          const sc = scenes[scene];
+          return (
+            <React.Fragment key={g.id}>
+              <div className="ss-scene col-span-full" role="separator" aria-label={`Scene ${scene + 1}`}>
+                <span className="min-w-0 flex-1 truncate">
+                  Scene {scene + 1}
+                  {sc.label && <b> · {sc.label}</b>}
+                  <span className="text-(--ss-dim)">
+                    {" "}
+                    · {sc.start + 1}–{sc.end + 1}
+                  </span>
+                </span>
+                <Tip label="Give every slide of this scene a tag, date or caption">
+                  <button type="button" onClick={() => onScene(sc, scene + 1)}>
+                    Apply to scene…
+                  </button>
+                </Tip>
+              </div>
+              {tile}
+            </React.Fragment>
           );
         })}
         {!groups.length && (

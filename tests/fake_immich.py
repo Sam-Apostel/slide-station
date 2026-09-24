@@ -9,6 +9,8 @@ trash flag and the description / date Immich would read from the EXIF (`PUT /ass
 them), albums (`GET /albums/{id}` lists its assets before v3; v3 only answers `POST /search/metadata`,
 paged by `PAGE`), bulk-upload-check, originals, thumbnails (not previews: the locked-slide test
 relies on the local fallback) and stacks (`STACKS = False` answers 404, like servers before them).
+Smart search by image ranks assets by a crude 8x8 thumbnail distance (Immich uses CLIP; neither
+gives scores); metadata search also filters by takenAfter / takenBefore.
 """
 import base64
 import hashlib
@@ -26,6 +28,10 @@ KEY = os.environ.get("MOCK_IMMICH_KEY", "testkey")
 STACKS = True  # False: a server from before stacks (404)
 PAGE = 1000  # search page size cap, lowered by tests to exercise paging
 TAGS = True  # False: a server without the tags API (404)
+# smart search by image (`POST /search/smart {"queryAssetId"}`): "ok"; "old" = a server that rejects
+# the field (400, whitelist validation); "off" = machine learning turned off (400)
+SMART = "ok"
+UNINDEXED: set = set()  # assets Immich hasn't embedded yet: searching by them answers 400 "has no embedding"
 app = FastAPI()
 if os.environ.get("MOCK_IMMICH_CORS"):
     # a real Immich only allows other origins in development builds; the browser version's test
@@ -168,7 +174,11 @@ async def search(req: Request, x_api_key: str = Header(None)):
     """Only what the client uses: albumIds, paged by `page` / `nextPage` before v3, `cursor` since."""
     auth(x_api_key)
     body = await req.json()
-    ids = [x for a in body.get("albumIds", []) for x in DB["albums"].get(a, {"assets": []})["assets"]]
+    if "albumIds" in body:
+        ids = [x for a in body.get("albumIds", []) for x in DB["albums"].get(a, {"assets": []})["assets"]]
+    else:  # the look-alike check's date window
+        after, before = body.get("takenAfter", "")[:19], body.get("takenBefore", "9999")[:19]
+        ids = [k for k, a in DB["assets"].items() if after <= a.get("local", "")[:19] <= before]
     ids = [x for x in ids if x in DB["assets"] and not DB["assets"][x].get("trashed")]
     size = min(int(body.get("size", 250)), PAGE)
     start = int(body["cursor"]) if body.get("cursor") else (int(body.get("page", 1)) - 1) * size
@@ -181,6 +191,38 @@ async def search(req: Request, x_api_key: str = Header(None)):
         else:
             page["nextPage"] = str(start // size + 2)
     return {"albums": {"items": [], "count": 0, "total": 0, "facets": []}, "assets": page}
+
+
+def _tiny(aid: str):
+    from PIL import Image
+    import numpy as np
+
+    im = Image.open(io.BytesIO(DB["data"][aid])).convert("L").resize((8, 8))
+    a = np.asarray(im, np.float32)
+    return (a - a.mean()) / (a.std() + 1e-6)
+
+
+@app.post("/api/search/smart")
+async def smart_search(req: Request, x_api_key: str = Header(None)):
+    auth(x_api_key)
+    body = await req.json()
+    if SMART == "off":
+        raise HTTPException(400, "Smart search is not enabled")
+    q = body.get("queryAssetId")
+    if SMART == "old" and q:
+        raise HTTPException(400, "property queryAssetId should not exist")
+    if not q:
+        raise HTTPException(400, "Either `query` or `queryAssetId` must be set")
+    _asset(q)
+    if q in UNINDEXED:
+        raise HTTPException(400, f"Asset {q} has no embedding")
+    DB["log"].append(("smart", q))
+    ref = _tiny(q)
+    ids = [k for k, a in DB["assets"].items() if not a.get("trashed") and k not in UNINDEXED]
+    ids.sort(key=lambda k: -float((_tiny(k) * ref).mean()))
+    items = [asset_dto(x) for x in ids[: int(body.get("size", 100))]]
+    return {"albums": {"items": [], "count": 0, "total": 0, "facets": []},
+            "assets": {"items": items, "count": len(items), "total": len(items), "facets": [], "nextPage": None}}
 
 
 # ---------------------------------------------------------------- assets

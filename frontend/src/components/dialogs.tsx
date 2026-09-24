@@ -86,6 +86,7 @@ export function SettingsDialog({
   const [people, setPeople] = React.useState(false);
   const [learned, setLearned] = React.useState<{ examples: number; min_examples: number } | null>(null);
   const [suggestTags, setSuggestTags] = React.useState(false);
+  const [lookalikes, setLookalikes] = React.useState(false);
   const [insights, setInsights] = React.useState<InsightsState | null>(null);
   const [test, setTest] = React.useState<{ ok?: boolean; message: string } | null>(null);
 
@@ -101,6 +102,7 @@ export function SettingsDialog({
     setPeople(!!config.people_enabled);
     api<{ examples: number; min_examples: number }>("GET", "/api/learning").then(setLearned, () => setLearned(null));
     setSuggestTags(config.insights_enabled ?? false);
+    setLookalikes(!!config.lookalike_enabled);
     if (!standalone) api<InsightsState>("GET", "/api/insights").then(setInsights, () => setInsights(null));
     setTest(null);
     // only when the dialog opens; config is a new object on every poll
@@ -126,7 +128,7 @@ export function SettingsDialog({
         keep_exports: keepExports,
         upload_originals_stacked: stackOriginals,
         learning_enabled: learning,
-        ...(standalone ? {} : { insights_enabled: suggestTags }),
+        ...(standalone ? {} : { insights_enabled: suggestTags, lookalike_enabled: lookalikes }),
         ...(standalone ? {} : { people_enabled: people }),
       });
       // turning tags on fetches the model (a job in the activity pill); while another job runs, the
@@ -276,7 +278,21 @@ export function SettingsDialog({
                     ? " The model is downloaded."
                     : insights?.downloading
                       ? " Downloading the model…"
-                      : ""}
+                      : ""}{" "}
+                  The same model points out slides that look like the same shot, brackets that may be two slides, and
+                  the scenes of a tray.
+                </FieldDescription>
+              </Field>
+            )}
+            {!standalone && suggestTags && (
+              <Field>
+                <CheckRow id="cfg-lookalike" checked={lookalikes} onChange={setLookalikes}>
+                  After uploading, look for photos in Immich that look like the new slides
+                </CheckRow>
+                <FieldDescription>
+                  Finds a slide you scanned before (say with another tool, years ago) and offers to replace it. Uses
+                  Immich's search by image where it has one (asset.read), else the photos taken around the slide's date;
+                  the thumbnails are compared on this computer (asset.view).
                 </FieldDescription>
               </Field>
             )}

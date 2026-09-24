@@ -48,6 +48,39 @@ export const STOCK_NAMES: Record<string, string> = {
 };
 /** A stock's era (filmstock.ERAS) and whether the slide's date lies inside it. */
 export type EraHint = { stock: string; from: number; to: number | null; fits: boolean | null };
+/** Tray-level look-alike suggestions (ARCHITECTURE "Look-alikes"), decided by `id`. */
+export type SimilarKind = "duplicates" | "split" | "merge";
+export type SimilarSuggestion = {
+  kind: SimilarKind;
+  id: string;
+  /** The slides it is about (ids, tray order): the same shot / the bracket to split / the two to merge. */
+  groups: string[];
+  confidence: number;
+  source: string;
+  state: "suggested";
+  /** duplicates: the one to keep (sharpest, least clipped) and each slide's score. */
+  best?: string;
+  scores?: Record<string, number>;
+  /** split: the scan the second slide starts at. */
+  scan?: string;
+  /** merge: how far apart the two exposures are, in stops. */
+  stops?: number;
+};
+/** A run of similar slides in the tray (indices, inclusive); `label` is the tag most of them have. */
+export type Scene = { start: number; end: number; label: string };
+export type Similar = {
+  duplicates: SimilarSuggestion[];
+  split: SimilarSuggestion[];
+  merge: SimilarSuggestion[];
+  scenes: Scene[];
+};
+/** Photos already in Immich that look like this slide's upload. */
+export type Lookalike = {
+  state: "checked" | "pending" | "unsupported";
+  /** Found by Immich's search by image, or among the photos taken around the slide's date. */
+  via: "smart" | "date";
+  matches: { id: string; similarity: number; name: string; date: string; state: Suggestion["state"] }[];
+};
 export type Suggestion = {
   value: string;
   /** 0..1: the model's share for this value. */
@@ -107,6 +140,8 @@ export type Group = {
   stock: string;
   /** What the models suggest, plus the film stock and date guesses; null when there's nothing. */
   insights?: SlideInsights | null;
+  /** After upload: look-alikes already in Immich (desktop app); null = not checked. */
+  lookalike?: Lookalike | null;
   /** The date it goes to Immich with: its own, or estimated from the dated slides around it. */
   date_est: {
     value: string;
@@ -145,6 +180,8 @@ export type SessionPayload = {
   stock: string;
   /** Background analysis (desktop app only): turned on, model downloaded, slides still to analyse. */
   insights?: { enabled: boolean; ready: boolean; pending: number };
+  /** Look-alike suggestions for the tray (desktop app, once the model is there). */
+  similar?: Similar | null;
 };
 
 export type InsightsState = {
@@ -190,6 +227,8 @@ export type Config = {
   /** Slides to digitise in all, for the stats' projected finish. */
   stats_target?: number;
   insights_enabled?: boolean;
+  /** After upload, look for photos in Immich that look like the new slides (desktop app). */
+  lookalike_enabled?: boolean;
   /** Faces → people (desktop app only; opt-in, downloads a face model). */
   people_enabled?: boolean;
 };

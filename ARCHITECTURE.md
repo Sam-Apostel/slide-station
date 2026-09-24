@@ -40,6 +40,7 @@ slidestation/
   stats.py                progress across the library: slides per hour, projected finish (§4)
   insights.py             suggestions per slide: scene tags from CLIP, background analysis (§5a)
   filmstock.py            film stock per slide: fade-signature guess / k-NN, eras for dating (§5b)
+  similar.py              look-alikes from the CLIP embeddings: duplicates, split / merge, scenes, Immich (§5b)
 
   people.py               faces -> people: SFace embeddings, clustering, names (§5a)
   store.py                config + session persistence (JSON on disk)
@@ -826,6 +827,136 @@ version and gives it to the whole tray. **Not done:** the Swift app keeps `stock
 trays and learns per stock, but has no stock UI, guess or era hint; the heuristic's thresholds and
 confidences are uncalibrated against real scans (the owner's trays are the first real test).
 
+## 5b. Look-alikes: near-duplicates, grouping safety net, scenes, Immich (`similar.py`)
+
+ROADMAP §1 "Smart grouping 2.0" / "Best-of-burst" and §2's CLIP-match against Immich. Built on the
+scene-tag model (§5a Insights): on with `insights_enabled` and the CLIP download, nothing extra to
+turn on except the Immich check. Everything is a suggestion, decided through the insights plumbing.
+
+**Embeddings** live in `sessions/<id>/embeddings.json` (derived data next to `session.json`, never
+in it, like `faces.json`; `similar.update` is its reload-apply-save):
+
+```
+{"slides": {gid: {"key", "emb", "q": {"sharp", "clipped"}}},   the upright blend, and its quality
+ "scans":  {scan: {"emb", "lum"}}}                              each scan unturned, exposure-normalised
+```
+
+`emb` is a unit 512-d vector as base64 float16 (~1 KB). A slide's `key` (`slide_key`: active scans +
+rotation + model) goes stale when it is turned or re-stacked; scans never change. The slide embedding
+is **the same CLIP call as the tags**: `insights._analyse` embeds the upright blend once, tags from it
+and `similar.record_slide` keeps it with `imaging.scan_quality` of the blend. Scan embeddings are for
+the grouping checks: each scan's proxy with its exposure taken out (`normalise`: luminance 1st–99th
+percentile to 0.02–0.98) so a bracket's dark and bright scans agree, plus its mean brightness `lum`.
+The background helper (`insights.step`) does the tags first, then `similar.step` catches up one
+slide (trays from before, turned slides) or one scan at a time; a failure is stored with `error` and
+not retried. `payload.insights.pending` counts both, so the UI keeps polling until they're done.
+
+**Suggestions** (`similar.suggest`, computed per payload from the embeddings, cached by the two
+files' mtimes; payload `similar: {duplicates, split, merge, scenes}`, `null` while insights are off
+or the model is missing). Each is `{kind, id, groups, confidence, source, state: "suggested"}`:
+
+- *duplicates* (the same shot taken twice): non-skipped slides at most `WINDOW` (3) places apart
+  whose blend embeddings are ≥ `DUPLICATE` (0.93) alike, joined into clusters (connected pairs).
+  `best` = the highest `sharp × (1 − clipped)` of the blend (`imaging.scan_quality`, the same measure
+  as best-of-bracket), `scores` per slide. Accept (`keep` = any member, default `best`) skips the
+  others (`_learn` forgets them; X brings one back). An eyes-open score is **not** done: YuNet gives
+  five landmarks and no eyelid state, so it would need another model — out of scope.
+- *split* (the signature merged two slides): in a stack, a scan whose best similarity to the scans
+  before it is < `SPLIT` (0.80) → split before it (`server._split`, the ✂ endpoint's code).
+- *merge* (the signature split one slide): neighbours whose touching scans (last of one, first of
+  the next) are ≥ `MERGE` (0.85) alike exposure-normalised, ≥ `MERGE_STOPS` (0.3) stops apart in
+  brightness, and structurally close (`imaging.similarity` of the signatures ≥ `MERGE_STRUCT` 0.6,
+  below `SAME_SLIDE` 0.86 or they'd be merged already) → `server._merge_next`. Same exposure = the
+  same shot twice, which is a duplicates question; a merge pair is never also offered as duplicates.
+- Decisions: `POST …/insights/decide {"kind": "duplicates"|"split"|"merge", "action", "value": id,
+  "keep"?}`; a stale id answers 404. Dismissed duplicates are kept as pairs
+  (`d["similar"]["apart"]`, so a cluster that later gains a slide only brings that slide back),
+  split / merge by id (`d["similar"]["dismissed"]`). Accept / dismiss counts go to `insights.json`
+  under the kind; the duplicate threshold rises with dismissals like a tag's (`similar.threshold`:
+  up to `DUPLICATE_MAX` 0.97).
+- *scenes* (`similar.scenes`): walking the non-skipped embedded slides in tray order, a slide starts
+  a new scene when its similarity to the mean of the current scene's last `SCENE_SPAN` (4) slides is
+  < `SCENE` (0.80) and so is the next slide's (one odd slide doesn't cut a scene). Skipped and
+  not-yet-embedded slides stay with the scene before them. `label` = the tag (own or suggested) more
+  than half the scene's slides have. `[]` when the tray is one scene.
+
+**Thresholds**, measured with the real model on synthetic pictures (8 scene kinds × 4, scratch
+script; `test_real_clip_similarities` pins the clear cases): a bracket's scans exposure-normalised
+0.85–1.0 (median 0.996 at −0.9 stops, 0.967 when over-exposed 1.8× and clipped); the same scene
+re-shot (moved, zoomed, turned ≤ 2°) 0.90–0.99; different kinds of scene 0.70–0.90 (normalised
+0.70–0.87); signatures of a clipped bracket 0.82–1.0, of different scenes median 0.12. Synthetic
+pictures are simpler than photos (two different cartoon beaches score 0.98), so `DUPLICATE` sits where
+CLIP near-duplicate work puts real photo bursts rather than at a synthetic gap, and learns from
+dismissals. Smoke run of the whole thing (real model, synthetic trays imported through
+`import_scans`): a beach and its re-shot two slides later → duplicates (0.96–0.975), a city scan and
+the same scan 1.9× over-exposed that the signature split (0.77) → merge (0.88, 0.55 stops), three
+runs of beach / snow / city → three scenes labelled beach / mountains / city; no false merges. A
+stack of two different slides that CLIP flags wasn't reproducible synthetically (two synthetic
+forests merged by the signature also look alike to CLIP, 0.96): split is tested with planted vectors.
+**Not tuned on real trays** — the constants are at the top of `similar.py`.
+
+**Look-alikes in Immich** (config `lookalike_enabled`, Settings, off by default; needs the model).
+After an upload (`finish_session` → `_lookalikes_quietly`, best effort: a failure is a note in the
+job message) and on demand (`POST /api/sessions/{sid}/lookalikes {"all"?}`, job `lookalike`: the
+slides not checked yet or `pending`), `similar.check_lookalikes` looks at each uploaded slide:
+
+1. *Candidates.* The v3.2 spec's `POST /search/smart {"queryAssetId", "size"}` (nearest by Immich's
+   own CLIP embeddings, the asset itself included) — Immich returns **no distances** and always the
+   nearest N, so every candidate is verified here. `/duplicates` wasn't used: Immich's own duplicate
+   detection only groups near-identical files (default max distance 0.01) and needs
+   `duplicate.read`. A 400 mentioning "embedding" means Immich hasn't indexed the new upload yet
+   (its machine learning runs after upload): the slide is `pending` and the next check retries. Any
+   other 400 / 404 (an older server rejecting `queryAssetId`, "Smart search is not enabled") falls
+   back to the photos **taken in the slide's date window** (`POST /search/metadata {takenAfter,
+   takenBefore, type: IMAGE, size: 200}`; its day / month / year ± a day, from `slide_dates`); a slide
+   with no date at all is `unsupported`. The classification goes by the message text, recalled from
+   Immich's server code (`Asset … has no embedding`) and not checked against a running Immich.
+2. *Verification.* Candidates that are this tray's own assets (uploads, stacked scans, pulled-in
+   sources), trashed or not images are dropped. The rest: Immich's thumbnail of the candidate and of
+   the new upload, each `levels`-stretched per channel (1st–99th percentile: a crude restore, because
+   an old faded scan and today's restored slide differ most in colour — synthetic beach: 0.83 as
+   they are, 0.98 levelled, other slides 0.66–0.76), through the local CLIP; ≥ `LOOKALIKE` (0.92) is a
+   match. Up to 3 per slide, best first.
+3. `g["immich"]["lookalike"] = {"asset", "state": checked|pending|unsupported, "via": smart|date,
+   "matches": [{"id", "similarity", "name", "date", "state"}]}` (payload: `lookalike`, `null` when not
+   checked or the slide was uploaded again since). Decisions survive a re-check of the same asset.
+4. `POST …/insights/decide {"kind": "lookalike", "action", "value": asset id, "groups": [gid]}`.
+   Accept = **replace**: the new upload joins the old photo's albums and takes its favourite
+   (`workflow._carry_over`), the old one goes to Immich's trash. Dismiss = keep both.
+
+Permissions: `asset.read` (search), `asset.view` (thumbnails), plus the round trip's for replacing.
+Limits: at most 8 smart-search candidates per slide (the Immich index may rank a look-alike lower),
+the date fallback only sees one page of 200 photos and depends on the slide's date being right,
+thumbnails are ~250 px, and Immich's smart search needs its machine learning enabled.
+
+**UI** (`components/similar.tsx`). In the Insights section, under the tag suggestions, cards for the
+slide's look-alike suggestions: "Slides 12, 13 and 15 look like the same shot" with thumbnails
+(click one to keep it instead; the best is preselected) and "Keep 13 (sharpest), skip 12 and 15" /
+"Not the same"; "…from scan 2 on it may be another slide" → Split; "Slides 4 and 5 look like one
+slide at two exposures" → Merge; "Looks like a photo already in Immich" (Immich's thumbnail via
+`/api/immich/assets/{id}/thumb.jpg`, name, date) → "Replace it" / "Keep both", and "Check" while
+Immich hasn't indexed the upload. The **Review suggestions** dialog lists all of them above the tag
+piles. The filmstrip draws a **scene separator** ("Scene 2 · mountains · 4–6", before the first shown
+slide of each scene, also when filtered) whose "Apply to scene…" opens `PropagateDialog` in `pick`
+mode (tag / date / caption + value, from / to prefilled) → `POST …/insights/propagate`. Place isn't
+offered: slides have no place field to propagate yet.
+
+**Not ported.** The browser version doesn't embed anything (no models in the page yet), its payload
+has no `similar` / `lookalike`, so the cards, separators and setting don't show. The Swift app has
+none of it (its `Slide` Codable drops `similar` / the `lookalike` record; `embeddings.json` is left
+alone).
+
+**Tests** (`tests/test_similar.py`): planted synthetic unit vectors at exact cosines — duplicates
+with best / keep / dismiss-as-pairs / window / skip / threshold learning, staleness after turning,
+split and merge (incl. the exposure and structure gates, and merge pairs not doubling as
+duplicates), scenes (outlier, skipped slide, label, one-scene tray) and propagating over one; the
+background helper with a fake model (8×8 grey thumbnails as vectors: one embedding per slide serves
+tags and look-alikes, bracket scans agree after normalising); look-alikes against the fake Immich
+(smart search ranked by a crude thumbnail distance, `SMART = "old" | "off"`, `UNINDEXED`): found
+and replaced (albums, favourite, trash), pending → checked by the job, dismiss kept across checks,
+the date fallback, a slide without a date, off by default. `SS_REAL_CLIP=1` runs the real model:
+bracket scans ≥ `MERGE`, beach vs snow < `SPLIT` / `DUPLICATE`.
+
 ## 6. Immich integration facts (hard-won)
 
 - Upload is `POST /api/assets`, multipart, header `x-api-key`.
@@ -872,8 +1003,8 @@ and a pulled-in slide has `g["source_asset"] = {"id"}` (its scan record `immich_
 3. *Exact duplicate:* `POST /assets/bulk-upload-check` with the export's hex SHA-1. If Immich has
    those bytes, that asset is used (restored from the trash if it's there: undoing an edit renders
    the same bytes as the trashed copy) and nothing is sent. Servers without the endpoint (404) just
-   upload. **CLIP / look-alike matching ("a scan you uploaded in 2021") is not done** — only
-   byte-identical files are recognised.
+   upload. Only byte-identical files are recognised here; look-alikes ("a scan you uploaded in
+   2021") are an optional check *after* the upload (§5b).
 4. *Stacks* (`upload_originals_stacked`, Settings, default off): the slide's scans — all of
    `g["scans"]`, brackets included, never edited — are checked with bulk-upload-check (reusing any
    Immich has, e.g. a pulled-in photo's own asset or raw scans uploaded some other way) and the

@@ -1520,3 +1520,38 @@ body {
 .ss-pile-dismiss:focus-visible {
   opacity: 1;
 }
+/* look-alikes: the slide "keep the best" keeps, the others dimmed */
+.ss-pile-slide > button.ss-keep {
+  box-shadow: 0 0 0 2px var(--ss-accent);
+  color: var(--ss-text);
+}
+.ss-pile-slide > button[aria-pressed="false"] img {
+  opacity: 0.55;
+}
+/* a scene of the tray: a label across the filmstrip before its first slide */
+.ss-scene {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 2px;
+  padding: 2px 2px 3px;
+  border-bottom: 1px solid var(--ss-line-soft);
+  color: var(--ss-muted);
+  font-size: 11px;
+}
+.ss-scene:first-child {
+  margin-top: 0;
+}
+.ss-scene b {
+  color: var(--ss-text);
+  font-weight: 600;
+}
+.ss-scene button {
+  padding: 1px 6px;
+  border-radius: 4px;
+  color: var(--ss-muted);
+}
+.ss-scene button:hover {
+  background: var(--ss-line);
+  color: var(--ss-text);
+}

@@ -14,6 +14,7 @@ import {
   type Preset,
   type Pulled,
   type SessionPayload,
+  type SimilarKind,
   type Source,
 } from "@/lib/api";
 
@@ -547,6 +548,65 @@ export function useSlideStation() {
     }
   };
 
+  /**
+   * A look-alike suggestion of the tray (by id). Accepting: duplicates keep `keep` (default the best)
+   * and skip the rest, split cuts the stack, merge joins the two slides.
+   */
+  const decideSimilar = async (kind: SimilarKind, action: "accept" | "dismiss", id: string, keep?: string) => {
+    const { sessionId: sid } = ref.current;
+    try {
+      const p = await api<SessionPayload>("POST", `/api/sessions/${sid}/insights/decide`, {
+        kind,
+        action,
+        value: id,
+        keep,
+      });
+      applyPayload(p);
+      if (action === "accept")
+        toast(
+          kind === "duplicates"
+            ? "Kept the best, skipped the rest (X brings one back)"
+            : kind === "split"
+              ? "Split"
+              : "Merged",
+        );
+      return true;
+    } catch (e) {
+      fail(e);
+      return false;
+    }
+  };
+
+  /** A photo in Immich that looks like this slide's upload: replace it (accept) or keep both (dismiss). */
+  const decideLookalike = async (action: "accept" | "dismiss", assetId: string) => {
+    const { sessionId: sid } = ref.current;
+    const g = ref.current.session?.groups[ref.current.sel];
+    if (!g) return;
+    try {
+      applyPayload(
+        await api<SessionPayload>("POST", `/api/sessions/${sid}/insights/decide`, {
+          kind: "lookalike",
+          action,
+          value: assetId,
+          groups: [g.id],
+        }),
+      );
+      if (action === "accept") toast("Replaced in Immich: the old photo is in Immich's trash, its albums carried over");
+    } catch (e) {
+      fail(e);
+    }
+  };
+
+  /** Look for photos in Immich like this tray's uploaded slides (a job); `all`: check every one again. */
+  const checkLookalikes = async (all = false) => {
+    try {
+      await api("POST", `/api/sessions/${ref.current.sessionId}/lookalikes`, { all });
+      refreshState();
+    } catch (e) {
+      fail(e);
+    }
+  };
+
   /** Give slides fromIndex..toIndex (0-based, either order) a tag, caption, date or film stock confirmed on one of them. */
   const propagate = async (
     kind: "tags" | "caption" | "date" | "stock",
@@ -554,6 +614,7 @@ export function useSlideStation() {
     fromIndex: number,
     toIndex: number,
   ) => {
+
     const { sessionId: sid, session: s } = ref.current;
     const a = s?.groups[fromIndex];
     const b = s?.groups[toIndex];
@@ -776,6 +837,9 @@ export function useSlideStation() {
     deletePreset,
     applyLook,
     decide,
+    decideSimilar,
+    decideLookalike,
+    checkLookalikes,
     propagate,
     setTags,
     analyseTray,

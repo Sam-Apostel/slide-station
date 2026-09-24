@@ -383,6 +383,9 @@ function SlideStationApp() {
                     onTag={setTag}
                     onSelect={app.select}
                     slideMenu={slideMenu}
+                    onScene={(sc, n) =>
+                      setOffer({ kind: "tags", value: "", from: sc.start, to: sc.end, pick: true, label: `scene ${n}` })
+                    }
                   />
                 </ResizablePanel>
                 <ResizableHandle aria-label="Resize filmstrip" />

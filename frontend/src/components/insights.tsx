@@ -31,6 +31,7 @@ import {
   type Suggestion,
 } from "@/lib/api";
 import type { SlideStation } from "@/hooks/use-slide-station";
+import { SimilarPanel, SimilarReview, openLookalikes, similarNote, similarSuggestions } from "@/components/similar";
 
 const pct = (c: number) => `${Math.round(c * 100)}%`;
 
@@ -60,14 +61,16 @@ export function insightsNote(g: Group, session: SessionPayload) {
   if (!st.ready) return "model not downloaded";
   if (g.skip) return "skipped";
   if (!g.insights || g.insights.stale) return "analysing…";
-  const open = openSuggestions(g, true);
-  return open.length ? open.map(([, e]) => e.value).join(" · ") : "nothing new";
+  const open = openSuggestions(g, true).map(([, e]) => e.value);
+  const alike = similarNote(g, session);
+  return [...open, ...(alike ? [alike] : [])].join(" · ") || "nothing new";
 }
 
 /** This slide's suggestions, with accept / dismiss, and the way to the tray's review. */
 export function InsightsPanel({
   app,
   session,
+  sessionId,
   downloading,
   onAccepted,
   onReview,
@@ -75,6 +78,7 @@ export function InsightsPanel({
 }: {
   app: SlideStation;
   session: SessionPayload;
+  sessionId: string;
   /** The model download job is running. */
   downloading: boolean;
   /** A suggestion was accepted on slide `index`: offer it to the neighbours (`groups`: the tray after). */
@@ -158,6 +162,7 @@ export function InsightsPanel({
       ) : (
         <p className={note}>No open suggestions for this slide{decided ? ` (${decided} decided)` : ""}.</p>
       )}
+      <SimilarPanel app={app} session={session} sessionId={sessionId} />
       <div className="flex items-center gap-1.5">
         <ProButton onClick={onReview}>
           <ListChecks /> Review tray…
@@ -392,20 +397,26 @@ export function ReviewDialog({
   sessionId: string;
 }) {
   const piles = suggestionPiles(session.groups);
+  const alike = similarSuggestions(session).length + session.groups.filter((g) => openLookalikes(g).length).length;
   const pending = session.insights?.pending ?? 0;
+  const go = (index: number) => {
+    app.select(index);
+    onOpenChange(false);
+  };
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-[640px]">
         <DialogHeader>
           <DialogTitle>Review suggestions</DialogTitle>
           <DialogDescription>
-            {piles.length
+            {piles.length || alike
               ? "Accept a suggestion for every slide it was made for, or dismiss slides that don't fit first (×)."
               : "Nothing left to review in this tray."}
-            {pending ? ` ${plural(pending, "slide")} still being analysed.` : ""}
+            {pending ? ` Still analysing (${pending} to go).` : ""}
           </DialogDescription>
         </DialogHeader>
         <div className="-mx-1 flex max-h-[60vh] flex-col gap-3 overflow-y-auto px-1 scrollbar-thin">
+          <SimilarReview app={app} session={session} sessionId={sessionId} onGo={go} />
           {piles.map((p) => (
             <section
               key={`${p.kind}:${p.value}`}
@@ -487,7 +498,15 @@ export function ReviewDialog({
 
 // ------------------------------------------------------------------ tray-level propagation
 
-export type Offer = { kind: "tags" | "caption" | "date" | "stock"; value: string; from: number; to: number };
+/** `pick`: the user chooses what to apply (a scene of the tray: "give slides 12–31 …"), `label` names the run. */
+export type Offer = {
+  kind: "tags" | "caption" | "date" | "stock";
+  value: string;
+  from: number;
+  to: number;
+  pick?: boolean;
+  label?: string;
+};
 
 const holds = (g: Group, kind: Offer["kind"], value: string) =>
   kind === "tags"
@@ -541,44 +560,74 @@ export function PropagateDialog({
 }) {
   const [from, setFrom] = React.useState("");
   const [to, setTo] = React.useState("");
+  const [kind, setKind] = React.useState<Offer["kind"]>("tags");
+  const [value, setValue] = React.useState("");
   React.useEffect(() => {
     if (!offer) return;
     setFrom(String(offer.from + 1));
     setTo(String(offer.to + 1));
+    setKind(offer.kind);
+    setValue(offer.value);
   }, [offer]);
   const a = Number(from);
   const b = Number(to);
-  const valid = Number.isInteger(a) && Number.isInteger(b) && a >= 1 && b >= 1 && a <= n && b <= n;
+  const valid = Number.isInteger(a) && Number.isInteger(b) && a >= 1 && b >= 1 && a <= n && b <= n && !!value.trim();
   const count = valid ? Math.abs(b - a) + 1 : 0;
   const what =
-    offer?.kind === "tags"
-      ? `the tag “${offer.value}”`
-      : offer?.kind === "date"
-        ? offer.value
-        : offer?.kind === "stock"
-          ? shown("stock", offer.value)
-          : "this caption";
+    kind === "tags" ? `the tag “${value}”` : kind === "date" ? value : kind === "stock" ? shown("stock", value) : "this caption";
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (offer && valid && (await onApply(offer.kind, offer.value, a - 1, b - 1))) onOpenChange(false);
+    if (offer && valid && (await onApply(kind, value.trim(), a - 1, b - 1))) onOpenChange(false);
   };
   return (
     <Dialog open={!!offer} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-[400px]">
         <form onSubmit={submit} className="grid gap-[18px]">
           <DialogHeader>
-            <DialogTitle>Apply {what} to more slides</DialogTitle>
+            <DialogTitle>
+              {offer?.pick
+                ? `Give ${offer.label || "these slides"} a tag, date or caption`
+                : `Apply ${what} to more slides`}
+            </DialogTitle>
             <DialogDescription>
-              {offer?.kind === "tags"
-                ? "Every slide in the range gets the tag."
-                : offer?.kind === "date"
-                  ? "Every slide in the range gets this date as its own."
-                  : offer?.kind === "stock"
-                    ? "Every slide in the range gets this film stock as its own."
-                    : `“${offer?.value}” replaces the captions of the slides in the range.`}
+              {offer?.pick
+                ? "A tag is added to every slide in the range; a date or caption replaces theirs."
+                : kind === "tags"
+                  ? "Every slide in the range gets the tag."
+                  : kind === "date"
+                    ? "Every slide in the range gets this date as its own."
+                    : kind === "stock"
+                      ? "Every slide in the range gets this film stock as its own."
+                      : `“${value}” replaces the captions of the slides in the range.`}
             </DialogDescription>
           </DialogHeader>
           <FieldGroup className="gap-4">
+            {offer?.pick && (
+              <div className="grid grid-cols-[110px_1fr] gap-3">
+                <Field>
+                  <FieldLabel htmlFor="pr-kind">What</FieldLabel>
+                  <NativeSelect id="pr-kind" value={kind} onChange={(e) => setKind(e.target.value as Offer["kind"])}>
+                    <NativeSelectOption value="tags">Tag</NativeSelectOption>
+                    <NativeSelectOption value="date">Date</NativeSelectOption>
+                    <NativeSelectOption value="caption">Caption</NativeSelectOption>
+                  </NativeSelect>
+                </Field>
+                <Field>
+                  <FieldLabel htmlFor="pr-value">
+                    {kind === "tags" ? "Tag" : kind === "date" ? "Date" : "Caption"}
+                  </FieldLabel>
+                  <Input
+                    id="pr-value"
+                    autoFocus
+                    value={value}
+                    placeholder={
+                      kind === "tags" ? "e.g. lake garda" : kind === "date" ? "e.g. 1978-08" : "e.g. Summer in Italy"
+                    }
+                    onChange={(e) => setValue(e.target.value)}
+                  />
+                </Field>
+              </div>
+            )}
             <div className="grid grid-cols-2 gap-3">
               <Field>
                 <FieldLabel htmlFor="pr-from">From slide</FieldLabel>
@@ -594,7 +643,7 @@ export function PropagateDialog({
                 <Input
                   id="pr-to"
                   inputMode="numeric"
-                  autoFocus
+                  autoFocus={!offer?.pick}
                   value={to}
                   onChange={(e) => setTo(e.target.value.replace(/\D/g, ""))}
                 />
