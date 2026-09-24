@@ -154,7 +154,7 @@ don't turn `changed`.
   Setting strength 0 is deliberate: the curves take over from auto restore, so the histogram shows
   the scan itself.
 - Editor: `components/tone-curve.tsx`. Click adds, drag moves, double-click or dragging an inner
-  point out of the box removes. Curves are not learned by `learning.py` (only the sliders are).
+  point out of the box removes. Curves are learned along with the sliders (§5).
 
 ### Adjust panel
 
@@ -173,7 +173,15 @@ sampled after restore + trim + curves (what the warmth/tint gammas act on), clam
 straightened frame) are applied in `imaging.geometry`, inside `tone_base`, so the histogram, curve
 fit and eyedropper all see the cropped picture. `preview.jpg?uncropped=1` renders everything but
 the crop, for the crop tool (`components/crop.tsx`, K / Enter / Esc) to draw its frame over.
-Framing is per slide: Copy previous, Apply to rest and tray defaults never carry it over.
+Framing is per slide: Copy previous, Apply to rest, tray defaults and learning never carry it over.
+
+The pure geometry is `moveRect` / `resizeRect` in `crop.tsx`. With a locked aspect ratio a handle
+drag sizes from whichever axis the pointer moved further along, keeps the opposite corner / edge
+put, and at the photo's border stops growing instead of freezing: a side handle's centred axis
+slides along the border to stay inside. Keys while the tool is open (handled in `stage.tsx`; the
+app's keyboard map ignores keys while `.ss-crop` exists): arrows move the frame 0.5 % (⇧: 5 %),
+⌥ / Alt + arrows resize it from the bottom-right corner (ratio and bounds respected), Enter / Esc.
+A focused straighten slider keeps its own arrow keys.
 
 ### Tactile details
 
@@ -201,6 +209,13 @@ activity pill fills up as a job runs (`.ss-well-fill`). All in `theme.css`.
   The caption goes into EXIF ImageDescription (Immich's description). `meta_key` of date + caption
   is stored at upload; a change makes the slide `changed` (use `store.statuses(d)`, which knows the
   neighbours, rather than `group_status(g)` wherever that matters).
+- **Date a range** ("12–31: Aug 1978"): `POST /api/sessions/{sid}/dates` with
+  `{"from": gid, "to": gid, "date": "1978-08"}` sets the date of every slide from..to in tray order
+  (either order, both included), validated like `PATCH …/groups/{gid}` (400 on junk, `""` clears),
+  skipping locked slides; answers the session payload plus `"dated": n`. UI: "Date a range…" under
+  the slide's Date field and in ⌘K (`DateRangeDialog` in `dialogs.tsx`, 1-based slide numbers,
+  opening on this slide through the one before the next slide with its own date). The Swift app
+  has the same as a popover in `MetaFields` (`AppModel.dateRange`).
 
 ### Locked slides
 
@@ -270,6 +285,26 @@ undeveloped* image (per-channel 1/50/99 percentiles, brightness, contrast, red/g
 cast in log space, stack depth) plus the settings the user accepted. New slides get settings from
 distance-weighted k-NN (k=7) over standardised features, with a distance cutoff so unlike slides
 fall back to the defaults, and a 5-example minimum.
+
+What is learned: the six sliders, trim, and the **tone curves**; never crop or straighten (framing
+is each slide's own). `learning.json` examples are `{"key", "f", "p", "trim", "c", "t"}` where `c`
+is the slide's cleaned `params.curves` (`{}` for straight); examples written before curves were
+learned have no `c` and simply don't vote on curves. Curve suggestion (`learned_curves`, mirrored in
+`Learning.swift`):
+
+- Only neighbours with a `c` take part; their k-NN weights are renormalised to sum to 1. If none has
+  one, the suggestion has no `curves` key and the slide keeps its curves.
+- Per channel (`rgb`, `r`, `g`, `b`): if neighbours holding ≥ 0.5 of that weight have a curve for it,
+  sample every neighbour's `curve_lut` (the straight line where it has none) at x = 0, 1/8 … 1 (9
+  points, linear interpolation into the 1024-entry LUT) and weight-average; drop the channel if the
+  average is within 0.005 of the diagonal everywhere; run the result through `clean_curves`.
+- The suggestion's `curves` replaces the slide's whole curve set (so `{}` straightens it).
+
+Curves are kept in absolute input levels, so a "Fit to data" curve sits at its own scan's
+percentiles. That transfers because the neighbours are picked on those same per-channel 1/50/99
+percentiles (features 0–8): they are scans faded like this one. (Re-mapping each curve relative to
+its scan's percentiles was considered, but fit curves use 0.1/99.9 % of the trimmed, cropped
+image and the curve's input depends on the learned strength, so it would add error, not remove it.)
 
 - Recorded on review/upload, updated on re-edit, forgotten on skip (`server._learn`).
 - Applied at import time; the group then carries `params_source: "learned:<n>"`. Any manual slider

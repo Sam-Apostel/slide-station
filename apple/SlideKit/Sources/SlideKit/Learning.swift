@@ -3,7 +3,8 @@ import Foundation
 /// Learns colour corrections from developed slides and suggests them for new ones — `learning.py`
 /// in Swift, reading and writing the same `learning.json` in the library. Every developed slide is
 /// one example: 14 features of the blended, undeveloped scan plus the settings it was developed
-/// with. New slides get distance-weighted k-nearest-neighbour settings.
+/// with (sliders, trim and tone curves; never the crop or straighten). New slides get
+/// distance-weighted k-nearest-neighbour settings.
 public enum Learning {
     public static let featureCount = 14
     public static let minExamples = 5
@@ -14,6 +15,43 @@ public enum Learning {
         ("strength", \.strength), ("brightness", \.brightness), ("contrast", \.contrast),
         ("warmth", \.warmth), ("tint", \.tint), ("saturation", \.saturation),
     ]
+    /// A learned curve is the neighbours' curves averaged at these inputs (0, 1/8 … 1).
+    public static let curveSamples = 9
+    /// An averaged curve closer than this to the diagonal everywhere is dropped.
+    public static let curveStraight = 0.005
+
+    /// A curve's output at the `curveSamples` inputs; a missing curve is the straight line
+    /// (Python: `learning._sample`, linear interpolation into the LUT).
+    static func sample(_ pts: [[Double]]?) -> [Double] {
+        let xs = (0..<curveSamples).map { Double($0) / Double(curveSamples - 1) }
+        guard let pts, !pts.isEmpty else { return xs }
+        let lut = Curves.lut(pts)
+        let top = Double(lut.count - 1)
+        return xs.map { x in
+            let pos = x * top, i = min(Int(pos), lut.count - 2), f = pos - Double(i)
+            return Double(lut[i]) * (1 - f) + Double(lut[i + 1]) * f
+        }
+    }
+
+    /// Weighted average of the neighbours' tone curves, channel by channel (Python:
+    /// `learning.learned_curves`). A channel is curved only if neighbours holding at least half the
+    /// weight curved it; then every neighbour's curve (straight where it had none) is averaged.
+    /// `weights` sum to 1.
+    public static func learnedCurves(_ curves: [[String: [[Double]]]], weights: [Double]) -> [String: [[Double]]] {
+        let xs = (0..<curveSamples).map { Double($0) / Double(curveSamples - 1) }
+        var out: [String: [[Double]]] = [:]
+        for ch in Curves.channels {
+            let share = zip(curves, weights).reduce(0.0) { $0 + (($1.0[ch]?.isEmpty ?? true) ? 0 : $1.1) }
+            guard share >= 0.5 else { continue }
+            var y = [Double](repeating: 0, count: curveSamples)
+            for (c, w) in zip(curves, weights) {
+                for (j, v) in sample(c[ch]).enumerated() { y[j] += w * v }
+            }
+            guard zip(y, xs).contains(where: { abs($0 - $1) >= curveStraight }) else { continue }
+            out[ch] = zip(xs, y).map { [($0 * 10_000).rounded() / 10_000, ($1 * 10_000).rounded() / 10_000] }
+        }
+        return Curves.clean(out)
+    }
 
     /// Fading, cast and contrast of a blended slide (Python: `learning.features`).
     public static func features(_ rgb: RGBImage, scans: Int = 1) -> [Double] {
@@ -45,17 +83,22 @@ public enum Learning {
         public var f: [Double]
         public var p: [String: Double]
         public var trim: Bool
+        /// Tone curves it was developed with; nil in examples from before curves were learned.
+        public var c: [String: [[Double]]]?
         public var t: Double
     }
 
     public struct Suggestion: Equatable, Sendable {
         public var values: [String: Double]
         public var trim: Bool
+        /// nil: none of the neighbours knew about curves, so the slide keeps its own.
+        public var curves: [String: [[Double]]]?
         public var neighbours: Int
         public func apply(to params: Params) -> Params {
             var p = params
             for (name, kp) in Learning.keys { if let v = values[name] { p[keyPath: kp] = v } }
             p.trim = trim
+            if let curves { p.curves = curves }
             return p
         }
     }
@@ -96,7 +139,7 @@ public enum Learning {
             lock.withLock {
                 let e = Example(key: key, f: f.map { ($0 * 100_000).rounded() / 100_000 },
                                 p: Dictionary(uniqueKeysWithValues: Learning.keys.map { ($0.0, params[keyPath: $0.1]) }),
-                                trim: params.trim, t: Date().timeIntervalSince1970)
+                                trim: params.trim, c: Curves.clean(params.curves), t: Date().timeIntervalSince1970)
                 if let i = examples.firstIndex(where: { $0.key == key }) { examples[i] = e } else { examples.append(e) }
                 save(); fit()
             }
@@ -129,7 +172,14 @@ public enum Learning {
                     values[name] = (Double(v) * 1000).rounded() / 1000
                 }
                 let trim = zip(idx, w).reduce(Float(0)) { $0 + (examples[$1.0].trim ? 1 : 0) * $1.1 } >= 0.5
-                return Suggestion(values: values, trim: trim, neighbours: idx.count)
+                // curves: only from examples that recorded them (older learning.json has no "c")
+                let withC = zip(idx, w).compactMap { i, wi in examples[i].c.map { ($0, Double(wi)) } }
+                var curves: [String: [[Double]]]?
+                if !withC.isEmpty {
+                    let total = withC.reduce(0) { $0 + $1.1 }
+                    curves = Learning.learnedCurves(withC.map { $0.0 }, weights: withC.map { $0.1 / total })
+                }
+                return Suggestion(values: values, trim: trim, curves: curves, neighbours: idx.count)
             }
         }
     }

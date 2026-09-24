@@ -2,7 +2,7 @@ import * as React from "react";
 import { Columns2, Lock, Redo2, Scissors, Undo2 } from "lucide-react";
 import { isMac } from "@/lib/desktop";
 import { Tip } from "@/components/tip";
-import { CropBar, CropOverlay, FULL, fitAspect, maxAspect, type Rect } from "@/components/crop";
+import { CropBar, CropOverlay, FULL, fitAspect, maxAspect, moveRect, resizeRect, type Rect } from "@/components/crop";
 import { ProButton } from "@/components/ui/pro-button";
 import { Spinner } from "@/components/ui/spinner";
 import { previewUrl, scanThumbUrl, type Group, type SessionPayload } from "@/lib/api";
@@ -48,6 +48,16 @@ function photoPoint(img: HTMLImageElement, clientX: number, clientY: number): [n
   const y = (clientY - r.top - (r.height - h) / 2) / h;
   return x < 0 || x > 1 || y < 0 || y > 1 ? null : [x, y];
 }
+
+/** Arrow-key steps of the crop frame, in 0..1 of the photo (Shift: the big one). */
+const NUDGE = 0.005;
+const NUDGE_BIG = 0.05;
+const ARROWS: Record<string, [number, number]> = {
+  ArrowLeft: [-1, 0],
+  ArrowRight: [1, 0],
+  ArrowUp: [0, -1],
+  ArrowDown: [0, 1],
+};
 
 export function Stage({
   session,
@@ -125,11 +135,22 @@ export function Stage({
     if (ok) onCropEnd(rect[0] <= 0.001 && rect[1] <= 0.001 && rect[2] >= 0.999 && rect[3] >= 0.999 ? null : rect);
     else onCropEnd(undefined, startAngle.current);
   };
+  // arrow keys nudge the frame; Alt / ⌥ + arrows resize it from the bottom-right corner
+  const nudge = React.useRef<(dx: number, dy: number, resize: boolean) => void>(() => {});
+  nudge.current = (dx, dy, resize) =>
+    setRect((r) => (resize ? resizeRect(r, "se", dx, dy, aspect.ratio, frame) : moveRect(r, dx, dy)));
   React.useEffect(() => {
     if (!cropping) return;
     const key = (e: KeyboardEvent) => {
-      if (e.target instanceof HTMLInputElement && e.target.type !== "range") return;
-      if (e.key === "Enter") finish.current(true);
+      if (e.target instanceof HTMLInputElement) {
+        if (e.target.type !== "range") return;
+        if (e.key.startsWith("Arrow")) return; // the focused straighten slider takes its arrows
+      }
+      const arrow = ARROWS[e.key];
+      if (arrow && !e.metaKey && !e.ctrlKey) {
+        const step = e.shiftKey ? NUDGE_BIG : NUDGE;
+        nudge.current(arrow[0] * step, arrow[1] * step, e.altKey);
+      } else if (e.key === "Enter") finish.current(true);
       else if (e.key === "Escape") finish.current(false);
       else return;
       e.preventDefault();

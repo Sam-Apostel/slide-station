@@ -1,6 +1,7 @@
 import * as React from "react";
 import {
   Aperture,
+  CalendarRange,
   Wand2,
   ArrowLeft,
   ArrowRight,
@@ -60,6 +61,7 @@ export function CommandPalette({
   app,
   handlers,
   onClean,
+  onDateRange,
   busy,
 }: {
   open: boolean;
@@ -67,6 +69,8 @@ export function CommandPalette({
   app: SlideStation;
   handlers: DesktopHandlers;
   onClean: () => void;
+  /** Opens the "date a range of slides" dialog. */
+  onDateRange: () => void;
   busy: boolean;
 }) {
   const { state, session, sessionId, sel } = app;
@@ -116,6 +120,7 @@ export function CommandPalette({
               keys: "X",
               run: app.toggleSkip,
             },
+            { id: "date-range", label: "Date a range of slides…", icon: <CalendarRange />, run: onDateRange },
             { id: "merge", label: "Merge with next", icon: <Merge />, keys: "M", hidden: sel >= count - 1, run: app.mergeNext },
           ]
         : [],

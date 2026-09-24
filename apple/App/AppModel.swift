@@ -353,6 +353,33 @@ final class AppModel {
         edit(s.id, debounce: true) { $0.date = v.isEmpty ? nil : v }
     }
 
+    /// Date slides `from`...`to` (indices, either order, both included) at once; "" clears theirs
+    /// (Python: `POST /api/sessions/{sid}/dates`). Locked slides keep their date. Returns how many
+    /// were dated, or nil when the date doesn't parse.
+    @discardableResult
+    func dateRange(from a: Int, to b: Int, date: String) -> Int? {
+        guard let trayID = tray?.id, let t = tray, !t.groups.isEmpty else { return 0 }
+        let v = date.trimmingCharacters(in: .whitespaces).replacingOccurrences(of: "/", with: "-")
+        guard v.isEmpty || SlideDates.parse(v) != nil else {
+            error = "Use a year, year-month or full date: 1978, 1978-06, 1978-06-14"
+            return nil
+        }
+        let lo = max(0, min(a, b)), hi = min(t.groups.count - 1, max(a, b))
+        guard lo <= hi else { return 0 }
+        let ids = t.groups[lo...hi].filter { $0.locked == nil }.map(\.id)
+        let value: String? = v.isEmpty ? nil : v
+        for id in ids { if let i = tray?.index(of: id) { tray!.groups[i].date = value } }
+        Task { try? await library.update(trayID) { t in for id in ids { if let j = t.index(of: id) { t.groups[j].date = value } } } }
+        notice = (value.map { "Dated \(ids.count) slides \($0)" } ?? "Cleared the date of \(ids.count) slides") + " (\(lo + 1)–\(hi + 1))"
+        return ids.count
+    }
+
+    /// Where a run dated from slide `i` naturally ends: before the next slide with its own date.
+    func rangeEnd(from i: Int) -> Int {
+        guard let t = tray else { return i }
+        return (t.groups.indices.first { $0 > i && t.groups[$0].date != nil }).map { $0 - 1 } ?? t.groups.count - 1
+    }
+
     func setCaption(_ caption: String) {
         guard let s = slide else { return }
         edit(s.id, debounce: true) { $0.caption = caption.isEmpty ? nil : caption }

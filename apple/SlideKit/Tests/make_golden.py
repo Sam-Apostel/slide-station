@@ -118,6 +118,16 @@ meta["learning_query"] = (np.array(meta["features"]) + 0.01).tolist()
 sugg, n = model.suggest(meta["learning_query"])
 meta["learning_suggestion"] = sugg
 meta["learning_neighbours"] = n
+# learned tone curves: most neighbours curved red, a few blue (under half the weight: dropped)
+model.examples = [dict(e) for e in model.examples]  # learning_examples above stay without curves
+for i, e in enumerate(model.examples):
+    e["c"] = {"r": [[0.08 + 0.01 * i, 0.0], [0.5, 0.55], [0.9 - 0.01 * i, 1.0]]} if i % 4 else {}
+    if i % 5 == 0:
+        e["c"]["b"] = [[0.0, 0.05], [1.0, 0.95]]
+model._fit()
+meta["learning_curve_examples"] = model.examples
+sugg, _ = model.suggest(meta["learning_query"])
+meta["learning_curve_suggestion"] = sugg["curves"]
 
 (OUT / "golden.json").write_text(json.dumps(meta, indent=1))
 print("wrote", OUT)
