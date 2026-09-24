@@ -55,7 +55,7 @@ def state():
 def set_config(body: dict = Body(...)):
     cfg = load_config()
     for k in ("library", "immich_url", "immich_key", "keep_originals", "keep_exports", "jpeg_quality",
-              "learning_enabled"):
+              "learning_enabled", "upload_originals_stacked"):
         if k in body and not (k == "immich_key" and body[k] == ""):
             cfg[k] = body[k]
     save_config(cfg)
@@ -73,6 +73,91 @@ def immich_test(body: dict = Body(default={})):
         return {"ok": True, "message": f"Connected to Immich {v} as {who}"}
     except Exception as e:
         return {"ok": False, "message": str(e)}
+
+
+# --------------------------------------------------------------------------- round trip: Immich -> trays
+
+
+def _immich() -> Immich:
+    cfg = load_config()
+    if not cfg.get("immich_url") or not cfg.get("immich_key"):
+        raise HTTPException(400, "Set your Immich URL and API key in Settings first.")
+    return Immich(cfg["immich_url"], cfg["immich_key"])
+
+
+@app.get("/api/immich/albums")
+def immich_albums():
+    """Albums to pull photos back in from, by name."""
+    c = _immich()
+    try:
+        albums = c.albums()
+    except Exception as e:  # ImmichError, or Immich unreachable
+        return _err(e, 502)
+    finally:
+        c.close()
+    return sorted(({"id": a["id"], "name": a.get("albumName", ""), "count": a.get("assetCount", 0),
+                    "thumb": a.get("albumThumbnailAssetId")} for a in albums), key=lambda a: a["name"].lower())
+
+
+@app.get("/api/immich/albums/{aid}/assets")
+def immich_album_assets(aid: str):
+    """The photos in an album (videos left out), in date order, marked when a tray has them already."""
+    c = _immich()
+    try:
+        assets = c.album_assets(aid)
+    except Exception as e:  # ImmichError, or Immich unreachable
+        return _err(e, 502)
+    finally:
+        c.close()
+    pulled = {}
+    for t in Session.list_all():
+        for sc in Session(t["id"]).data["scans"].values():
+            if sc.get("immich_asset"):
+                pulled[sc["immich_asset"]] = t["name"]
+    out = [{"id": a["id"], "name": a.get("originalFileName", ""), "date": (a.get("localDateTime") or "")[:10],
+            "favorite": bool(a.get("isFavorite")), "tray": pulled.get(a["id"], "")}
+           for a in assets if a.get("type", "IMAGE") == "IMAGE" and not a.get("isTrashed")]
+    return sorted(out, key=lambda a: (a["date"], a["name"]))
+
+
+@app.get("/api/immich/assets/{aid}/thumb.jpg")
+def immich_thumb(aid: str):
+    c = _immich()
+    try:
+        data = c.thumbnail(aid)
+    except Exception as e:  # ImmichError, or Immich unreachable
+        return _err(e, 502)
+    finally:
+        c.close()
+    return Response(data, media_type="image/jpeg", headers={"Cache-Control": "max-age=86400"})
+
+
+@app.post("/api/immich/import")
+def immich_import(body: dict = Body(...)):
+    """A new tray with these Immich photos as its scans: {"assets": [...], "name", "album", "date"}."""
+    ids = [str(x) for x in body.get("assets") or []]
+    if not ids:
+        return _err(RuntimeError("Pick at least one photo."))
+    if wf.current_job and not wf.current_job.finished:
+        return _err(RuntimeError(f"Busy with {wf.current_job.kind} - wait for it to finish."), 409)
+    name = str(body.get("name") or "").strip() or "From Immich"
+    s = Session.create(name, str(body.get("album") or "").strip() or None, str(body.get("date") or "").strip())
+    try:
+        wf.start_job("import", s.id, wf.pull_in, s.id, ids)
+    except RuntimeError as e:
+        return _err(e, 409)
+    return {"id": s.id}
+
+
+@app.post("/api/sessions/{sid}/pull")
+def pull_from_immich(sid: str):
+    """Bring captions and dates edited in Immich back into the tray."""
+    _session(sid)
+    try:
+        pulled = wf.pull_metadata(sid)
+    except Exception as e:  # ImmichError, or Immich unreachable
+        return _err(e, 502)
+    return {**_session_payload(_session(sid)), "pulled": pulled}
 
 
 # --------------------------------------------------------------------------- sessions
@@ -104,6 +189,8 @@ def _session_payload(s: Session) -> dict:
             "auto_excluded": g.get("auto_excluded", {}),  # scan -> "blurry" / "clipped"
             # original scans deleted after upload: read-only, Immich has the final version
             "locked": bool(g.get("locked")),
+            # pulled in from Immich: its upload replaces that photo
+            "from_immich": bool(g.get("source_asset")),
             "status": st[i],
             "date": g.get("date", ""),
             "caption": g.get("caption", ""),
@@ -329,6 +416,8 @@ def merge_next(sid: str, gid: str):
         g["excluded"] += nxt.get("excluded", [])
         if nxt.get("immich"):
             s.data.setdefault("orphan_assets", []).append(nxt["immich"]["asset_id"])
+            if nxt["immich"].get("stack_id"):  # its scans get stacked under the merged slide's upload
+                s.data.setdefault("orphan_stacks", []).append(nxt["immich"]["stack_id"])
         s.save()
     return _session_payload(s)
 

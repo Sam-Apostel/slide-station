@@ -2,6 +2,8 @@ import * as React from "react";
 import {
   Aperture,
   CalendarRange,
+  CloudDownload,
+  Images,
   Wand2,
   ArrowLeft,
   ArrowRight,
@@ -62,6 +64,7 @@ export function CommandPalette({
   handlers,
   onClean,
   onDateRange,
+  onFromImmich,
   busy,
 }: {
   open: boolean;
@@ -71,6 +74,8 @@ export function CommandPalette({
   onClean: () => void;
   /** Opens the "date a range of slides" dialog. */
   onDateRange: () => void;
+  /** Opens "pull photos back in from Immich". */
+  onFromImmich: () => void;
   busy: boolean;
 }) {
   const { state, session, sessionId, sel } = app;
@@ -139,6 +144,13 @@ export function CommandPalette({
         },
         { id: "folder", label: "Import a folder…", icon: <FolderInput />, keys: `${mod}⇧O`, run: () => handlers.importFolder() },
         {
+          id: "from-immich",
+          label: "Pull photos back in from Immich…",
+          icon: <Images />,
+          hidden: busy,
+          run: onFromImmich,
+        },
+        {
           id: "upload",
           label: `Upload ${plural(sm?.ready_upload ?? 0, "developed slide")} to Immich`,
           icon: <Upload />,
@@ -153,6 +165,13 @@ export function CommandPalette({
           keys: sm?.ready_upload ? undefined : `${mod}U`,
           hidden: !sm?.pending_upload || sm.pending_upload === sm.ready_upload || busy,
           run: handlers.uploadAll,
+        },
+        {
+          id: "pull-meta",
+          label: "Pull captions and dates from Immich",
+          icon: <CloudDownload />,
+          hidden: !session?.groups.some((x) => x.status === "uploaded" || x.status === "changed"),
+          run: app.pullFromImmich,
         },
         { id: "reveal", label: "Show files", icon: <FolderOpen />, hidden: !session, run: app.reveal },
         {

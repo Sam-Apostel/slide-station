@@ -70,6 +70,7 @@ export function SettingsDialog({
   const [library, setLibrary] = React.useState("");
   const [keepOriginals, setKeepOriginals] = React.useState(true);
   const [keepExports, setKeepExports] = React.useState(false);
+  const [stackOriginals, setStackOriginals] = React.useState(false);
   const [learning, setLearning] = React.useState(true);
   const [learned, setLearned] = React.useState<{ examples: number; min_examples: number } | null>(null);
   const [test, setTest] = React.useState<{ ok?: boolean; message: string } | null>(null);
@@ -81,6 +82,7 @@ export function SettingsDialog({
     setLibrary(config.library);
     setKeepOriginals(config.keep_originals);
     setKeepExports(config.keep_exports);
+    setStackOriginals(!!config.upload_originals_stacked);
     setLearning(config.learning_enabled ?? true);
     api<{ examples: number; min_examples: number }>("GET", "/api/learning").then(setLearned, () => setLearned(null));
     setTest(null);
@@ -105,6 +107,7 @@ export function SettingsDialog({
         library: library.trim(),
         keep_originals: keepOriginals,
         keep_exports: keepExports,
+        upload_originals_stacked: stackOriginals,
         learning_enabled: learning,
       });
       toast.success("Settings saved");
@@ -144,7 +147,9 @@ export function SettingsDialog({
               />
               <FieldDescription>
                 Create one in Immich → Account settings → API keys. It needs: asset.upload, asset.delete, album.read,
-                album.create, albumAsset.create — and asset.view to show locked slides as they are in Immich.
+                album.create, albumAsset.create. For the round trip also asset.read, asset.update (dates and
+                captions in place), asset.view and asset.download (pulling photos back in), albumAsset.delete and
+                stack.read / create / delete.
                 {standalone && (
                   <>
                     {" "}
@@ -189,6 +194,15 @@ export function SettingsDialog({
             <CheckRow id="cfg-keep-exp" checked={keepExports} onChange={setKeepExports}>
               Also keep the finished JPEGs locally (~6 MB per slide)
             </CheckRow>
+            <Field>
+              <CheckRow id="cfg-stack" checked={stackOriginals} onChange={setStackOriginals}>
+                Upload the untouched scans too, stacked under each slide in Immich
+              </CheckRow>
+              <FieldDescription>
+                Nothing is ever lost: Immich shows the developed photo, its scans sit in the stack behind it (~5 MB
+                per scan). Needs Immich with stacks and the stack.read / stack.create permissions.
+              </FieldDescription>
+            </Field>
             <Field>
               <CheckRow id="cfg-learn" checked={learning} onChange={setLearning}>
                 Learn from my edits and suggest settings for new slides
@@ -313,6 +327,7 @@ export function NewTrayDialog({
   preferFolder,
   onCreate,
   onChooseFolder,
+  onFromImmich,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -323,6 +338,8 @@ export function NewTrayDialog({
   onCreate: (body: { name: string; album: string; date: string }, source: string) => void;
   /** Browser version: pick a folder of scans to import (resolves to the new source). */
   onChooseFolder?: () => Promise<Source | null>;
+  /** Start a tray from photos already in Immich instead. */
+  onFromImmich?: () => void;
 }) {
   const sources = (state?.sources ?? []).filter((x) => x.count > 0);
   const [name, setName] = React.useState("");
@@ -431,6 +448,19 @@ export function NewTrayDialog({
             )}
           </FieldGroup>
           <DialogFooter>
+            {onFromImmich && (
+              <Button
+                type="button"
+                variant="ghost"
+                className="mr-auto"
+                onClick={() => {
+                  onOpenChange(false);
+                  onFromImmich();
+                }}
+              >
+                From Immich…
+              </Button>
+            )}
             <DialogClose asChild>
               <Button type="button" variant="outline">
                 Cancel

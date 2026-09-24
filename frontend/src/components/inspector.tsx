@@ -5,6 +5,7 @@ import {
   ArrowRight,
   CalendarRange,
   CheckCheck,
+  CloudDownload,
   Copy,
   Crop,
   Eraser,
@@ -234,6 +235,13 @@ export function Inspector({
                   toast("Date saved — slides already in Immich get the new date on the next upload");
               }}
             />
+            {session.groups.some((x) => x.status === "uploaded" || x.status === "changed") && (
+              <Tip label="Bring captions and dates edited in Immich back into this tray">
+                <ProButton className="self-start" onClick={app.pullFromImmich}>
+                  <CloudDownload /> Pull from Immich
+                </ProButton>
+              </Tip>
+            )}
           </div>
         </ProDisclosureGroup>
       </div>
@@ -386,6 +394,11 @@ function SlideDetails({ app, onDateRange }: { app: SlideStation; onDateRange: ()
         placeholder="Who, where, what — goes to Immich as the description"
         onCommit={(v) => app.patchGroup({ caption: v })}
       />
+      {g.from_immich && (
+        <p className="text-[11px] text-muted-foreground">
+          Pulled in from Immich: uploading it replaces that photo there (same albums, favourite kept).
+        </p>
+      )}
     </div>
   );
 }

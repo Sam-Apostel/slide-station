@@ -21,6 +21,7 @@ import base64
 import functools
 import http.server
 import io
+import json
 import os
 import re
 import socket
@@ -262,6 +263,46 @@ def main() -> None:
                 timeout=60_000,
             )
             pg.screenshot(path=str(SHOTS / "04-reloaded.png"))
+
+            # ---- round trip: a caption edited in Immich comes back
+            def immich_call(method: str, path: str, body: dict | None = None):
+                req = urllib.request.Request(
+                    immich_url + path, method=method, data=None if body is None else json.dumps(body).encode(),
+                    headers={"x-api-key": "testkey", "Content-Type": "application/json"})
+                return json.loads(urllib.request.urlopen(req).read() or "null")
+
+            db = immich_call("GET", "/debug")
+            first_id = next(iter(db["assets"]))
+            immich_call("PUT", f"/api/assets/{first_id}", {"description": "Edited in Immich"})
+            pg.keyboard.press("Control+k")
+            pg.get_by_placeholder("Type an action or a tray name…").fill("Pull captions")
+            pg.keyboard.press("Enter")
+            expect(pg.get_by_text("Pulled 1 caption from Immich")).to_be_visible(timeout=30_000)
+
+            # ---- pull the uploaded photos back in as a new tray, develop again, replace them
+            pg.keyboard.press("Control+k")
+            pg.get_by_placeholder("Type an action or a tray name…").fill("Pull photos back in")
+            pg.keyboard.press("Enter")
+            dlg = pg.get_by_role("dialog")
+            dlg.get_by_role("button", name=re.compile("^Web tray")).click()
+            expect(dlg.get_by_role("button", name=f"Import {SLIDES} photos")).to_be_enabled(timeout=30_000)
+            dlg.get_by_label("New tray").fill("Pulled back")
+            pg.wait_for_function("() => document.querySelectorAll(\"[role=dialog] img[src^='blob:']\").length >= 3")
+            pg.screenshot(path=str(SHOTS / "05-immich-album.png"))
+            dlg.get_by_role("button", name=f"Import {SLIDES} photos").click()
+            expect(pg.get_by_text(f"Pulled in {SLIDES} photos from Immich").first).to_be_visible(timeout=120_000)
+            expect(pg.get_by_text(f"{SLIDES} slides", exact=True)).to_be_visible()
+            pg.get_by_role("button", name=re.compile(r"^Upload all \d+")).click()
+            pg.get_by_role("alertdialog").get_by_role("button", name="Upload anyway").click()
+            expect(pg.get_by_text(re.compile(rf"Done - {SLIDES} slides uploaded to 'Web tray'")).first).to_be_visible(
+                timeout=300_000)
+            db = immich_call("GET", "/debug")
+            live = [k for k, a in db["assets"].items() if not a["trashed"]]
+            (album,) = [a for a in db["albums"].values() if a["name"] == "Web tray"]
+            assert len(live) == SLIDES and all(k in album["assets"] for k in live), (live, album)
+            assert db["assets"][first_id]["trashed"], "the pulled-in photo was replaced"
+            print(f"round trip: pulled {SLIDES} photos back in, uploaded, originals replaced")
+            pg.screenshot(path=str(SHOTS / "06-pulled-back.png"))
             browser.close()
     finally:
         immich.terminate()

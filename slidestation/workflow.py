@@ -1,6 +1,7 @@
 """Import from the scanner, render previews/exports, upload to Immich, clean up the card."""
 from __future__ import annotations
 
+import base64
 import hashlib
 import os
 import shutil
@@ -407,6 +408,8 @@ def render_export(sid: str, gid: str, quality: int) -> Path | None:
     exif[305] = "Slide Station"
     if g.get("caption"):
         exif[270] = g["caption"]  # ImageDescription: Immich shows it as the photo's description
+    else:
+        exif.pop(270, None)  # a photo pulled in from Immich may carry its old description
     when = _photo_datetime(s, g, index).strftime("%Y:%m:%d %H:%M:%S")
     exif[306] = when
     sub = exif.get_ifd(0x8769)
@@ -456,25 +459,123 @@ def _background_renderer():
 threading.Thread(target=_background_renderer, daemon=True).start()
 
 
+def _immich_time(t: datetime) -> str:
+    """A slide's date for `PUT /assets/{id}`: naive local time, like the EXIF the upload carries."""
+    return t.strftime("%Y-%m-%dT%H:%M:%S")
+
+
+def _pushed(s: Session, g: dict, index: int) -> dict:
+    """What Immich was told about a slide besides its pixels: the day and the caption. Pulling edits
+    back compares against this, so only what someone changed in Immich comes back."""
+    return {"date": _photo_datetime(s, g, index).strftime("%Y-%m-%d"), "caption": g.get("caption", "")}
+
+
+def _meta_only(g: dict) -> bool:
+    """Immich already has this slide's pixels: only its date or caption can have changed. A locked
+    slide's Immich copy is final, so it only ever gets its metadata updated."""
+    im = g.get("immich")
+    return bool(im) and (bool(g.get("locked")) or im.get("key") == render_key(g))
+
+
+def _carry_over(client: Immich, asset_id: str | None) -> dict:
+    """What a replacement keeps of the asset it replaces: its albums and whether it's a favourite
+    (faces are Immich's own: it finds them again on the new photo)."""
+    try:
+        a = client.asset(asset_id) if asset_id else None
+    except ImmichError as e:  # a key without asset.read: replace it as before, carrying nothing
+        print("carry over:", e)
+        a = None
+    if a is None:  # nothing replaced, or deleted in Immich meanwhile
+        return {"albums": [], "favorite": False}
+    return {"albums": client.albums_of(asset_id), "favorite": bool(a.get("isFavorite"))}
+
+
+def _originals_in_immich(client: Immich, s: Session, g: dict, when: datetime) -> tuple[dict, list[str]]:
+    """Every scan of a slide in Immich, untouched: ({scan: asset}, the assets this uploaded). Scans
+    Immich already has byte for byte are reused, not sent again - including a pulled-in photo's own
+    asset; ones in its trash come back out."""
+    scans = [x for x in g["scans"] if x in s.data["scans"]]
+    have = client.existing({x: s.data["scans"][x]["sha1"] for x in scans})
+    client.restore([h["asset_id"] for h in have.values() if h["trashed"]])
+    out, created = {}, []
+    for x in scans:
+        if x in have:
+            out[x] = have[x]["asset_id"]
+            continue
+        p = s.original_path(x)
+        if not p.exists():  # deleted after an earlier upload ("keep originals" off)
+            continue
+        asset_id, status = client.upload(str(p), when, f"{s.id}-{x}")
+        out[x] = asset_id
+        if status != "duplicate":
+            created.append(asset_id)
+    return out, created
+
+
 def finish_session(job: Job, sid: str, only_ready: bool = False) -> None:
     """Export every slide that is not skipped and upload new/changed ones to the session's Immich album.
 
-    only_ready: just the slides marked developed; the others stay behind to keep working on."""
+    only_ready: just the slides marked developed; the others stay behind to keep working on.
+    Slides whose pixels Immich already has only get their date / caption updated there."""
     cfg = load_config()
     s = Session(sid)
-    redate = s.data.get("date_key") != s.data.get("date")  # date changed: every slide needs new EXIF
+    redate = s.data.get("date_key") != s.data.get("date")  # tray date changed: every slide may have a new date
     st = dict(zip((g["id"] for g in s.data["groups"]), statuses(s.data)))
     todo = [g["id"] for g in s.data["groups"] if not g.get("skip") and (redate or st[g["id"]] != "uploaded")
             and (g.get("reviewed") or not only_ready)]
-    lost = [g["id"] for g in s.data["groups"] if g["id"] in todo and originals_missing(s, g)]
-    todo = [x for x in todo if x not in lost]  # nothing to render them from: keep what Immich has
-    job.total = len(todo) * 2
+    meta_only = [g["id"] for g in s.data["groups"] if g["id"] in todo and _meta_only(g)]
+    lost = [g["id"] for g in s.data["groups"] if g["id"] in todo and g["id"] not in meta_only
+            and originals_missing(s, g)]
+    todo = [x for x in todo if x not in lost and x not in meta_only]  # lost: nothing to render them from
+    job.total = len(todo) * 2 + len(meta_only)
     client = Immich(cfg["immich_url"], cfg["immich_key"])
+    want_originals = bool(cfg.get("upload_originals_stacked"))
+    stacks: list[bool] = []  # asked once, and only if needed
+
+    def has_stacks() -> bool:
+        if not stacks:
+            stacks.append(client.has_stacks())
+        return stacks[0]
+
     try:
         job.message = f"Connecting to Immich {client.version()}"
         album = client.find_or_create_album(s.data["album"] or s.data["name"])
         update_session(sid, lambda f: f.data.__setitem__("immich_album_id", album))
-        to_trash, uploaded = [], 0
+        to_trash, uploaded, synced, duplicates, no_update = [], 0, 0, 0, False
+
+        for n, gid in enumerate(meta_only, 1):
+            job.message = f"Updating date and caption {n} of {len(meta_only)}"
+            job.done += 1
+            s = Session(sid)
+            try:
+                g = s.group(gid)
+            except KeyError:
+                continue
+            idx = s.group_index(gid)
+            meta, asset = slide_meta(s, g, idx), g["immich"]["asset_id"]
+            if g["immich"].get("meta") == meta:
+                continue  # only the tray date moved, and not this slide's
+            try:
+                client.update_asset(asset, dateTimeOriginal=_immich_time(_photo_datetime(s, g, idx)),
+                                    description=g.get("caption", ""))
+            except ImmichError as e:
+                # a key without asset.update: upload it again with the new EXIF, as before
+                print("metadata update:", e)
+                if not g.get("locked") and not originals_missing(s, g):
+                    todo.append(gid)
+                    job.total += 2
+                    no_update = True
+                continue
+            pushed = _pushed(s, g, idx)
+
+            def commit_meta(fresh: Session, asset=asset, meta=meta, pushed=pushed):
+                fg = fresh.group(gid)
+                if (fg.get("immich") or {}).get("asset_id") == asset:
+                    fg["immich"].update(meta=meta, pushed=pushed)
+
+            update_session(sid, commit_meta)
+            synced += 1
+
         for n, gid in enumerate(todo, 1):
             job.message = f"Rendering slide {n} of {len(todo)}"
             path = None
@@ -494,18 +595,63 @@ def finish_session(job: Job, sid: str, only_ready: bool = False) -> None:
                 continue
             job.message = f"Uploading slide {n} of {len(todo)}"
             idx = s.group_index(gid)
-            asset_id, status = client.upload(str(path), _photo_datetime(s, g, idx), f"{sid}-{gid}-{g['export']['sha1'][:8]}")
+            when = _photo_datetime(s, g, idx)
+            old = g.get("immich") or {}
+            # the asset this one takes the place of: the slide's last upload, or the Immich photo it
+            # was pulled in from
+            replaces = old.get("asset_id") or (g.get("source_asset") or {}).get("id")
+            carry = _carry_over(client, replaces)
+            # exact duplicate: Immich has these very bytes already (an identical render), so use that
+            hit = client.existing({"slide": g["export"]["sha1"]}).get("slide")
+            if hit:
+                asset_id, status = hit["asset_id"], "duplicate"
+                if hit["trashed"]:
+                    client.restore([asset_id])
+                if carry["favorite"]:
+                    client.update_asset(asset_id, isFavorite=True)
+                duplicates += 1
+            else:
+                asset_id, status = client.upload(str(path), when, f"{sid}-{gid}-{g['export']['sha1'][:8]}",
+                                                 favorite=carry["favorite"])
             client.add_to_album(album, [asset_id])
-            rkey = g["export"]["key"]
+            for a in carry["albums"]:
+                if a != album:
+                    client.add_to_album(a, [asset_id])
 
-            meta = slide_meta(s, g, idx)
+            # Stacks: the untouched scans under the developed photo. A new upload replaces the whole
+            # stack (the old one is dissolved, the scans are stacked again under the new photo), so
+            # the scans Immich has stay stacked even once the setting is turned off.
+            originals = {k: v for k, v in (old.get("originals") or {}).items() if k in g["scans"]}
+            own = list(old.get("own_originals") or [])
+            stack_id = None
+            if (want_originals or originals or old.get("stack_id")) and has_stacks():
+                if old.get("stack_id"):
+                    client.delete_stack(old["stack_id"])
+                if want_originals:
+                    originals, created = _originals_in_immich(client, s, g, when)
+                    own += created
+                ids = [a for a in dict.fromkeys(originals.values()) if a != asset_id]
+                stack_id = client.create_stack([asset_id] + ids)
+            own = [a for a in dict.fromkeys(own) if a in originals.values()]
+            kept = set(originals.values()) if stack_id else set()
+            if replaces and replaces != asset_id:
+                if replaces in kept:
+                    # a pulled-in photo is itself the untouched scan: it stays, stacked under the new
+                    # one, and leaves the albums the new one took its place in
+                    for a in carry["albums"] + [album]:
+                        try:
+                            client.remove_from_album(a, [replaces])
+                        except ImmichError as e:  # albumAsset.delete missing: it just stays there too
+                            print("remove from album:", e)
+                else:
+                    to_trash.append(replaces)
+            rec = {"asset_id": asset_id, "key": g["export"]["key"], "status": status, "meta": slide_meta(s, g, idx),
+                   "pushed": _pushed(s, g, idx)}
+            if originals and stack_id:
+                rec.update(originals=originals, own_originals=own, stack_id=stack_id)
 
-            def commit(fresh: Session, asset_id=asset_id, status=status, rkey=rkey, meta=meta):
-                fg = fresh.group(gid)
-                old = (fg.get("immich") or {}).get("asset_id")
-                if old and old != asset_id:
-                    to_trash.append(old)
-                fg["immich"] = {"asset_id": asset_id, "key": rkey, "status": status, "meta": meta}
+            def commit(fresh: Session, rec=rec):
+                fresh.group(gid)["immich"] = rec
 
             update_session(sid, commit)
             if not cfg.get("keep_exports", False):
@@ -513,22 +659,40 @@ def finish_session(job: Job, sid: str, only_ready: bool = False) -> None:
             uploaded += 1
             job.done += 1
 
+        stacks_gone: list[str] = []
+
         def tidy(fresh: Session):
             # slides merged away or skipped after uploading: move their old Immich copies to the trash
             to_trash.extend(fresh.data.pop("orphan_assets", []))
+            stacks_gone.extend(fresh.data.pop("orphan_stacks", []))
+            used = {a for g in fresh.data["groups"] if not g.get("skip")
+                    for a in ((g.get("immich") or {}).get("originals") or {}).values()}
             for g in fresh.data["groups"]:
                 if g.get("skip") and g.get("immich"):
                     to_trash.append(g["immich"]["asset_id"])
+                    if g["immich"].get("stack_id"):
+                        stacks_gone.append(g["immich"]["stack_id"])
+                    # the scans this uploaded for it go too, unless another slide stacks them
+                    to_trash.extend(a for a in g["immich"].get("own_originals", []) if a not in used)
                     g["immich"] = None
             if not only_ready or all(g.get("reviewed") or g.get("skip") for g in fresh.data["groups"]):
                 fresh.data["date_key"] = fresh.data.get("date")  # every slide now carries the date
-            fresh.log(f"Uploaded {uploaded} slides to album '{fresh.data['album']}'")
+            fresh.log(f"Uploaded {uploaded} slides to album '{fresh.data['album']}'"
+                      + (f", updated {synced} in place" if synced else ""))
 
         update_session(sid, tidy)
+        for x in stacks_gone:
+            client.delete_stack(x)
         client.trash(to_trash)
         if not cfg.get("keep_originals", True):
             _drop_local_originals(Session(sid))
         job.message = f"Done - {uploaded} slides uploaded to '{s.data['album']}'" + (
+            f"; {synced} updated in place (date, caption)" if synced else "") + (
+            "; dates / captions went up as new copies: give the API key asset.update to change them in place"
+            if no_update else "") + (
+            f"; {duplicates} were in Immich already, not sent again" if duplicates else "") + (
+            "; original scans not stacked: this Immich has no stacks, or the API key lacks stack.read / "
+            "stack.create" if want_originals and uploaded and stacks and not stacks[0] else "") + (
             f"; {len(lost)} skipped: their original scans were deleted after the last upload" if lost else "")
     finally:
         client.close()
@@ -582,6 +746,153 @@ def immich_preview(s: Session, g: dict) -> np.ndarray | None:
     return im.load_rgb(str(f))
 
 
+# --------------------------------------------------------------------------- round trip: back from Immich
+
+PULLABLE = ("image/jpeg", "image/png")
+_ORIENTATION = {3: 180, 6: 90, 8: 270}  # EXIF orientation -> clockwise turn (mirrored ones are left alone)
+
+
+def _exif_time(local: str) -> str:
+    """Immich's localDateTime ("1978-08-01T12:00:00.000Z", the wall clock) as a scan's EXIF-style time."""
+    try:
+        return datetime.strptime(local[:19], "%Y-%m-%dT%H:%M:%S").strftime("%Y:%m:%d %H:%M:%S")
+    except ValueError:
+        return ""
+
+
+def pull_in(job: Job, sid: str, asset_ids: list[str]) -> None:
+    """Import photos from Immich into a tray as scans, one slide each, to develop them again.
+
+    The originals are downloaded byte for byte (checked against Immich's SHA-1), the slide starts
+    with the photo's date and description, and remembers where it came from: its upload replaces
+    that asset (see finish_session). These scans never came from a card, so they are never removable."""
+    cfg = load_config()
+    s = Session(sid)
+    have = {sc.get("immich_asset") for sc in s.data["scans"].values()}
+    client = Immich(cfg["immich_url"], cfg["immich_key"])
+    job.total = len(asset_ids)
+    job.message = f"Downloading {len(asset_ids)} photos from Immich"
+    new, records, skipped, unusable = [], {}, 0, 0
+    try:
+        for aid in asset_ids:
+            job.done += 1
+            if aid in have:
+                skipped += 1
+                continue
+            a = client.asset(aid)
+            name = (a or {}).get("originalFileName") or aid
+            mime = (a or {}).get("originalMimeType") or ("image/png" if name.lower().endswith(".png") else "image/jpeg")
+            if not a or a.get("type") != "IMAGE" or a.get("isTrashed") or mime not in PULLABLE:
+                unusable += 1  # videos, RAW / HEIC, or gone
+                continue
+            scan_id = f"{slugify(Path(name).stem)[:40]}_{aid.replace('-', '')[:6]}"
+            dest = s.originals / f"{scan_id}.jpg"
+            client.download(aid, str(dest))
+            sha = sha1_file(dest)
+            try:
+                expected = base64.b64decode(a.get("checksum") or "").hex()
+            except ValueError:
+                expected = ""
+            if len(expected) == 40 and expected != sha:
+                dest.unlink(missing_ok=True)
+                raise RuntimeError(f"The download of {name} did not verify - try again")
+            try:
+                rotation = _ORIENTATION.get(int(Image.open(dest).getexif().get(274, 1)), 0)
+            except Exception:
+                rotation = 0
+            local = a.get("localDateTime") or ""
+            records[scan_id] = {
+                "file": dest.name, "source": f"immich:{aid}", "source_root": "immich", "removable": False,
+                "size": dest.stat().st_size, "sha1": sha, "taken": _exif_time(local) or _taken(dest),
+                "source_deleted": False, "immich_asset": aid,
+            }
+            day = local[:10] if parse_date(local[:10]) else ""
+            caption = ((a.get("exifInfo") or {}).get("description") or "").strip()[:2000]
+            new.append((scan_id, aid, rotation, day, caption))
+            have.add(aid)
+        s = update_session(sid, lambda fresh: fresh.data["scans"].update(records))
+
+        job.message = "Analysing photos"
+        job.done, job.total = 0, len(new)
+        for scan_id, aid, rotation, day, caption in new:
+            make_proxies(s, scan_id)
+            g = s.new_group([scan_id], rotation, "exif" if rotation else "")
+            g.update(date=day, caption=caption, source_asset={"id": aid})
+            feats = learning.features(fused_proxy(s, g), 1)
+            suggestion, neighbours = (None, 0)
+            if cfg.get("learning_enabled", True):
+                suggestion, neighbours = learning.model().suggest(feats)
+
+            def commit(fresh: Session, g=g, feats=feats, suggestion=suggestion, neighbours=neighbours):
+                g["params"] = dict(fresh.data["defaults"])
+                g["feat"] = feats
+                if suggestion:
+                    g["params"] = Params.from_dict({**g["params"], **suggestion}).to_dict()
+                    g["params_source"] = f"learned:{neighbours}"
+                fresh.data["groups"].append(g)
+
+            update_session(sid, commit)  # slides appear in the UI one by one
+            job.done += 1
+        update_session(sid, lambda fresh: fresh.log(f"Pulled in {len(new)} photos from Immich"))
+    finally:
+        client.close()
+    job.message = f"Pulled in {len(new)} photos from Immich" + (
+        f" ({skipped} were in this tray already)" if skipped else "") + (
+        f"; left out {unusable} that aren't JPEG or PNG photos" if unusable else "")
+
+
+def pull_metadata(sid: str) -> dict:
+    """Bring edits made in Immich back: each uploaded slide's description and date, where they
+    differ from what this app last sent (so only what someone changed in Immich comes back).
+    Immich wins over an unsent local edit of the same field."""
+    cfg = load_config()
+    s = Session(sid)
+    client = Immich(cfg["immich_url"], cfg["immich_key"])
+    try:
+        found = {g["id"]: client.asset(g["immich"]["asset_id"]) for g in s.data["groups"] if g.get("immich")}
+    finally:
+        client.close()
+    out = {"checked": len(found), "captions": 0, "dates": 0, "gone": 0}
+
+    def commit(fresh: Session):
+        touched = []
+        for i, g in enumerate(fresh.data["groups"]):
+            if g["id"] not in found or not g.get("immich"):
+                continue
+            a = found[g["id"]]
+            if a is None or a.get("isTrashed"):
+                out["gone"] += 1
+                continue
+            if a.get("id") != g["immich"]["asset_id"] or not a.get("exifInfo"):
+                continue  # uploaded again meanwhile, or Immich hasn't read the file yet
+            pushed = g["immich"].get("pushed") or _pushed(fresh, g, i)
+            caption = (a["exifInfo"].get("description") or "").strip()[:2000]
+            day = (a.get("localDateTime") or "")[:10]
+            new = dict(pushed)
+            if caption != pushed.get("caption", ""):
+                g["caption"] = caption
+                new["caption"] = caption
+                out["captions"] += 1
+            if parse_date(day) and day != pushed.get("date"):
+                g["date"] = day
+                new["date"] = day
+                out["dates"] += 1
+            if new != pushed:
+                g["immich"]["pushed"] = new
+                touched.append(g)
+        # Immich has these already: record them as sent, unless the slide's date still differs from
+        # Immich's (then the next upload updates it there)
+        for g in touched:
+            i = fresh.group_index(g["id"])
+            if _photo_datetime(fresh, g, i).strftime("%Y-%m-%d") == g["immich"]["pushed"]["date"]:
+                g["immich"]["meta"] = slide_meta(fresh, g, i)
+        if touched:
+            fresh.log(f"Pulled {out['captions']} captions and {out['dates']} dates from Immich")
+
+    update_session(sid, commit)
+    return out
+
+
 # --------------------------------------------------------------------------- card cleanup
 
 
@@ -590,7 +901,7 @@ def cleanup_blockers(s: Session) -> list[str]:
     pending = [i + 1 for i, g in enumerate(s.data["groups"]) if group_status(g) not in ("uploaded", "skipped")]
     if pending:
         problems.append(f"{len(pending)} slide(s) not uploaded yet (e.g. #{pending[0]})")
-    if not any(sc.get("removable") for sc in s.data["scans"].values()):
+    if not any(sc.get("removable") for sc in s.data["scans"].values()):  # folders, photos pulled in from Immich
         problems.append("these scans were imported from a folder, not from a card")
     return problems
 
