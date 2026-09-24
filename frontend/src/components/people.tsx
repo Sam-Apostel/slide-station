@@ -1,6 +1,6 @@
 // The People dialog: faces found on the slides of every tray, grouped by likeness (people.py). Name
-// someone once; named people go to Immich as tags (People/<name>). Desktop / server app only: the
-// browser version has no face embeddings yet, so App never opens this there.
+// someone once; named people go to Immich as tags (People/<name>). In both versions (the browser
+// version runs the face model in the page).
 import * as React from "react";
 import { toast } from "sonner";
 import { X } from "lucide-react";
@@ -17,6 +17,7 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Tip } from "@/components/tip";
+import { PreviewImg } from "@/components/filmstrip";
 import { api, plural, type Job, type PeoplePayload, type Person } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
@@ -212,7 +213,7 @@ function PersonRow({
       <div className="flex flex-wrap gap-1.5">
         {faces.map((f) => (
           <div key={f.id} className="group relative">
-            <img src={f.url} alt="" loading="lazy" className="size-[52px] rounded-sm object-cover" />
+            <PreviewImg url={f.url} alt="" className="size-[52px] rounded-sm object-cover" />
             {p.faces.length > 1 && (
               <Tip label="Not this person">
                 <button

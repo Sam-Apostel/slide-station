@@ -287,8 +287,7 @@ function SlideStationApp() {
     if (ok) app.startCleanup();
   };
 
-  // faces → people runs in the Python app only (the browser version has no face embeddings yet)
-  const onPeople = !standalone && state?.config.people_enabled ? () => setPeopleOpen(true) : undefined;
+  const onPeople = state?.config.people_enabled ? () => setPeopleOpen(true) : undefined;
 
   const handlers: DesktopHandlers = {
     settings: () => setSettingsOpen(true),
@@ -534,17 +533,13 @@ function SlideStationApp() {
                     onStockRange={(stock) =>
                       setOffer({ kind: "stock", value: stock, from: app.sel, to: session.groups.length - 1 })
                     }
-                    insights={
-                      standalone
-                        ? undefined // needs its models in the page (onnxruntime-web): a follow-up
-                        : {
-                            downloading: state?.job?.kind === "model" && !state.job.finished,
-                            ocrDownloading: state?.job?.kind === "ocr" && !state.job.finished,
-                            onAccepted: offerNeighbours,
-                            onReview: () => setReviewOpen(true),
-                            onSettings: () => setSettingsOpen(true),
-                          }
-                    }
+                    insights={{
+                      downloading: state?.job?.kind === "model" && !state.job.finished,
+                      ocrDownloading: state?.job?.kind === "ocr" && !state.job.finished,
+                      onAccepted: offerNeighbours,
+                      onReview: () => setReviewOpen(true),
+                      onSettings: () => setSettingsOpen(true),
+                    }}
                   />
                 </ResizablePanel>
               </>
@@ -602,14 +597,12 @@ function SlideStationApp() {
         onFromImmich={openImmich}
       />
       <HelpDialog open={helpOpen} onOpenChange={setHelpOpen} />
-      {!standalone && (
-        <PeopleDialog
-          open={peopleOpen}
-          onOpenChange={setPeopleOpen}
-          job={state?.job ?? null}
-          onSettings={() => (setPeopleOpen(false), setSettingsOpen(true))}
-        />
-      )}
+      <PeopleDialog
+        open={peopleOpen}
+        onOpenChange={setPeopleOpen}
+        job={state?.job ?? null}
+        onSettings={() => (setPeopleOpen(false), setSettingsOpen(true))}
+      />
       <CommandPalette
         open={paletteOpen}
         onOpenChange={setPaletteOpen}
@@ -638,8 +631,6 @@ function SlideStationApp() {
         />
       )}
       {session && (
-        // in the browser version: film stock and date guesses only (no models there); propagation also
-        // carries places, captions and dates there
         <>
           <ReviewDialog
             open={reviewOpen}

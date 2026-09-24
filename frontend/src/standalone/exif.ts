@@ -144,9 +144,30 @@ export function exifSegment(ifd0: Tag[], exif: Tag[], orientation = 1, gps?: { l
   return seg;
 }
 
-/** The JPEG with an EXIF segment right after its start marker. */
-export async function withExif(jpeg: Blob, segment: Uint8Array): Promise<Blob> {
+/** An APP1 XMP segment with the slide's tags as dc:subject (keywords; Immich reads them as tags
+ *  too), the packet workflow.xmp_subjects writes. */
+export function xmpSegment(tags: string[]): Uint8Array {
+  const esc = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  const items = tags.map((t) => `<rdf:li>${esc(t)}</rdf:li>`).join("");
+  const packet = new TextEncoder().encode(
+    '<?xpacket begin="﻿" id="W5M0MpCehiHzreSzNTczkc9d"?>' +
+      '<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">' +
+      '<rdf:Description rdf:about="" xmlns:dc="http://purl.org/dc/elements/1.1/">' +
+      `<dc:subject><rdf:Bag>${items}</rdf:Bag></dc:subject></rdf:Description></rdf:RDF></x:xmpmeta>` +
+      '<?xpacket end="w"?>',
+  );
+  const ns = new TextEncoder().encode("http://ns.adobe.com/xap/1.0/\0");
+  const seg = new Uint8Array(4 + ns.length + packet.length);
+  new DataView(seg.buffer).setUint16(0, 0xffe1);
+  new DataView(seg.buffer).setUint16(2, 2 + ns.length + packet.length);
+  seg.set(ns, 4);
+  seg.set(packet, 4 + ns.length);
+  return seg;
+}
+
+/** The JPEG with an EXIF segment (and any others, e.g. XMP) right after its start marker. */
+export async function withExif(jpeg: Blob, ...segments: Uint8Array[]): Promise<Blob> {
   const head = new Uint8Array(await jpeg.slice(0, 2).arrayBuffer());
   if (head[0] !== 0xff || head[1] !== 0xd8) throw new Error("Not a JPEG");
-  return new Blob([jpeg.slice(0, 2), segment as BlobPart, jpeg.slice(2)], { type: "image/jpeg" });
+  return new Blob([jpeg.slice(0, 2), ...(segments as BlobPart[]), jpeg.slice(2)], { type: "image/jpeg" });
 }

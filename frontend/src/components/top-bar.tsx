@@ -42,7 +42,7 @@ type TopBarProps = {
   /** Progress across the library (slides per hour, projected finish). */
   onStats?: () => void;
   onSettings: () => void;
-  /** The People dialog; only when recognising people is on (not in the browser version). */
+  /** The People dialog; only when recognising people is on. */
   onPeople?: () => void;
 };
 

@@ -8,7 +8,7 @@ import { ProButton } from "@/components/ui/pro-button";
 import { Input } from "@/components/ui/input";
 import { Tip } from "@/components/tip";
 import { whySuggested } from "@/components/insights";
-import { api, placeLabel, standalone, type Place, type PlacesAnswer, type Suggestion } from "@/lib/api";
+import { api, placeLabel, type Place, type PlacesAnswer, type Suggestion } from "@/lib/api";
 
 const coords = (p: Place) => `${p.lat.toFixed(4)}, ${p.lon.toFixed(4)}`;
 
@@ -86,11 +86,7 @@ export function PlaceField({
   };
   const listId = `${id}-list`;
   const showList = open && q.trim() !== "" && results.length > 0;
-  const hint = standalone
-    ? "Coordinates, e.g. 45.4371, 12.3326 (a name before them names the place)"
-    : ready
-      ? "Type a town or city, or coordinates"
-      : "Coordinates, e.g. 45.4371, 12.3326";
+  const hint = ready ? "Type a town or city, or coordinates" : "Coordinates, e.g. 45.4371, 12.3326";
 
   return (
     <div className="flex flex-col gap-1">
@@ -202,7 +198,7 @@ export function PlaceField({
           </ul>
         )}
       </div>
-      {!standalone && ready === false && (
+      {ready === false && (
         <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
           {downloading ? (
             "Downloading place names — progress is at the top."

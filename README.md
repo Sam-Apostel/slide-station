@@ -51,10 +51,15 @@ Nothing leaves your computer except what you send to your own Immich.
   the desktop app, so uploading or saving is mostly the time it takes to send them.
 - **Large scans** that are more than a browser can hold in one canvas (Safari on iPad and iPhone
   stops at about 16 megapixels) are read and written in strips instead: slower, but they work.
-- **Not in the browser version:** scanner detection (pick the card's folder instead), eject,
-  recognising people, the suggestion models (tags, captions, look-alikes, places from signs),
-  "show in Finder". Rotation from faces does run: the face detector (about 15 MB with its runtime)
-  loads the first time you import. Film stock and date guesses need no model and work there too.
+- **Suggestions run in the page too:** tag suggestions and look-alikes (Settings → Suggest tags,
+  a ~155 MB download), place names and places read from signs (the Download buttons under Place
+  and in Insights, ~4 + ~10 MB), and recognising people (Settings, 39 MB) — the same models as the
+  desktop app, downloaded from Hugging Face into the library (a library folder on disk shares them
+  with the desktop app) and run in the background in this browser. A download that stops continues
+  where it stopped. Rotation from faces, film stock and date guesses need no download.
+- **Not in the browser version:** caption suggestions (a 276 MB model that writes word by word:
+  too heavy for a page), scanner detection (pick the card's folder instead), eject, "show in
+  Finder".
 
 **Connecting Immich.** Immich only answers requests from its own web address (it allows other
 origins in development builds only), so the page has to reach it in one of two ways:
@@ -279,7 +284,8 @@ suggestions) as suggestions you accept with one click or dismiss:
   with "Check". The API key needs `asset.read` and `asset.view` for this.
 
 The thresholds were set on synthetic pictures, so expect to dismiss the odd suggestion; dismissing
-"same shot" often makes it stricter. Tag suggestions and look-alikes aren't in the browser version yet.
+"same shot" often makes it stricter. The browser version has tag suggestions and look-alikes too
+(the model runs in the page; Immich then has to allow the page, see above).
 
 ## Film stock
 
@@ -311,7 +317,8 @@ background — a few seconds a slide ("A woman in an orange space suit with a he
 (which Immich shows as the description), × dismisses it. "Apply to 12–31…" offers it to the
 neighbours, and **Review tray…** lists every suggested caption to accept or dismiss together.
 A slide that already has a caption — typed by you or pulled from Immich — is never captioned or
-overwritten. Not in the browser version yet.
+overwritten. Desktop app only: in a browser the model would be a 276 MB download per browser and
+take many seconds a slide.
 ## Places
 
 Every slide can have a **place** (Details → Place), so it shows up on Immich's map.
@@ -333,13 +340,14 @@ Every slide can have a **place** (Details → Place), so it shows up on Immich's
   location, so removing a place uploads the slide again without one. **Pull from Immich** brings back
   places moved on Immich's map, and photos pulled in from Immich keep theirs.
 
-In the browser version you type coordinates (GeoNames doesn't allow downloads from other web pages)
-and there are no suggestions; places still go to Immich and into saved JPEGs.
+The browser version has all of this: GeoNames doesn't let other web pages download its files, so
+the page takes a copy of the same file kept on Hugging Face (a dated snapshot, checked on download),
+and the text reader runs in the page.
 
 ## People
 
-Settings → **Recognise people across my slides** (off by default; the desktop app, not the browser
-version). The first time it downloads a 39 MB face model, then finds the faces on every slide,
+Settings → **Recognise people across my slides** (off by default; in the desktop app and the browser
+version alike). The first time it downloads a 39 MB face model, then finds the faces on every slide,
 new imports included, and groups them by person across all your trays. Open **People** (the
 people icon in the top bar, or ⌘K) to name each person once, tick two groups that are the same
 person and merge them, or take a wrong face out of a group (hover it, ×); naming a group with a

@@ -7,9 +7,13 @@ import * as im from "./imaging";
 import { readExif } from "./exif";
 import { fuseSources, materialise, rgba8Source, type RowSource } from "./fusion";
 import { features } from "./learning";
-import { fitting, rgb, rotated, type RGB } from "./pixels";
+import { cropped, fitting, resized, rgb, rotated, type RGB } from "./pixels";
 import { assembleStrips, encodeJpegJS, stripRows, STRIP_AREA } from "./strips";
-import { faceVotes, freeInputSize, type Run } from "./yunet";
+import { detect, detectorFrame, faceVotes, freeInputSize, type Run } from "./yunet";
+import * as people from "./people";
+import { preprocess, toBytes, unit } from "./clip";
+import * as ocr from "./ocr";
+import { levels, normalise } from "./similar";
 // served with the static site (web build only), fetched on the first import
 import yunetUrl from "../../../slidestation/models/face_detection_yunet_2023mar.onnx?url";
 import ortWasmUrl from "onnxruntime-web/ort-wasm-simd-threaded.wasm?url";
@@ -202,6 +206,19 @@ async function renderFull(blobs: Blob[], rotation: number, params: Params): Prom
 /** The slide last zoomed into at full resolution, as RGBA bytes (one slide only: ~90 MB at 22 MP). */
 let zoomed: { key: string; width: number; height: number; bytes: Uint8ClampedArray } | null = null;
 
+type Ort = typeof import("onnxruntime-web/wasm");
+let ortLib: Promise<Ort> | null = null;
+
+/** onnxruntime-web (wasm backend, one thread), imported the first time a model runs. */
+function onnx(): Promise<Ort> {
+  ortLib ??= import("onnxruntime-web/wasm").then((ort) => {
+    ort.env.wasm.wasmPaths = { wasm: ortWasmUrl };
+    ort.env.wasm.numThreads = 1; // threads need a cross-origin isolated page
+    return ort;
+  });
+  return ortLib;
+}
+
 let yunet: Promise<Run | null> | null = null;
 
 /**
@@ -211,9 +228,7 @@ let yunet: Promise<Run | null> | null = null;
 function faceDetector(): Promise<Run | null> {
   yunet ??= (async () => {
     try {
-      const ort = await import("onnxruntime-web/wasm");
-      ort.env.wasm.wasmPaths = { wasm: ortWasmUrl };
-      ort.env.wasm.numThreads = 1; // the model is small, and threads need a cross-origin isolated page
+      const ort = await onnx();
       const model = freeInputSize(new Uint8Array(await (await fetch(yunetUrl)).arrayBuffer()));
       const session = await ort.InferenceSession.create(model, { executionProviders: ["wasm"] });
       const run: Run = async (blob, width, height) => {
@@ -228,6 +243,34 @@ function faceDetector(): Promise<Run | null> {
     }
   })();
   return yunet;
+}
+
+/** A model file from the library: `key` names its version (size and date), `blob` loads it on a miss. */
+export type ModelRef = { key: string; blob: Blob };
+
+// The suggestion models kept loaded while slides are analysed (CLIP's image half, the text
+// reader's two networks), by file version; CLIP's text half only runs once per library, to embed
+// the label prompts, and isn't kept.
+type Session = import("onnxruntime-web/wasm").InferenceSession;
+const sessions = new Map<string, Promise<Session>>();
+
+function session(m: ModelRef): Promise<Session> {
+  let s = sessions.get(m.key);
+  if (!s) {
+    // log errors only: the graph optimiser's warnings (SFace's initializers) would be console errors
+    s = Promise.all([onnx(), m.blob.arrayBuffer()]).then(([ort, b]) =>
+      ort.InferenceSession.create(new Uint8Array(b), { executionProviders: ["wasm"], logSeverityLevel: 3 }),
+    );
+    sessions.set(m.key, s);
+    s.catch(() => sessions.delete(m.key)); // try again next time
+  }
+  return s;
+}
+
+async function clipEmbed(m: ModelRef, a: RGB): Promise<Float32Array> {
+  const [ort, s] = await Promise.all([onnx(), session(m)]);
+  const out = await s.run({ [s.inputNames[0]]: new ort.Tensor("float32", preprocess(a), [1, 3, 224, 224]) });
+  return unit(out[s.outputNames[0]].data as Float32Array);
 }
 
 const ops = {
@@ -312,6 +355,135 @@ const ops = {
 
   async neutral({ src, rotation, params, x, y }: { src: Src; rotation: number; params: Params; x: number; y: number }) {
     return im.neutralBalance(rotated(await load(src), rotation), params, x, y);
+  },
+
+  /** CLIP's embedding of a slide's blend turned upright (the scene tags and look-alikes, insights.py),
+   *  with its sharpness / clipping for "keep the best" (similar.record_slide). */
+  async clipImage({ model, src, rotation }: { model: ModelRef; src: Src; rotation: number }) {
+    const a = rotated(await load(src), rotation);
+    return { emb: await clipEmbed(model, a), quality: im.scanQuality(a) };
+  },
+
+  /** A scan's embedding with its exposure taken out, and its mean brightness (similar.embed_scan). */
+  async clipScan({ model, blob }: { model: ModelRef; blob: Blob }) {
+    const a = await decode(blob);
+    let sum = 0;
+    for (const v of a.data) sum += v;
+    return { emb: await clipEmbed(model, normalise(a)), lum: Math.round((sum / a.data.length) * 1e4) / 1e4 };
+  },
+
+  /** An Immich thumbnail's embedding, levelled (similar._thumb_embedding). */
+  async clipThumb({ model, blob }: { model: ModelRef; blob: Blob }) {
+    return clipEmbed(model, levels(await decode(blob)));
+  },
+
+  /** The label prompts' text embeddings (insights.Clip.text_embed), one unit row each. */
+  async clipText({ model, ids, length }: { model: ModelRef; ids: number[][]; length: number }) {
+    const ort = await onnx();
+    const session = await ort.InferenceSession.create(new Uint8Array(await model.blob.arrayBuffer()), {
+      executionProviders: ["wasm"],
+      logSeverityLevel: 3,
+    });
+    const input = new ort.Tensor(
+      "int64",
+      BigInt64Array.from(ids.flat(), (x) => BigInt(x)),
+      [ids.length, length],
+    );
+    const out = (await session.run({ [session.inputNames[0]]: input }))[session.outputNames[0]];
+    await session.release();
+    const d = out.dims[1];
+    const rows = new Float32Array(ids.length * d);
+    for (let i = 0; i < ids.length; i++) rows.set(unit((out.data as Float32Array).subarray(i * d, (i + 1) * d)), i * d);
+    return rows;
+  },
+
+  /** The text in a slide's blend turned upright (places.read_text): PaddleOCR's detector, then the
+   *  recogniser on each box. Lines top to bottom, {text, confidence}. */
+  async ocrRead({
+    det,
+    rec,
+    chars,
+    src,
+    rotation,
+  }: {
+    det: ModelRef;
+    rec: ModelRef;
+    chars: string[];
+    src: Src;
+    rotation: number;
+  }) {
+    const ort = await onnx();
+    const a = rotated(await load(src), rotation);
+    const img = { width: a.width, height: a.height, data: toBytes(a) };
+    const [dw, dh] = ocr.detSize(a.width, a.height);
+    const d = await session(det);
+    const input = new ort.Tensor("float32", ocr.detInput(ocr.resizeLinear(img, dw, dh)), [1, 3, dh, dw]);
+    const pred = (await d.run({ [d.inputNames[0]]: input }))[d.outputNames[0]].data as Float32Array;
+    const r = await session(rec);
+    const lines: { text: string; confidence: number }[] = [];
+    for (const c of ocr.crops(img, ocr.boxes(pred, dw, dh, a.width, a.height))) {
+      const x = ocr.recInput(c);
+      const out = (await r.run({ [r.inputNames[0]]: new ort.Tensor("float32", x.data, [1, 3, ocr.REC_H, x.width]) }))[
+        r.outputNames[0]
+      ];
+      const t = ocr.ctc(out.data as Float32Array, out.dims[1], out.dims[2], chars);
+      if (t.text) lines.push({ text: t.text, confidence: Math.round(t.confidence * 1000) / 1000 });
+    }
+    return lines;
+  },
+
+  /** The clear faces on a slide's blend turned upright, each described by SFace (people.embed_faces):
+   *  YuNet as for the rotation vote, faces ≥ 0.7 and ≥ 3 % of the width, alignCrop, the network. */
+  async faces({ sface, src, rotation }: { sface: ModelRef; src: Src; rotation: number }) {
+    const run = await faceDetector();
+    if (!run) throw new Error("Face detection is unavailable in this browser");
+    const a = rotated(await load(src), rotation);
+    const frame = detectorFrame(a);
+    const [sx, sy] = [Math.fround(a.width / frame.width), Math.fround(a.height / frame.height)]; // numpy: float32
+    let bgr: { width: number; height: number; data: Uint8Array } | null = null;
+    const out: { box: number[]; score: number; emb: Float32Array }[] = [];
+    for (const f of await detect(frame, 0, run)) {
+      // the detector's row in the picture's own pixels, float32 like the numpy array it is in Python
+      const [x, y, w, h] = [f.box[0] * sx, f.box[1] * sy, f.box[2] * sx, f.box[3] * sy].map(Math.fround);
+      if (f.score < people.MIN_SCORE || w < people.MIN_SIZE * a.width) continue;
+      if (!bgr) {
+        const data = new Uint8Array(a.width * a.height * 3);
+        for (let i = 0; i < a.width * a.height; i++)
+          for (let c = 0; c < 3; c++)
+            data[i * 3 + c] = Math.trunc(Math.fround(Math.min(1, Math.max(0, a.data[i * 3 + 2 - c])) * 255));
+        bgr = { width: a.width, height: a.height, data };
+      }
+      const marks = [0, 1, 2, 3, 4].map((k) => [
+        Math.fround(f.landmarks[k * 2] * sx),
+        Math.fround(f.landmarks[k * 2 + 1] * sy),
+      ]);
+      const aligned = people.warpAffine(bgr, people.similarityTransform(marks));
+      const [ort, s] = [await onnx(), await session(sface)]; // loaded once there is a face
+      const res = await s.run({
+        [s.inputNames[0]]: new ort.Tensor("float32", people.sfaceInput(aligned), [1, 3, 112, 112]),
+      });
+      const r4 = (v: number) => Math.round(v * 1e4) / 1e4;
+      out.push({
+        box: [r4(x / a.width), r4(y / a.height), r4(w / a.width), r4(h / a.height)],
+        score: Math.round(f.score * 1000) / 1000,
+        emb: unit(res[s.outputNames[0]].data as Float32Array),
+      });
+    }
+    return out;
+  },
+
+  /** A face cut from the picture for the People dialog (people.face_crop): 128 px JPEG. */
+  async faceCrop({ src, rotation, box }: { src: Src; rotation: number; box: number[] }) {
+    const a = rotated(await load(src), rotation);
+    const [x0, y0, x1, y1] = people.cropBox(a.width, a.height, box);
+    return encode(resized(cropped(a, y0, y1, x0, x1), 128, 128), 85);
+  },
+
+  /** Let go of the suggestion models (turned off, or another library). */
+  async clipRelease() {
+    const all = [...sessions.values()];
+    sessions.clear();
+    for (const s of all) await s.then((x) => x.release()).catch(() => undefined);
   },
 
   /** Full resolution: blend the originals, turn, develop, JPEG (EXIF is added by the page). */

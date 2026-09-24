@@ -56,7 +56,9 @@ vocabulary, into the library's `models/` folder. Nothing of it is committed or b
 
 The place field searches GeoNames' `cities15000.zip`, `countryInfo.txt` and `admin1CodesASCII.txt`
 from <https://download.geonames.org/export/dump/>, downloaded on first use into the library's
-`data/geonames/` folder. GeoNames data is licensed under Creative Commons Attribution 4.0
+`data/geonames/` folder. The browser version, which download.geonames.org doesn't serve (no CORS),
+takes the same three files of one day's dump (2026-09-15) from a CC BY 4.0 copy on Hugging Face
+(<https://huggingface.co/datasets/DataDock/geonames>, a pinned revision). GeoNames data is licensed under Creative Commons Attribution 4.0
 (<https://creativecommons.org/licenses/by/4.0/>): **place names and coordinates © GeoNames
 (<https://www.geonames.org>)**. The data is used unmodified; nothing of it is committed or bundled.
 

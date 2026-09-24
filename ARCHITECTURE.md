@@ -590,6 +590,10 @@ standalone/
   zip.ts, immich.ts  the save-to-disk zip; the Immich client (fetch)
   filmstock.ts       filmstock.py: the fade guess, k-NN, eras (§5d)
   yunet.ts           rotation from faces: YuNet on onnxruntime-web (below)
+  models.ts          downloading models into the library (insights.fetch_files)
+  clip.ts, insights.ts  scene tags (insights.py): tokenizer, preprocessing, labels; the suggestion plumbing
+  similar.ts         look-alikes (similar.py); places.ts, ocr.ts: gazetteer, sign OCR (places.py)
+  people.ts          faces -> people (people.py); all of these: "Suggestion models in the browser" below
 ```
 
 - **Same library, same keys.** The library layout is the Python app's (`sessions/<id>/...`,
@@ -616,12 +620,12 @@ standalone/
 - **Card cleanup** keeps the safety rules: only folders picked or dropped as a directory with
   `DCIM` at the root are removable (their handle is remembered in IndexedDB), write access is asked
   for at cleanup time, and each file is re-hashed before it is deleted.
-- **Ported without a model:** film stock and its date hints (`filmstock.ts`, §5d; the Review dialog
-  shows those guesses), places typed as coordinates, propagated, sent to Immich and written as EXIF
-  GPS (§5f). Rotation from faces runs too (`yunet.ts`, below).
-- **Not ported:** people (faces → names, §5c), the suggestion models (scene tags, captions,
-  look-alikes, reading signs), the GeoNames search, scanner detection and eject, reveal in Finder.
-  The background renderer and scans bigger than a canvas are in §4d.
+- **Ported without a model:** film stock and its date hints (`filmstock.ts`, §5d), places typed,
+  propagated, sent to Immich and written as EXIF GPS (§5f). Rotation from faces runs too (`yunet.ts`,
+  below). **With downloaded models** (below): scene tags, look-alikes, the GeoNames search, sign
+  OCR and people.
+- **Not ported:** captions (§5b; why: below), scanner detection and eject, reveal in Finder. The
+  background renderer and scans bigger than a canvas are in §4d.
 - Config (Immich URL and key, keep originals, learning) is in `localStorage` of that browser only.
 
 ## 4d. Browser version: background renders, large scans, crop keys
@@ -686,6 +690,118 @@ with onnxruntime-web (wasm backend, one thread), and `yunet.ts` reproduces what
   the decode and NMS reading); (2) the built web app in headless Chromium importing 80 of those
   turned photos: 79/80 identical guesses, the one difference a borderline case (the winning vote
   missed Python's `2 × second + 0.3` margin by 0.02) where the browser's JPEG decode tipped it.
+
+### Suggestion models in the browser (ROADMAP §1 "Models in the browser version")
+
+The browser version runs the desktop app's suggestion models — scene tags and look-alikes (CLIP,
+§5a/§5e), the GeoNames search and sign OCR (§5f), faces → people (SFace, §5c) — through the same
+onnxruntime-web that runs YuNet, with the same files, keys and JSON, so a library (a folder on
+disk) moves between the apps with its suggestions, decisions, embeddings and people. Captions
+(§5b) are the one model left out.
+
+**Downloads** (`models.ts`, `insights.fetch_files`): the same files from the same pinned Hugging
+Face revisions into the same library folders (`models/clip-vit-b32/`, `models/ppocr/`,
+`models/face_recognition_sface_2021dec.onnx`, `data/geonames/`), so a disk library downloaded by
+either app is ready in both. Hugging Face answers other origins: `resolve/` URLs and the CDN they
+redirect to both send `Access-Control-Allow-Origin`, and the preflight allows `Range` (checked with
+`curl -I` / `OPTIONS`). Each file goes to `<name>.part`, written through a `FileSystemWritableFileStream`
+that is closed and reopened every 16 MB (`Library.writer`: what arrived survives a closed tab; a
+writable only lands on close), resumed with `Range` next time (a 200 to a range starts over),
+checked against its sha256 / git blob sha1 with WebCrypto, copied into place, the part removed. A
+job in the activity pill (`model`, `places`, `ocr`, `faces`), progress in MB. Tests replace the
+sources: `localStorage["slide-station-models"] = {"<id>": {repo, files}}` (ids `clip-vit-b32`,
+`geonames`, `ppocr-v5-latin`, `sface`), like the canvas limit.
+
+**Where they run.** The page (`server.ts`) keeps the state; the pixels and networks are in the jobs
+worker (`engine.worker.ts` ops `clipImage`, `clipScan`, `clipThumb`, `clipText`, `ocrRead`,
+`faces`, `faceCrop`; ORT sessions cached by file version, wasm, one thread, errors-only logging:
+SFace's initializers would log warnings as console errors). The background analysis is
+`insights.step` in the page: `watchTray`'s 1.5 s timer also starts `kickInsights`, which walks the
+open tray, then trays queued by "Analyse", one slide at a time, only while no job runs, alongside
+the background renderer; its worker calls have priority −1, so previews, imports and renders go
+first. Each slide commits through `update` only if its insights key still matches (§5a); a failure is
+stored as `error`. After the tags, `similarStep` embeds slides from before and every scan
+(`embeddings.json`, its own write queue). When nothing is left to render, the renderer catches up on
+faces (`findFaces`), as `workflow._render_next` does.
+
+- **Scene tags** (`clip.ts`, `insights.ts`): `LABELS` / `LABELS_KEY`, CLIP's BPE (`Tokenizer`, the
+  regex in Unicode classes), the label embeddings computed once with the text model and cached as
+  `labels-<key>.npy` (the file Python writes and reads), the softmax, thresholds learned from
+  `insights.json`, `merge` / `insightsKey` / `slideInsights` / `suggestBetween` as in insights.py and
+  places.py. The preprocessing is **bit-exact**: `(clip × 255 + 0.5)` to bytes, then Pillow's
+  `ImagingResample` (bicubic, a = −0.5, 22-bit fixed point, horizontal pass then vertical, each
+  clipped to 8 bits) and CLIP's mean / std in float32. Accept / dismiss / propagate / tags edited in
+  Details work as in server.py; tags now also go to Immich from the browser (`Immich.tagEach`) and into
+  the export as XMP `dc:subject` (`exif.xmpSegment`), like the desktop app.
+- **Look-alikes** (`similar.ts`): `embeddings.json` (float16 packing with numpy's round-to-even),
+  duplicates / split / merge / scenes computed per payload (signatures read from `.sig.npy` for
+  merge candidates), decisions (`d.similar`), `insights.json` counts, and the Immich check after
+  upload / on demand (`/search/smart`, the date window fallback, thumbnails through CLIP levelled).
+- **Place names** (`places.ts`): download.geonames.org sends no CORS headers, so the page downloads
+  the same three files of one daily dump (2026-09-15) from `huggingface.co/datasets/DataDock/geonames`
+  (CC BY 4.0, a pinned revision; sha256 / git sha1 checked, which the ever-changing originals don't
+  allow). "Ready" is "the three files are there", as in Python, so a desktop-downloaded gazetteer of
+  another day counts. The zip is read with `DecompressionStream("deflate-raw")`; `Gazetteer`,
+  `search`, `nearest`, `placeFromText` port places.py rule by rule. Parsing the 34k cities takes ~1.3 s
+  on the page's thread, once per library (a worker would be the fix if that shows).
+- **Sign OCR** (`ocr.ts`): the DB detector and CTC recogniser on onnxruntime-web, with OpenCV's steps
+  in TypeScript. `resizeLinear` is **bit-exact** with `cv2.resize(INTER_LINEAR)` on 8-bit images,
+  including OpenCV's vectorised rounding (`((S0 >> 4) · b0 >> 16) + ((S1 >> 4) · b1 >> 16) + 2 >> 2`) and
+  its vertical edge rule (rows past the edge keep their weights and repeat the edge row; columns are
+  clamped with the weight on the edge). OpenCV 5's `warpPerspective(INTER_CUBIC)` samples the exact
+  float point with float weights (unlike `remap` with fixed-point maps, which uses the 1/32 table):
+  `crop` does the same, equal but for a level on the odd pixel. Boxes: 8-connected blobs of the
+  thresholded map (what `findContours` outlines), the minimum-area rectangle of their hull (rotating
+  calipers, as `minAreaRect`), the score over the blob with its holes (what `fillPoly` of the contour
+  covers), the unclip, the corners ordered as `_order`.
+- **People** (`people.ts`): faces from YuNet as `detect_faces` (the rotation vote's frame, scaled back
+  in float32), `alignCrop` as OpenCV computes it — `getSimilarityTransformMatrix`'s Umeyama fit, with
+  the 2 × 2 SVD in closed form (the rotation maximising trace(Rᵀ A), scale from |(a00 + a11, a10 − a01)|),
+  and OpenCV 5's float bilinear `warpAffine` (a level off on a few pixels) — then SFace (fp32) and a
+  unit vector. `faces.json`, face ids kept across re-finds (`recordFaces`), `agglomerate` and
+  `refresh` / `rename` / `merge` / `removeFaces` / `slideNames` as people.py, the People dialog and
+  routes (`/api/people…`, face crops through `image()`), names as `People/<name>` tags on upload
+  (`Immich.tagAssets`) and with "Send names to Immich". Faces are found during import (each slide as
+  it is committed), in the background and by "Find faces".
+- **Captions stay desktop-only**: 276 MB in every browser's storage, and Florence's vision encoder
+  alone takes ~3 s a slide on two native threads (§5b); single-threaded WebAssembly (threads need a
+  cross-origin isolated page) would make that well over 10 s, plus a decoder pass per word. Settings
+  doesn't offer it and `/api/insights/model` refuses it.
+
+**Parity, measured** (scratch scripts, models and photos kept out of the repo):
+
+- CLIP: `npm test` pins the tokenizer (a vocabulary learned from the prompts, and — with
+  `SS_CLIP_DIR` — the real one on every prompt), Pillow's resize and the preprocessing bit for bit.
+  With the real model on 7 synthetic scenes (beach, snow, waves; Node and headless Chromium give
+  identical numbers), the browser's embeddings are within cosine 0.993–0.996 of Python's, the label
+  embeddings within 0.9992: the 8-bit dynamically quantised graph amplifies float rounding, and
+  Python's own ORT differs from itself by the same amount between graph optimisation levels (0.995).
+  Tag shares agree within 0.035; the suggested tags (≥ 0.12) were identical on 5 of 7 scenes, the
+  other two differing at the threshold (a third tag, a near tie). ~0.3 s a slide in Chromium.
+- Sign OCR: 7 synthetic sign photos (straight and tilted ±6°, accents) read in headless Chromium
+  exactly as Python reads them, text and confidence to 3 decimals, 0.7–1.7 s a slide. Gazetteer on
+  the real cities15000: 713 searches (every two-letter prefix, accents, other scripts, coordinates)
+  and 31 signs give identical results.
+- People: 40 LFW photos (Hugging Face) on grey cards: the same 48 faces, boxes within 1e-4, SFace
+  embeddings at cosine 1.0000, and the same 26 clusters; ~0.27 s a photo. In the app with the real
+  SFace: 16 photos imported with faces, named in the People dialog, `People/<name>` on 8 assets.
+
+**Tests.** `frontend/src/standalone/insights.test.ts` against `insights.fixture.json`, written by
+`tests/make_insights_fixture.py` (Python's own code on planted inputs: tokenizer, resize,
+preprocessing, softmax / thresholds, keys, merge, neighbours, float16 packing, similar.suggest /
+scenes / dismiss / thresholds, normalise / levels, date windows, gazetteer / search / nearest /
+place_from_text on a made-up extract, OpenCV's resize and warp, the DB post-processing with a
+planted probability map through to CTC with planted probabilities, agglomerate and a sequence of
+people.json edits, alignCrop). `tests/web_flow.py` downloads a stand-in CLIP (`tests/fake_clip`,
+`tests/make_fake_clip.py`: CLIP's inputs and outputs, 25 KB) and a GeoNames extract from its own
+server, accepts a tag, dismisses a look-alike, turns people on, and checks the tag in the fake
+Immich and in the saved JPEG's XMP; `SS_REAL_CLIP_DIR` / `SS_REAL_OCR_DIR` use the real models (the
+latter paints "WELCOME TO VENICE" on the last slide and expects the place suggestion).
+
+Found on the way: the review dialog's and the look-alike cards' thumbnails were plain `<img src>`
+of API URLs, which the browser version can't serve (now `PreviewImg`), and `setLibrary` kept the
+previous library's film stock labels.
+
 
 ## 4e. Hosted container: uploads from the browser, accounts (ROADMAP §4)
 
@@ -1017,10 +1133,9 @@ all / Dismiss all and per-slide × — click a thumbnail to go to that slide; "A
 re-run. The filmstrip gets a **tag filter** (own tags and open suggestions, with counts) under the
 status scopes.
 
-**Not ported.** The browser version (§4c) hides the Insights section, review view and setting (the
-models would have to run in the page through onnxruntime-web: a follow-up); it shows a library's
-tags read-only and keeps them in `session.json` and the meta key. The Swift app (§4b) is not
-ported: its `Slide` Codable only encodes the keys it knows, so a tray saved there loses `tags` /
+**Ported to the browser version** (§4c "Suggestion models in the browser"): the same model, keys,
+`insights.json` and `session.json` entries, so a tray analysed in one app isn't analysed again in the
+other. The Swift app (§4b) is not ported: its `Slide` Codable only encodes the keys it knows, so a tray saved there loses `tags` /
 `insights`, and its meta key doesn't include tags. On the iPad the roadmap's route is Vision
 classification (`VNClassifyImageRequest`) rather than this model.
 
@@ -1118,8 +1233,9 @@ puts all caption suggestions in one "Captions" pile, a row per slide with its wo
 Dismiss all act on every open caption. Settings has the checkbox with the size; saving downloads
 what's turned on and missing. The Settings dialog now scrolls (it had outgrown a 900 px window).
 
-**Not done / not ported.** The browser version hides it with the rest of Insights (the four ONNX
-parts would run in onnxruntime-web, ~276 MB per browser: a follow-up). The Swift app: not ported
+**Not done / not ported.** The browser version keeps it hidden (settings, `/api/insights/model`
+answers 400 for it): 276 MB per browser, and ~3 s of vision encoder per slide on 2 native threads
+would be well over 10 s in single-threaded WebAssembly, before a decoder step per word (§4c). The Swift app: not ported
 (Apple's route would be a Vision / Core ML captioner; its `Slide` Codable drops `insights`). "Era
 cues" for date estimation are not extracted: Florence's captions rarely say anything datable
 ("an old photo of…" at best), so it was skipped.
@@ -1177,9 +1293,8 @@ Opt-in (`people_enabled`, Settings → "Recognise people"), desktop / server app
   succeeds); "Send names to Immich" (`POST /api/people/tag`, job `tag`) tags every slide already
   there, e.g. after naming someone. Names are only ever added: removing a face doesn't untag.
   `tag_assets` is deliberately generic so other tag sources (scene tags) can share it.
-- **Not ported:** the browser version (the People button and setting are hidden when `standalone`;
-  SFace through onnxruntime-web plus clustering in the page is the follow-up) and the native app
-  (Apple's Vision framework is the route there).
+- **Browser version:** ported (§4c "Suggestion models in the browser"): the same faces.json and
+  people.json. **Not ported:** the native app (Apple's Vision framework is the route there).
 - **Tests:** `tests/test_people.py` — clustering on synthetic vectors (identities, the threshold,
   fixed people, rejected faces) and the API with `embed_faces` replaced (faces per slide, ids kept
   after turning, merged slides forgotten, naming / merging / removing, tags on upload incl. a server
@@ -1404,8 +1519,8 @@ slide of each scene, also when filtered) whose "Apply to scene…" opens `Propag
 mode (tag / date / caption + value, from / to prefilled) → `POST …/insights/propagate`. Place isn't
 offered: slides have no place field to propagate yet.
 
-**Not ported.** The browser version doesn't embed anything (no models in the page yet), its payload
-has no `similar` / `lookalike`, so the cards, separators and setting don't show. The Swift app has
+**Ported to the browser version** (§4c "Suggestion models in the browser"), the Immich check included
+(it needs Immich to allow the page, like uploads). The Swift app has
 none of it (its `Slide` Codable drops `similar` / the `lookalike` record; `embeddings.json` is left
 alone).
 
@@ -1511,13 +1626,13 @@ place stands, an accepted place is never replaced, a slide with its own place ge
   records from before places compare against the slide's own. `pulled.places` counts them. Pull
   back in: a photo with GPS starts with that place.
 
-**Browser version.** download.geonames.org sends no CORS headers, so the page can't fetch the
-gazetteer: `GET /api/places` answers `ready: false` and only typed coordinates; the field says so.
-Places are set, propagated (`/insights/propagate` for place / caption / date), keyed
-(`metaKey`), written as EXIF GPS (`exifSegment(…, gps)`, checked with Pillow), synced to Immich,
-pulled back and kept on pull-in exactly like the desktop app; `tests/web_flow.py` types a place,
-applies it to a range and checks the uploaded JPEGs' GPS. OCR and neighbour suggestions are not in
-the browser (no Insights there). **Swift app:** not ported (its `Slide` Codable drops `place`, and
+**Browser version.** download.geonames.org sends no CORS headers, so the page downloads a pinned
+snapshot of the same files from a Hugging Face mirror; search, sign OCR and neighbours work as here
+(§4c "Suggestion models in the browser"). Places are set, propagated (`/insights/propagate` for
+place / caption / date), keyed (`metaKey`), written as EXIF GPS (`exifSegment(…, gps)`, checked with
+Pillow), synced to Immich, pulled back and kept on pull-in exactly like the desktop app;
+`tests/web_flow.py` downloads place names, searches them, types a place, applies it to a range and
+checks the uploaded JPEGs' GPS. **Swift app:** not ported (its `Slide` Codable drops `place`, and
 its meta key has no place).
 
 **Tests:** `tests/test_places.py` — a made-up GeoNames extract in the scratch library: search
@@ -1681,8 +1796,10 @@ duplicate check, pull back in, carrying albums / favourites over.
 - `tests/web_flow.py` — the browser version end to end in headless Chromium: it serves
   `frontend/dist-web` (build it first) and the mock Immich with CORS on (`MOCK_IMMICH_CORS=1`), and
   stands in folders in the page's OPFS for the pickers, so import, develop (rotate, fit, crop,
-  undo), local adjustments, date a range, a film stock guess accepted and given to the tray, a
-  place typed as coordinates and given to a range, upload (GPS checked), save to disk (EXIF
+  undo), local adjustments, date a range, a film stock guess accepted and given to the tray, place
+  names downloaded and searched, a place given to a range, the tag model downloaded (a stand-in, or
+  the real one with `SS_REAL_CLIP_DIR`) and a tag accepted, look-alikes, people turned on, upload
+  (GPS and the tag checked), save to disk (EXIF
   checked), card cleanup and a reload all run through the real code. `SS_NO_FS_ACCESS=1` hides the
   picker API, as in Firefox and Safari: a folder `<input>`, a zip download, cleaning locked. Command in its docstring.
 

@@ -4,6 +4,10 @@
 // of Immich adds CORS headers for this page (docs: README "Slide Station in the browser").
 
 export class ImmichError extends Error {}
+/** Immich hasn't computed this asset's CLIP embedding yet (its machine learning runs after upload). */
+export class NotIndexed extends ImmichError {}
+/** This Immich can't search by image: older than `queryAssetId`, or smart search is turned off. */
+export class Unsupported extends ImmichError {}
 
 // What the API key needs (slidestation/immich.py PERMISSIONS).
 const PERMISSIONS =
@@ -20,6 +24,7 @@ export type Asset = {
   isFavorite?: boolean;
   isTrashed?: boolean;
   localDateTime?: string;
+  fileCreatedAt?: string;
   exifInfo?: {
     description?: string | null;
     latitude?: number | null;
@@ -219,6 +224,84 @@ export class Immich {
   /** Immich's own preview JPEG of an asset (needs the asset.view permission). */
   async preview(id: string): Promise<Blob> {
     return (await this.req("GET", `/assets/${id}/thumbnail?size=preview`, undefined, "image/*")).blob();
+  }
+
+  // ---------------------------------------------------------------- search, tags
+
+  /**
+   * The assets nearest to this one by Immich's own CLIP embeddings, nearest first, no distances
+   * (`POST /search/smart {"queryAssetId"}`, needs asset.read). NotIndexed while Immich hasn't embedded
+   * it yet; Unsupported when the server rejects the field (older) or smart search is off.
+   */
+  async similarAssets(id: string, size = 8): Promise<Asset[]> {
+    const r = await this.raw("POST", "/search/smart", { queryAssetId: id, size });
+    if (r.status === 400) {
+      const text = await r.text();
+      if (text.toLowerCase().includes("embedding")) throw new NotIndexed(`Immich hasn't indexed ${id} yet`);
+      throw new Unsupported(`smart search by image: ${text.slice(0, 200)}`);
+    }
+    if ([404, 405, 501].includes(r.status)) throw new Unsupported(`smart search by image: ${r.status}`);
+    return (await (await this.check(r, "POST", "/search/smart")).json()).assets?.items ?? [];
+  }
+
+  /** Photos taken in a time window (ISO timestamps), one page of at most `size`. */
+  async takenBetween(after: string, before: string, size = 200): Promise<Asset[]> {
+    const body = { takenAfter: after, takenBefore: before, size: Math.min(size, 1000), type: "IMAGE" };
+    return ((await (await this.req("POST", "/search/metadata", body)).json()).assets?.items ?? []).slice(0, size);
+  }
+
+  /** Scene tags on assets, {tag: [asset ids]}, creating the tags that don't exist yet (`PUT /tags`
+   *  upserts). Needs tag.create and tag.asset; Immich before v1.113 has no tag API. */
+  async tagEach(tags: Record<string, string[]>) {
+    const names = Object.keys(tags).sort();
+    if (!names.length) return;
+    const r = await this.raw("PUT", "/tags", { tags: names });
+    if (r.status === 404) throw new ImmichError("this Immich has no tag API; update it to v1.113 or later");
+    if (r.status === 403) throw new ImmichError("the API key needs the tag.create and tag.asset permissions");
+    const ids = new Map<string, string>(
+      (await (await this.check(r, "PUT", "/tags")).json()).map((t: { value?: string; name?: string; id: string }) => [
+        t.value || t.name,
+        t.id,
+      ]),
+    );
+    for (const [name, assets] of Object.entries(tags)) {
+      const id = ids.get(name);
+      if (!id) continue;
+      for (let i = 0; i < assets.length; i += 200) {
+        const q = await this.raw("PUT", `/tags/${id}/assets`, { ids: assets.slice(i, i + 200) });
+        if (q.status === 403) throw new ImmichError("the API key needs the tag.asset permission");
+        await this.check(q, "PUT", "/tags/{id}/assets");
+      }
+    }
+  }
+
+  /** Undefined until tried; false on a server without the tags API. */
+  tagsSupported: boolean | undefined;
+
+  /**
+   * Tag assets with each of `names`, full tag values ("People/Ann" is Ann under People), creating
+   * the tags that don't exist yet (immich.tag_assets). Returns how many assets were tagged; a server
+   * without the tags API is skipped (0), a key without the tag permissions is an error.
+   */
+  async tagAssets(names: string[], assets: string[]): Promise<number> {
+    if (!names.length || !assets.length || this.tagsSupported === false) return 0;
+    const noPermission = "The API key can't tag photos (403): give it tag.create and tag.asset to send names.";
+    const r = await this.raw("PUT", "/tags", { tags: names });
+    if (r.status === 404 || r.status === 405) {
+      this.tagsSupported = false;
+      return 0;
+    }
+    if (r.status === 403) throw new ImmichError(noPermission);
+    this.tagsSupported = true;
+    const tags: { id: string; value?: string }[] = await (await this.check(r, "PUT", "/tags")).json();
+    const ids = tags.filter((t) => names.includes(t.value ?? "")).map((t) => t.id);
+    const tagIds = ids.length ? ids : tags.map((t) => t.id);
+    for (let i = 0; i < assets.length; i += 200) {
+      const q = await this.raw("PUT", "/tags/assets", { tagIds, assetIds: assets.slice(i, i + 200) });
+      if (q.status === 403) throw new ImmichError(noPermission);
+      await this.check(q, "PUT", "/tags/assets");
+    }
+    return assets.length;
   }
 
   // ---------------------------------------------------------------- stacks

@@ -12,11 +12,16 @@ export interface Library {
   read(path: string): Promise<File | null>;
   readText(path: string): Promise<string | null>;
   write(path: string, data: Blob | string | BufferSource): Promise<void>;
+  /** Write a file piece by piece (downloads); `keep`: append to what is there. Nothing is visible
+   *  until close(). */
+  writer(path: string, keep: boolean): Promise<Writer>;
   remove(path: string): Promise<void>;
   exists(path: string): Promise<boolean>;
   /** Names of the entries in a folder ([] if it doesn't exist). */
   list(path: string): Promise<{ name: string; kind: "file" | "directory" }[]>;
 }
+
+export type Writer = { write(data: BufferSource | Blob): Promise<void>; close(): Promise<void> };
 
 const split = (path: string) => path.split("/").filter(Boolean);
 
@@ -65,6 +70,13 @@ export function handleLibrary(root: FileSystemDirectoryHandle, kind: LibraryKind
       await w.write(data as FileSystemWriteChunkType);
       await w.close();
     },
+    async writer(path, keep) {
+      const h = await file(path, true);
+      if (!h) throw new Error(`Couldn't write ${path}`);
+      const w = await h.createWritable({ keepExistingData: keep });
+      if (keep) await w.seek((await h.getFile()).size);
+      return { write: (data) => w.write(data as FileSystemWriteChunkType), close: () => w.close() };
+    },
     async remove(path) {
       const parts = split(path);
       const d = await dir(parts.slice(0, -1), false);
@@ -98,6 +110,10 @@ export function memoryLibrary(): Library {
     async write(p, data) {
       const parts = split(p);
       files.set(norm(p), new File([data as BlobPart], parts[parts.length - 1]));
+    },
+    async writer(p, keep) {
+      const parts: BlobPart[] = keep ? [(await lib.read(p)) ?? new Blob()] : [];
+      return { write: async (data) => void parts.push(data as BlobPart), close: () => lib.write(p, new Blob(parts)) };
     },
     async remove(p) {
       const n = norm(p);

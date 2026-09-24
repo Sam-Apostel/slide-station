@@ -536,7 +536,7 @@ export function useSlideStation() {
     }
   };
 
-  // ---------------------------------------------------------------- insights (desktop app)
+  // ---------------------------------------------------------------- insights
 
   /** Accept or dismiss open suggestions of a kind (one value, or all): on the given slides, or the whole tray.
    *  `text`: a caption as the user edited it before accepting (one slide). */

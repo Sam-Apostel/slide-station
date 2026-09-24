@@ -139,7 +139,7 @@ export type SlideInsights = {
   place: Suggestion | null;
   /** The film stock guessed from how the slide faded (heuristic or k-NN over your labels). */
   stock?: Suggestion | null;
-  /** Text the text reader found in the photo (desktop app, once downloaded). */
+  /** Text the text reader found in the photo (once downloaded). */
   text?: string[];
   /** Computed from other scans or another rotation: being analysed again. */
   stale: boolean;
@@ -186,7 +186,7 @@ export type Group = {
   place?: Place | null;
   /** What the models suggest, plus the film stock and date guesses; null when there's nothing. */
   insights?: SlideInsights | null;
-  /** After upload: look-alikes already in Immich (desktop app); null = not checked. */
+  /** After upload: look-alikes already in Immich; null = not checked. */
   lookalike?: Lookalike | null;
   /** The date it goes to Immich with: its own, or estimated from the dated slides around it. */
   date_est: {
@@ -224,12 +224,12 @@ export type SessionPayload = {
   log: unknown[];
   /** The tray's film stock ("" = not set), for slides without their own. */
   stock: string;
-  /** Background analysis (desktop app only): a model turned on, one of those downloaded, slides still to
+  /** Background analysis: a model turned on, one of those downloaded, slides still to
    *  analyse, and the models turned on but not downloaded yet. */
   insights?: { enabled: boolean; ready: boolean; pending: number; missing?: SuggestionModel[] };
-  /** Look-alike suggestions for the tray (desktop app, once the model is there). */
+  /** Look-alike suggestions for the tray (once the model is there). */
   similar?: Similar | null;
-  /** Desktop app: signs are read for place suggestions (else `ocr_mb` to download for that). */
+  /** Signs are read for place suggestions (else `ocr_mb` to download for that). */
   places?: { ocr: boolean; ocr_mb: number };
 };
 
@@ -252,7 +252,7 @@ export type InsightsState = {
   ocr_downloading?: boolean;
 };
 
-/** `GET /api/places?q=`: the gazetteer (GeoNames cities, desktop app) and what matches. */
+/** `GET /api/places?q=`: the gazetteer (GeoNames cities) and what matches. */
 export type PlacesAnswer = { ready: boolean; downloading: boolean; mb: number; results: Place[] };
 
 export type Source = {
@@ -297,11 +297,11 @@ export type Config = {
   /** Slides to digitise in all, for the stats' projected finish. */
   stats_target?: number;
   insights_enabled?: boolean;
-  /** After upload, look for photos in Immich that look like the new slides (desktop app). */
+  /** After upload, look for photos in Immich that look like the new slides. */
   lookalike_enabled?: boolean;
   /** Suggest a caption per slide (desktop app only; opt-in, downloads a caption model). */
   captions_enabled?: boolean;
-  /** Faces → people (desktop app only; opt-in, downloads a face model). */
+  /** Faces → people (opt-in, downloads a face model). */
   people_enabled?: boolean;
 };
 
