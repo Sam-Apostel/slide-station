@@ -14,11 +14,26 @@ import { Inspector } from "@/components/inspector";
 import { EmptyState } from "@/components/empty-state";
 import { SlideMenu } from "@/components/slide-menu";
 import { CommandPalette } from "@/components/command-palette";
-import { HelpDialog, NewTrayDialog, SettingsDialog } from "@/components/dialogs";
+import { DateRangeDialog, HelpDialog, NewTrayDialog, SettingsDialog, StatsDialog } from "@/components/dialogs";
+import { ImmichImportDialog } from "@/components/immich-import";
+import { ReviewGrid } from "@/components/review-grid";
+import { DevelopLikeDialog, PresetsDialog } from "@/components/looks";
 import { PanelToggles, WindowTitlebar } from "@/components/window-titlebar";
+import { PropagateDialog, ReviewDialog, propagationOffer, type Offer } from "@/components/insights";
+import { PeopleDialog } from "@/components/people";
+import { LOCAL_CLOSED, LocalOverlay, useLocalKeys, type LocalTool } from "@/components/local";
 import { useSlideStation, type SlideStation } from "@/hooks/use-slide-station";
 import { useDesktop, useFolderDrop, type DesktopHandlers } from "@/hooks/use-desktop";
-import { needsReview, plural, type Source } from "@/lib/api";
+import {
+  needsReview,
+  placeLabel,
+  plural,
+  standalone,
+  STOCK_NAMES,
+  type Group,
+  type InsightKind,
+  type Source,
+} from "@/lib/api";
 import { desktop, isMac } from "@/lib/desktop";
 
 type Panels = { filmstrip: boolean; inspector: boolean };
@@ -67,19 +82,38 @@ function SlideStationApp() {
   const { state, session, sessionId } = app;
 
   const [filter, setFilter] = React.useState<Filter>("all");
+  const [tag, setTag] = React.useState("");
   const [before, setBefore] = React.useState(false);
   // the neutral-point eyedropper: the next click on the photo sets the white balance
   const [picking, setPicking] = React.useState(false);
   // the crop tool: the photo shows uncropped with a crop frame over it until Done / Cancel
   const [cropping, setCropping] = React.useState(false);
   const [compare, setCompare] = React.useState(false);
+  // 1:1 zoom (where it opened, 0..1 of the photo), the loupe, and the batch review grid
+  const [zoom, setZoom] = React.useState<[number, number] | null>(null);
+  const [loupe, setLoupe] = React.useState(false);
+  const [grid, setGrid] = React.useState(false);
+  const gridCols = React.useRef(4);
+  // the Local tool: local adjustments shaped on the photo (A), with the Local section
+  const [local, setLocal] = React.useState<LocalTool>(LOCAL_CLOSED);
+  useLocalKeys(local.open, app, setLocal, local.sel);
   React.useEffect(() => {
     setPicking(false);
     setCropping(false);
+    setLocal((t) => ({ ...t, open: false, sel: 0 }));
+    setZoom(null); // the full-resolution render is per slide: moving on leaves the zoom
   }, [app.sel, sessionId]);
   const [settingsOpen, setSettingsOpen] = React.useState(false);
   const [helpOpen, setHelpOpen] = React.useState(false);
+  const [peopleOpen, setPeopleOpen] = React.useState(false);
   const [paletteOpen, setPaletteOpen] = React.useState(false);
+  const [dateRangeOpen, setDateRangeOpen] = React.useState(false);
+  const [immichOpen, setImmichOpen] = React.useState(false);
+  const [presetsOpen, setPresetsOpen] = React.useState(false);
+  const [likeOpen, setLikeOpen] = React.useState(false);
+  const [statsOpen, setStatsOpen] = React.useState(false);
+  const [reviewOpen, setReviewOpen] = React.useState(false);
+  const [offer, setOffer] = React.useState<Offer | null>(null);
   const [newTray, setNewTray] = React.useState<{ open: boolean; source?: Source; folder?: string }>({ open: false });
   const [panels, setPanels] = React.useState(storedPanels);
   // What focus mode hid, so the same shortcut brings exactly that back.
@@ -105,11 +139,24 @@ function SlideStationApp() {
     });
 
   const busy = !!state?.job && !state.job.finished;
+  // the Python server in a browser tab (not the desktop app): folders are uploaded to it (lib/upload.ts)
+  const uploads = !standalone && !desktop;
+  const hosted = !!state?.server?.accounts;
+  const canCapture = !!state?.camera?.cameras.length;
   const hasTrays = !!state?.sessions.length;
   const source = state?.sources.find((x) => x.new > 0) ?? state?.sources[0];
 
   const openNew = (src?: Source, folder?: string) => setNewTray({ open: true, source: src, folder });
+  /** Pull photos back in from Immich (needs Immich set up first). */
+  const openImmich = () =>
+    state?.config.has_key && state.config.immich_url ? setImmichOpen(true) : setSettingsOpen(true);
   const importFolder = async (folder?: string) => {
+    if (standalone || (uploads && folder === undefined)) {
+      // the browser version: pick a folder, then import it like a card; a server in a browser tab
+      // gets the folder uploaded first
+      const src = await app.addSource("pick");
+      return src ? openImport(src) : undefined;
+    }
     const path = folder ?? (await desktop?.pickFolder({ title: "Import scans from a folder", buttonLabel: "Import" }));
     if (desktop && !path) return; // cancelled the picker
     openNew(undefined, path ?? "");
@@ -138,7 +185,16 @@ function SlideStationApp() {
    */
   const upload = async (scope?: "ready" | "all") => {
     if (!session || !state) return;
-    if (!state.config.has_key || !state.config.immich_url) return setSettingsOpen(true);
+    if (!state.config.has_key || !state.config.immich_url) {
+      if (!standalone) return setSettingsOpen(true);
+      const toDisk = await confirm({
+        title: "No Immich server set up",
+        description: "Save the finished slides to your disk instead? Or connect Immich in Settings.",
+        confirmLabel: "Save to disk",
+        cancelLabel: "Set up Immich",
+      });
+      return toDisk ? save() : setSettingsOpen(true);
+    }
     const undeveloped = session.groups.filter(needsReview).length;
     const ready = session.summary.ready_upload;
     if ((scope ?? (ready ? "ready" : "all")) === "ready" && undeveloped) return app.startUpload(true);
@@ -154,13 +210,70 @@ function SlideStationApp() {
     app.startUpload();
   };
 
+  /** Browser version: the finished JPEGs to disk — the developed ones, or (asking first) all of them. */
+  const save = async () => {
+    if (!session) return;
+    const developed = session.groups.filter((g) => g.reviewed && !g.skip).length;
+    if (!developed) {
+      const ok = await confirm({
+        title: "No slide has been developed yet",
+        description: "Save all of them with the automatic settings?",
+        confirmLabel: "Save all",
+      });
+      if (!ok) return;
+    }
+    app.startSave(developed > 0);
+  };
+
   /** Import this tray's scans again: from the connected card, else a folder you pick (desktop). */
   const reimport = async () => {
+    if (standalone || hosted) {
+      const picked = await app.addSource("pick");
+      return picked ? app.startImport(sessionId, picked.path) : undefined;
+    }
     const src = state?.sources.find((x) => x.count > 0);
     if (src) return app.startImport(sessionId, src.path);
     const path = await desktop?.pickFolder({ title: "Folder with this tray's scans", buttonLabel: "Import" });
     if (path) return app.startImport(sessionId, path);
-    if (!desktop) toast("Connect the scanner (or use the desktop app to pick a folder) to re-import");
+    if (uploads) {
+      const picked = await app.addSource("pick");
+      if (picked) return app.startImport(sessionId, picked.path);
+    }
+  };
+
+  /** A suggestion accepted on one slide: offer it to the run of neighbours ("Apply 'beach' to 12–31?"). */
+  const offerNeighbours = (kind: InsightKind, value: string, groups: Group[], index: number) => {
+    const what =
+      kind === "tags"
+        ? `“${value}”`
+        : kind === "date" || kind === "place"
+          ? value
+          : kind === "stock"
+            ? STOCK_NAMES[value]
+            : "the caption";
+    const place = kind === "place" ? groups[index]?.place : undefined;
+    const o = kind === "place" && !place ? null : propagationOffer(groups, index, kind, value, place ?? undefined);
+    toast(`Accepted ${what}`, {
+      action: o ? { label: `Apply to ${o.from + 1}–${o.to + 1}…`, onClick: () => setOffer(o) } : undefined,
+      duration: o ? 8000 : 2000,
+    });
+  };
+
+  /** "Apply this place to 12–31…": the slide's place offered to its neighbours (the propagation dialog). */
+  const placeRange = () => {
+    const g = app.current;
+    if (!g?.place || !session) return;
+    const label = placeLabel(g.place);
+    const n = session.groups.length;
+    setOffer(
+      propagationOffer(session.groups, g.index, "place", label, g.place) ?? {
+        kind: "place",
+        value: label,
+        place: g.place,
+        from: g.index,
+        to: Math.min(g.index + 1, n - 1),
+      },
+    );
   };
 
   const clean = async () => {
@@ -173,6 +286,8 @@ function SlideStationApp() {
     });
     if (ok) app.startCleanup();
   };
+
+  const onPeople = state?.config.people_enabled ? () => setPeopleOpen(true) : undefined;
 
   const handlers: DesktopHandlers = {
     settings: () => setSettingsOpen(true),
@@ -187,9 +302,35 @@ function SlideStationApp() {
     toggleInspector,
     focusMode,
   };
-  useKeyboard(app, setBefore, () => setHelpOpen(true), () => setPaletteOpen(true), setPicking, setCropping, setCompare);
+  const view: ViewKeys = { grid, setGrid, gridCols, setZoom, setLoupe };
+  useKeyboard(
+    app,
+    setBefore,
+    () => setHelpOpen(true),
+    () => setPaletteOpen(true),
+    setPicking,
+    setCropping,
+    setCompare,
+    view,
+    setLocal,
+  );
+  const views = {
+    toggleLocal: () => app.current?.locked || setLocal((t) => ({ ...t, open: !t.open })),
+    toggleGrid: () => {
+      setGrid((v) => !v);
+      setZoom(null);
+    },
+    toggleZoom: () => setZoom((z) => (z ? null : [0.5, 0.5])),
+    toggleLoupe: () => setLoupe((v) => !v),
+    stats: () => setStatsOpen(true),
+    presets: () => setPresetsOpen(true),
+    developLike: () => setLikeOpen(true),
+  };
   useDesktop(app, panels, handlers);
-  const dropping = useFolderDrop((path) => importFolder(path));
+  const dropping = useFolderDrop(
+    (path) => importFolder(path),
+    standalone || uploads ? (dt) => void app.addSource(dt).then((src) => src && openImport(src)) : undefined,
+  );
 
   const toggles = session ? (
     <PanelToggles
@@ -218,16 +359,31 @@ function SlideStationApp() {
           left={
             <TraySwitcher
               state={state}
-              sessionId={sessionId}
+              sessionId={app.openId}
               onSelectSession={(id) => app.loadSession(id)}
               onNewTray={() => openNew()}
             />
           }
-          center={<ActivityWell state={state} onImport={openImport} onEject={(src) => app.eject(src.path)} />}
+          center={
+            <ActivityWell
+              state={state}
+              onImport={openImport}
+              onEject={(src) => app.eject(src.path)}
+              onChooseFolder={() => importFolder()}
+              onCapture={canCapture && session ? app.capture : undefined}
+              onResume={app.resumeJob}
+              onSettings={() => setSettingsOpen(true)}
+            />
+          }
           right={
             <>
               {toggles}
-              <AppActions onHelp={() => setHelpOpen(true)} onSettings={() => setSettingsOpen(true)} />
+              <AppActions
+                onHelp={() => setHelpOpen(true)}
+                onSettings={() => setSettingsOpen(true)}
+                onStats={views.stats}
+                onPeople={onPeople}
+              />
             </>
           }
         />
@@ -235,19 +391,24 @@ function SlideStationApp() {
         <TopBar
           panelToggles={toggles}
           state={state}
-          sessionId={sessionId}
+          sessionId={app.openId}
           onSelectSession={(id) => app.loadSession(id)}
           onNewTray={() => openNew()}
           onImport={openImport}
           onEject={(src) => app.eject(src.path)}
+          onChooseFolder={() => importFolder()}
+          onCapture={canCapture && session ? app.capture : undefined}
+          onResume={app.resumeJob}
           onHelp={() => setHelpOpen(true)}
           onSettings={() => setSettingsOpen(true)}
+          onStats={views.stats}
+          onPeople={onPeople}
         />
       )}
 
       <main className="flex min-h-0 flex-1">
         {!state ? null : !hasTrays ? (
-          <EmptyState source={source} onImport={openImport} onImportFolder={() => importFolder()} />
+          <EmptyState source={source} onImport={openImport} onImportFolder={() => importFolder()} hosted={hosted} />
         ) : session ? (
           <ResizablePanelGroup
             key={panelIds.join()}
@@ -270,41 +431,72 @@ function SlideStationApp() {
                     sel={app.sel}
                     filter={filter}
                     onFilter={setFilter}
+                    tag={tag}
+                    onTag={setTag}
                     onSelect={app.select}
                     slideMenu={slideMenu}
+                    onScene={(sc, n) =>
+                      setOffer({ kind: "tags", value: "", from: sc.start, to: sc.end, pick: true, label: `scene ${n}` })
+                    }
                   />
                 </ResizablePanel>
                 <ResizableHandle aria-label="Resize filmstrip" />
               </>
             )}
             <ResizablePanel id="stage" minSize={320}>
-              <Stage
-                session={session}
-                sessionId={sessionId}
-                sel={app.sel}
-                before={before}
-                onBefore={setBefore}
-                onToggleScan={app.toggleScan}
-                onSplit={app.splitAt}
-                compare={compare}
-                onCompare={() => setCompare((v) => !v)}
-                onUndo={app.undo}
-                onRedo={app.redo}
-                slideMenu={slideMenu}
-                cropping={cropping}
-                onAngle={(a) => app.setParam("angle", Math.round(a * 10) / 10)}
-                onCropEnd={(rect, restoreAngle) => {
-                  setCropping(false);
-                  if (rect !== undefined) app.setParam("crop", rect, true);
-                  else if (restoreAngle !== undefined && restoreAngle !== (app.current?.params.angle ?? 0))
-                    app.setParam("angle", restoreAngle, true);
-                }}
-                picking={picking}
-                onPicked={(x, y) => {
-                  setPicking(false);
-                  if (x !== null && y !== null) app.pickNeutral(x, y);
-                }}
-              />
+              {grid ? (
+                <ReviewGrid
+                  session={session}
+                  sessionId={sessionId}
+                  sel={app.sel}
+                  onSelect={app.select}
+                  onOpen={(i) => {
+                    app.select(i);
+                    setGrid(false);
+                  }}
+                  onClose={() => setGrid(false)}
+                  columns={gridCols}
+                  slideMenu={slideMenu}
+                />
+              ) : (
+                <Stage
+                  session={session}
+                  sessionId={sessionId}
+                  sel={app.sel}
+                  before={before}
+                  onBefore={setBefore}
+                  onToggleScan={app.toggleScan}
+                  onSplit={app.splitAt}
+                  compare={compare}
+                  onCompare={() => setCompare((v) => !v)}
+                  onUndo={app.undo}
+                  onRedo={app.redo}
+                  slideMenu={slideMenu}
+                  cropping={cropping}
+                  localOverlay={
+                    local.open && !app.current?.locked
+                      ? (img) => <LocalOverlay img={img} app={app} tool={local} />
+                      : null
+                  }
+                  onAngle={(a) => app.setParam("angle", Math.round(a * 10) / 10)}
+                  onCropEnd={(rect, restoreAngle) => {
+                    setCropping(false);
+                    if (rect !== undefined) app.setParam("crop", rect, true);
+                    else if (restoreAngle !== undefined && restoreAngle !== (app.current?.params.angle ?? 0))
+                      app.setParam("angle", restoreAngle, true);
+                  }}
+                  picking={picking}
+                  onPicked={(x, y) => {
+                    setPicking(false);
+                    if (x !== null && y !== null) app.pickNeutral(x, y);
+                  }}
+                  zoom={zoom}
+                  onZoom={setZoom}
+                  loupe={loupe}
+                  onLoupe={setLoupe}
+                  onGrid={views.toggleGrid}
+                />
+              )}
             </ResizablePanel>
             {panels.inspector && (
               <>
@@ -327,7 +519,28 @@ function SlideStationApp() {
                     onPick={() => setPicking((v) => !v)}
                     cropping={cropping}
                     onCrop={() => app.current?.locked || setCropping((v) => !v)}
+                    local={local}
+                    setLocal={setLocal}
                     onReimport={reimport}
+                    onSave={standalone ? save : undefined}
+                    onDateRange={() => setDateRangeOpen(true)}
+                    onPlaceRange={placeRange}
+                    placesDownloading={
+                      (state?.job?.kind === "places" || state?.job?.kind === "ocr") && !state.job.finished
+                    }
+                    onPresets={views.presets}
+                    onDevelopLike={views.developLike}
+                    onAccepted={offerNeighbours}
+                    onStockRange={(stock) =>
+                      setOffer({ kind: "stock", value: stock, from: app.sel, to: session.groups.length - 1 })
+                    }
+                    insights={{
+                      downloading: state?.job?.kind === "model" && !state.job.finished,
+                      ocrDownloading: state?.job?.kind === "ocr" && !state.job.finished,
+                      onAccepted: offerNeighbours,
+                      onReview: () => setReviewOpen(true),
+                      onSettings: () => setSettingsOpen(true),
+                    }}
                   />
                 </ResizablePanel>
               </>
@@ -368,7 +581,11 @@ function SlideStationApp() {
         open={settingsOpen}
         onOpenChange={setSettingsOpen}
         config={state?.config}
-        onSaved={app.refreshState}
+        quota={state?.quota}
+        onSaved={() => {
+          app.refreshState();
+          if (sessionId) app.loadSession(sessionId, true); // e.g. the Insights section follows "Suggest tags"
+        }}
       />
       <NewTrayDialog
         open={newTray.open}
@@ -377,21 +594,71 @@ function SlideStationApp() {
         preferSource={newTray.source}
         preferFolder={newTray.folder}
         onCreate={app.createSession}
+        onChooseFolder={standalone || uploads ? () => app.addSource("pick") : undefined}
+        onFromImmich={openImmich}
       />
       <HelpDialog open={helpOpen} onOpenChange={setHelpOpen} />
+      <PeopleDialog
+        open={peopleOpen}
+        onOpenChange={setPeopleOpen}
+        job={state?.job ?? null}
+        onSettings={() => (setPeopleOpen(false), setSettingsOpen(true))}
+      />
       <CommandPalette
         open={paletteOpen}
         onOpenChange={setPaletteOpen}
         app={app}
         handlers={handlers}
         onClean={clean}
+        onDateRange={() => setDateRangeOpen(true)}
+        onFromImmich={openImmich}
+        views={views}
+        grid={grid}
+        onReview={() => setReviewOpen(true)}
+        onPeople={onPeople}
         busy={busy}
       />
+      <ImmichImportDialog open={immichOpen} onOpenChange={setImmichOpen} onImport={app.importFromImmich} />
+      <StatsDialog open={statsOpen} onOpenChange={setStatsOpen} onSaved={app.refreshState} />
+      <PresetsDialog open={presetsOpen} onOpenChange={setPresetsOpen} app={app} />
+      <DevelopLikeDialog open={likeOpen} onOpenChange={setLikeOpen} app={app} />
+      {session && (
+        <DateRangeDialog
+          open={dateRangeOpen}
+          onOpenChange={setDateRangeOpen}
+          groups={session.groups}
+          sel={app.sel}
+          onApply={app.dateRange}
+        />
+      )}
+      {session && (
+        <>
+          <ReviewDialog
+            open={reviewOpen}
+            onOpenChange={setReviewOpen}
+            app={app}
+            session={session}
+            sessionId={sessionId}
+          />
+          <PropagateDialog
+            offer={offer}
+            onOpenChange={(open) => !open && setOffer(null)}
+            count={session.groups.length}
+            onApply={app.propagate}
+          />
+        </>
+      )}
       {dropping && (
         <div className="ss-drop pointer-events-none fixed inset-0 z-50 flex items-center justify-center">
           <div className="rounded-lg border border-primary/60 bg-(--ss-panel) px-6 py-4 text-center shadow-2xl">
             <div className="text-[14px] font-semibold">Drop a folder of scans</div>
-            <div className="mt-1 text-[12px] text-muted-foreground">It becomes a new tray</div>
+            <div className="mt-1 text-[12px] text-muted-foreground">
+              {standalone
+                ? "Its scans are imported into a tray"
+                : uploads
+                  ? "It is uploaded, then imported"
+                  : "It becomes a new tray"}
+            </div>
           </div>
         </div>
       )}
@@ -399,9 +666,20 @@ function SlideStationApp() {
   );
 }
 
+/** What the keyboard map needs of the view: the review grid (and its columns), zoom and loupe. */
+type ViewKeys = {
+  grid: boolean;
+  setGrid: React.Dispatch<React.SetStateAction<boolean>>;
+  gridCols: React.MutableRefObject<number>;
+  setZoom: React.Dispatch<React.SetStateAction<[number, number] | null>>;
+  setLoupe: React.Dispatch<React.SetStateAction<boolean>>;
+};
+
 /**
  * The keyboard map is the reason the app is fast for 10,000 slides — keep it identical to the
  * original. Shortcuts win over whatever has focus, except text entry (and open dialogs).
+ * Added since: G (review grid, with its own arrows / Space / Enter), Z (1:1 zoom), L (loupe), A (local
+ * adjustments; the Local tool then takes Esc, O, ⌫ and Tab itself, components/local.tsx).
  */
 function useKeyboard(
   app: SlideStation,
@@ -411,9 +689,11 @@ function useKeyboard(
   setPicking: React.Dispatch<React.SetStateAction<boolean>>,
   setCropping: React.Dispatch<React.SetStateAction<boolean>>,
   setCompare: React.Dispatch<React.SetStateAction<boolean>>,
+  view: ViewKeys,
+  setLocal: React.Dispatch<React.SetStateAction<LocalTool>>,
 ) {
-  const latest = React.useRef({ app, setBefore, openHelp, openPalette, setPicking, setCropping, setCompare });
-  latest.current = { app, setBefore, openHelp, openPalette, setPicking, setCropping, setCompare };
+  const latest = React.useRef({ app, setBefore, openHelp, openPalette, setPicking, setCropping, setCompare, view });
+  latest.current = { app, setBefore, openHelp, openPalette, setPicking, setCropping, setCompare, view };
 
   React.useEffect(() => {
     const isTextEntry = (t: EventTarget | null) =>
@@ -442,8 +722,8 @@ function useKeyboard(
       }
       if (e.metaKey || e.ctrlKey || e.altKey) return;
       if (isTextEntry(e.target) || modalOpen()) return;
-      // the crop tool takes Enter / Esc itself; nothing else may change the slide under it
-      if (document.querySelector(".ss-crop")) return;
+      // the crop and Local tools take their keys themselves; nothing else may change the slide under them
+      if (document.querySelector(".ss-crop, .ss-local")) return;
       const { app: a, setBefore: sb, openHelp: help } = latest.current;
       const k = e.key;
       if (k === "?") {
@@ -451,7 +731,40 @@ function useKeyboard(
         e.preventDefault();
         return;
       }
+      if ((k === "p" || k === "P") && a.state?.camera?.cameras.length && a.session) {
+        a.capture(); // camera rig mode: tethered capture into this tray
+        e.preventDefault();
+        return;
+      }
       if (!a.session?.groups.length) return;
+      const v = latest.current.view;
+      if (k === "g" || k === "G") {
+        v.setGrid((on) => !on);
+        v.setZoom(null);
+        e.preventDefault();
+        e.stopPropagation();
+        return;
+      }
+      if (v.grid) {
+        // the review grid: the cursor is the selection; the slide tools that need the stage are off
+        const cols = v.gridCols.current;
+        const n = a.session.groups.length;
+        let handled = true;
+        if (k === "ArrowRight") a.select(a.sel + 1);
+        else if (k === "ArrowLeft") a.select(a.sel - 1);
+        else if (k === "ArrowDown") a.select(Math.min(a.sel + cols, n - 1));
+        else if (k === "ArrowUp") a.select(a.sel >= cols ? a.sel - cols : a.sel);
+        else if (k === " ") a.developStep();
+        else if (k === "Enter" || k === "Escape") v.setGrid(false);
+        else if (/^[bwkyzla1-9]$/i.test(k)) {
+          /* before, eyedropper, crop, split, zoom, loupe, local, scans: they need the single-slide view */
+        } else handled = false; // R, X, M, C, 0, F act on the slide under the cursor as usual
+        if (handled) {
+          e.preventDefault();
+          e.stopPropagation();
+          return;
+        }
+      }
       if (k === "ArrowRight" || k === "ArrowDown") a.select(a.sel + 1);
       else if (k === "ArrowLeft" || k === "ArrowUp") a.select(a.sel - 1);
       else if (k === " " || k === "Enter") a.review();
@@ -463,13 +776,18 @@ function useKeyboard(
       else if (k === "0") a.resetColour();
       else if (k === "w" || k === "W") {
         if (!a.current?.locked) latest.current.setPicking((v) => !v);
-      }
-      else if (k === "k" || k === "K") {
+      } else if (k === "k" || k === "K") {
         if (!a.current?.locked) latest.current.setCropping(true);
-      }
-      else if (k === "y" || k === "Y") latest.current.setCompare((v) => !v);
-      else if (k === "Escape") latest.current.setPicking(false);
-      else if (k === "f") a.fitCurves();
+      } else if (k === "y" || k === "Y") latest.current.setCompare((v) => !v);
+      else if (k === "z" || k === "Z") latest.current.view.setZoom((z) => (z ? null : [0.5, 0.5]));
+      else if (k === "l" || k === "L") latest.current.view.setLoupe((on) => !on);
+      else if (k === "a" || k === "A") {
+        if (!a.current?.locked) setLocal((t) => ({ ...t, open: !t.open }));
+      } else if (k === "Escape") {
+        latest.current.setPicking(false);
+        latest.current.view.setZoom(null);
+        latest.current.view.setLoupe(false);
+      } else if (k === "f") a.fitCurves();
       else if (k === "F") a.fitCurves(true);
       else if (k === "b" || k === "B") {
         if (!e.repeat) sb(true);

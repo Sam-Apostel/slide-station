@@ -1,10 +1,36 @@
 import * as React from "react";
 import { Lock, RotateCw } from "lucide-react";
 import { ProScope, ProScopebar } from "@/components/ui/pro-toolbar";
-import { needsReview, plural, previewUrl, type Group, type GroupStatus, type SessionPayload } from "@/lib/api";
+import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select";
+import {
+  needsReview,
+  plural,
+  previewUrl,
+  standalone,
+  useImageSrc,
+  type Group,
+  type GroupStatus,
+  type Scene,
+  type SessionPayload,
+} from "@/lib/api";
+import { Tip } from "@/components/tip";
 import { cn } from "@/lib/utils";
 
 export type Filter = "all" | "todo" | "multi";
+
+/** A slide thumbnail (filmstrip, review grid). The browser version renders only the ones scrolled into view. */
+export function PreviewImg({ url, ...props }: { url: string } & Omit<React.ComponentProps<"img">, "src">) {
+  const [el, setEl] = React.useState<HTMLElement | null>(null);
+  const [seen, setSeen] = React.useState(!standalone);
+  React.useEffect(() => {
+    if (seen || !el) return;
+    const io = new IntersectionObserver((e) => e.some((x) => x.isIntersecting) && setSeen(true), { rootMargin: "400px" });
+    io.observe(el);
+    return () => io.disconnect();
+  }, [el, seen]);
+  const src = useImageSrc(seen ? url : null, 0);
+  return src ? <img loading="lazy" src={src} {...props} /> : <span ref={setEl} className={props.className} />;
+}
 
 const FILTERS: [Filter, string][] = [
   ["all", "All"],
@@ -39,26 +65,53 @@ export const STATUS_TEXT: Record<GroupStatus, string> = {
 
 const matches = (g: Group, f: Filter) => (f === "todo" ? needsReview(g) : f === "multi" ? g.scans.length > 1 : true);
 
+/** A slide's tags plus the ones suggested for it and not dismissed: what the tag filter looks at. */
+const tagsOf = (g: Group) => {
+  const t = new Set(g.tags ?? []);
+  for (const e of g.insights?.tags ?? []) if (e.state === "suggested") t.add(e.value);
+  return t;
+};
+
+/** Every tag in the tray (own or suggested) with how many slides have it, most common first. */
+export function trayTags(groups: Group[]): [string, number][] {
+  const n = new Map<string, number>();
+  for (const g of groups) for (const t of tagsOf(g)) n.set(t, (n.get(t) ?? 0) + 1);
+  return [...n].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+}
+
 export function Filmstrip({
   session,
   sessionId,
   sel,
   filter,
   onFilter,
+  tag,
+  onTag,
   onSelect,
   slideMenu,
+  onScene,
 }: {
   session: SessionPayload;
   sessionId: string;
   sel: number;
   filter: Filter;
   onFilter: (f: Filter) => void;
+  /** Only slides with this tag (their own or suggested); "" = any. */
+  tag: string;
+  onTag: (t: string) => void;
   onSelect: (i: number) => void;
   /** Wraps a tile in the slide's right-click menu. */
   slideMenu: (index: number, el: React.ReactElement) => React.ReactElement;
+  /** "Apply to this scene…" on a scene's separator (scene number n, 1-based). */
+  onScene: (scene: Scene, n: number) => void;
 }) {
   const sm = session.summary;
-  const groups = session.groups.filter((g) => matches(g, filter));
+  // scenes of the tray (look-alikes): a separator before the first shown slide of each
+  const scenes = session.similar?.scenes ?? [];
+  const sceneOf = (i: number) => scenes.findIndex((sc) => sc.start <= i && i <= sc.end);
+  const tags = trayTags(session.groups);
+  const tagOn = tags.some(([t]) => t === tag) ? tag : "";
+  const groups = session.groups.filter((g) => matches(g, filter) && (!tagOn || tagsOf(g).has(tagOn)));
   const selRef = React.useRef<HTMLButtonElement>(null);
 
   // slides that were just developed get one sweep of light across their new gold mount
@@ -87,7 +140,7 @@ export function Filmstrip({
     if (tile && tile !== document.activeElement && document.activeElement?.closest(".ss-mount")) {
       tile.focus({ preventScroll: true });
     }
-  }, [sel, filter]);
+  }, [sel, filter, tagOn]);
 
   return (
     <aside className="flex size-full min-h-0 flex-col border-r border-border bg-[var(--pro-canvas)]">
@@ -105,11 +158,25 @@ export function Filmstrip({
           </ProScope>
         ))}
       </ProScopebar>
+      {tags.length > 0 && (
+        <div className="border-b border-border bg-(--ss-panel) px-2.5 py-1.5">
+          <NativeSelect size="sm" aria-label="Filter by tag" value={tagOn} onChange={(e) => onTag(e.target.value)}>
+            <NativeSelectOption value="">Any tag</NativeSelectOption>
+            {tags.map(([t, n]) => (
+              <NativeSelectOption key={t} value={t}>
+                {t} · {n}
+              </NativeSelectOption>
+            ))}
+          </NativeSelect>
+        </div>
+      )}
       <div className="grid min-h-0 flex-1 auto-rows-min grid-cols-[repeat(auto-fill,minmax(104px,1fr))] gap-3 overflow-y-auto p-3 scrollbar-thin">
-        {groups.map((g) => {
+        {groups.map((g, k) => {
           const isSel = g.index === sel;
           const autoRot = g.rot_reason && g.rot_reason !== "manual" && g.rotation;
-          return slideMenu(
+          const scene = sceneOf(g.index);
+          const newScene = scene >= 0 && (k === 0 || sceneOf(groups[k - 1].index) !== scene);
+          const tile = slideMenu(
             g.index,
             <button
               key={g.id}
@@ -125,9 +192,8 @@ export function Filmstrip({
             >
               {/* the mount's window, with the photo sunk into it */}
               <span className="ss-mount-window">
-                <img
-                  loading="lazy"
-                  src={previewUrl(sessionId, g, 320)}
+                <PreviewImg
+                  url={previewUrl(sessionId, g, 320)}
                   alt=""
                   draggable={false}
                   onLoad={(e) => {
@@ -168,6 +234,28 @@ export function Filmstrip({
                 ) : null}
               </span>
             </button>,
+          );
+          if (!newScene) return tile;
+          const sc = scenes[scene];
+          return (
+            <React.Fragment key={g.id}>
+              <div className="ss-scene col-span-full" role="separator" aria-label={`Scene ${scene + 1}`}>
+                <span className="min-w-0 flex-1 truncate">
+                  Scene {scene + 1}
+                  {sc.label && <b> · {sc.label}</b>}
+                  <span className="text-(--ss-dim)">
+                    {" "}
+                    · {sc.start + 1}–{sc.end + 1}
+                  </span>
+                </span>
+                <Tip label="Give every slide of this scene a tag, date or caption">
+                  <button type="button" onClick={() => onScene(sc, scene + 1)}>
+                    Apply to scene…
+                  </button>
+                </Tip>
+              </div>
+              {tile}
+            </React.Fragment>
           );
         })}
         {!groups.length && (

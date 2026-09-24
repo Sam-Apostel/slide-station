@@ -17,9 +17,12 @@ struct AdjustPanel: View {
         let curvesOn = !p.curves.isEmpty
         VStack(spacing: 0) {
             AdjGroup(title: "Restore", note: curvesOn && p.strength == 0 ? "by the tone curve" : nil,
-                     changed: off(p.strength, d.strength) || p.trim != d.trim,
-                     reset: { model.resetParams([\.strength], trim: true) }) {
+                     changed: off(p.strength, d.strength) || p.trim != d.trim || off(p.dust, d.dust) || off(p.mould, d.mould) || off(p.newton, d.newton),
+                     reset: { model.resetParams([\.strength, \.dust, \.mould, \.newton], trim: true) }) {
                 AdjSlider(spec: .strength, value: p.strength, reset: d.strength) { model.setParam(\.strength, $0, name: "strength") }
+                AdjSlider(spec: .dust, value: p.dust, reset: d.dust) { model.setParam(\.dust, $0, name: "dust") }
+                AdjSlider(spec: .mould, value: p.mould, reset: d.mould) { model.setParam(\.mould, $0, name: "mould") }
+                AdjSlider(spec: .newton, value: p.newton, reset: d.newton) { model.setParam(\.newton, $0, name: "newton") }
                 Button { model.setTrim(!p.trim) } label: {
                     HStack(spacing: 8) {
                         RoundedRectangle(cornerRadius: 4).fill(p.trim ? ProTheme.accent : SS.field)
@@ -49,7 +52,7 @@ struct AdjustPanel: View {
     static func summary(_ g: Slide, defaults d: Params) -> String {
         let p = g.params
         let off = { (v: Double, x: Double) in abs(v - x) > 0.004 }
-        let n = [off(p.brightness, 0), off(p.contrast, 0), off(p.saturation, 0), off(p.warmth, 0) || off(p.tint, 0), off(p.strength, d.strength)].filter { $0 }.count
+        let n = [off(p.brightness, 0), off(p.contrast, 0), off(p.saturation, 0), off(p.warmth, 0) || off(p.tint, 0), off(p.strength, d.strength), off(p.dust, 0), off(p.mould, 0), off(p.newton, 0)].filter { $0 }.count
         let src = g.paramsSource.map { $0.hasPrefix("learned:") ? "learned from \($0.dropFirst(8))" : $0 == "manual" ? "by hand" : "tray defaults" } ?? "tray defaults"
         return n > 0 ? "\(src) · \(n) changed" : src
     }
@@ -92,6 +95,12 @@ struct AdjSpec {
 
     static func stops(_ list: [(UInt32, Double)]) -> [Gradient.Stop] { list.map { .init(color: Color(proHex: $0.0), location: $0.1) } }
     static let strength = AdjSpec(label: "Auto restore", range: 0...1, rail: stops([(0x6d7876, 0), (0x8c8a78, 0.45), (0xd49a48, 1)]))
+    /// dust & scratch repair: specks on the left, clean to the right
+    static let dust = AdjSpec(label: "Dust", range: 0...1, rail: stops([(0x3a3c3b, 0), (0x5f6361, 0.12), (0x6f7371, 0.5), (0x8a8d8b, 1)]))
+    /// mould repair: pale threads on the left, clean to the right
+    static let mould = AdjSpec(label: "Mould", range: 0...1, rail: stops([(0xb9b6a6, 0), (0x5f6361, 0.1), (0xa8a592, 0.18), (0x6f7371, 0.3), (0x8a8d8b, 1)]))
+    /// Newton ring removal: faint rainbow bands on the left, even to the right
+    static let newton = AdjSpec(label: "Newton rings", range: 0...1, rail: stops([(0x9a86b0, 0), (0x7fa58e, 0.08), (0xb3a36e, 0.16), (0x9a86b0, 0.24), (0x6f7371, 0.36), (0x8a8d8b, 1)]))
     static let brightness = AdjSpec(label: "Brightness", range: -1...1, rail: stops([(0x0d0d0f, 0), (0x6a6a6a, 0.5), (0xf1efe9, 1)]))
     static let contrast = AdjSpec(label: "Contrast", range: -1...1, rail: stops([(0x707070, 0), (0xe8e8e8, 1)]), split: stops([(0x5c5c5c, 0), (0x0b0b0b, 1)]))
     static let saturation = AdjSpec(label: "Saturation", range: -1...1, rail: stops([(0x7c7c7c, 0), (0x9d8a78, 0.5), (0xe8663f, 0.78), (0xd9458f, 1)]))

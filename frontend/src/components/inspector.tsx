@@ -3,21 +3,29 @@ import { toast } from "sonner";
 import {
   Aperture,
   ArrowRight,
+  Bookmark,
+  CalendarRange,
+  Images,
   CheckCheck,
+  CloudDownload,
   Copy,
   Crop,
   Eraser,
+  Frame,
   Layers,
   Sparkles,
+  SunDim,
   FolderOpen,
   HardDriveDownload,
   Lock,
   Merge,
   RotateCcw,
   RotateCw,
+  Ruler,
   SkipForward,
   Undo2,
   Upload,
+  Download,
 } from "lucide-react";
 import { ProInspector } from "@/components/ui/pro-inspector";
 import { ProDisclosureGroup } from "@/components/ui/pro-disclosure";
@@ -28,7 +36,21 @@ import { Kbd } from "@/components/ui/kbd";
 import { Tip } from "@/components/tip";
 import { ToneCurve } from "@/components/tone-curve";
 import { AdjustPanel, adjustSummary } from "@/components/adjust";
-import { needsReview, plural, type Group, type SessionPayload } from "@/lib/api";
+import { LocalPanel, localNote, type LocalTool } from "@/components/local";
+import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select";
+import { InsightsPanel, StockField, SuggestionRow, TagsField, insightsNote } from "@/components/insights";
+import { PlaceField } from "@/components/place";
+import {
+  MOUNT_SUGGEST,
+  needsReview,
+  plural,
+  STOCK_NAMES,
+  STOCKS,
+  type EraHint,
+  type Group,
+  type InsightKind,
+  type SessionPayload,
+} from "@/lib/api";
 import { CHANNELS, isStraight } from "@/lib/curves";
 import type { SlideStation } from "@/hooks/use-slide-station";
 
@@ -39,7 +61,7 @@ function rotationNote(rotation: number, reason: string) {
   return `${rotation}°`;
 }
 
-type SectionId = "rotation" | "curve" | "colour" | "details" | "tray";
+type SectionId = "rotation" | "curve" | "colour" | "local" | "details" | "insights" | "tray";
 
 function storedSections(): Record<string, boolean> {
   try {
@@ -69,9 +91,44 @@ function useSections() {
 }
 
 function frameNote(g: { rotation: number; rot_reason: string; params: { crop: unknown; angle: number } }) {
-  return [rotationNote(g.rotation, g.rot_reason) || "upright", g.params.crop && "cropped", g.params.angle && "straightened"]
+  return [
+    rotationNote(g.rotation, g.rot_reason) || "upright",
+    g.params.crop && "cropped",
+    g.params.angle && "straightened",
+  ]
     .filter(Boolean)
     .join(" · ");
+}
+
+/**
+ * The slide sits turned in its mount (or the mount in the scanner): offer to straighten to the
+ * mount's edge, and to crop to its window. Shown only when the mount was found with confidence;
+ * an import straightens by itself only when it is very sure (imaging.MOUNT_AUTO).
+ */
+function MountSuggestion({ app, g }: { app: SlideStation; g: Group }) {
+  const m = g.mount;
+  if (!m || m.confidence < MOUNT_SUGGEST || Math.abs(m.angle) < 0.1) return null;
+  const done = Math.abs(g.params.angle + m.angle) < 0.05;
+  const turn = `${Math.abs(m.angle).toFixed(1)}° ${m.angle > 0 ? "clockwise" : "anticlockwise"}`;
+  return (
+    <div className="flex items-center gap-1.5 px-3 pb-2.5" role="status">
+      <Ruler className="size-3.5 shrink-0 text-muted-foreground" aria-hidden />
+      <span className="min-w-0 flex-1 truncate text-[12px] text-muted-foreground">
+        {done ? "Level with the mount" : `Mount turned ${turn}`}
+        <span className="opacity-70"> · {Math.round(m.confidence * 100)}% sure</span>
+      </span>
+      {!done && (
+        <Tip label={`Turn the photo ${m.angle > 0 ? "anticlockwise" : "clockwise"} so the mount's edges are level`}>
+          <ProButton onClick={() => app.straightenToMount()}>Straighten to mount</ProButton>
+        </Tip>
+      )}
+      <Tip label="Straighten and crop to the inside of the mount: a tighter trim">
+        <ProButton plain aria-label="Straighten and trim to the mount" onClick={() => app.straightenToMount(true)}>
+          <Frame />
+        </ProButton>
+      </Tip>
+    </div>
+  );
 }
 
 function curveNote(curves: Record<string, unknown> | undefined) {
@@ -91,7 +148,18 @@ export function Inspector({
   onPick,
   cropping,
   onCrop,
+  local,
+  setLocal,
   onReimport,
+  onSave,
+  onDateRange,
+  onPlaceRange,
+  placesDownloading,
+  onPresets,
+  onDevelopLike,
+  onAccepted,
+  onStockRange,
+  insights,
 }: {
   app: SlideStation;
   session: SessionPayload;
@@ -104,8 +172,34 @@ export function Inspector({
   onPick: () => void;
   cropping: boolean;
   onCrop: () => void;
+  /** The Local tool (local adjustments), shared with the stage overlay. */
+  local: LocalTool;
+  setLocal: React.Dispatch<React.SetStateAction<LocalTool>>;
   /** Import the tray's scans again (brings deleted originals back and unlocks their slides). */
   onReimport?: () => void;
+  /** Browser version: save the finished JPEGs to disk (replaces "show the finished files"). */
+  onSave?: () => void;
+  /** Opens the "date a range of slides" dialog. */
+  onDateRange: () => void;
+  /** Offers the slide's place to a run of slides (the propagation dialog). */
+  onPlaceRange: () => void;
+  /** The place names (or the text reader) are being downloaded. */
+  placesDownloading: boolean;
+  /** Opens the presets dialog, and the "develop like another slide" picker. */
+  onPresets: () => void;
+  onDevelopLike: () => void;
+  /** A suggestion (film stock, date) was accepted on slide `index`: offer it to the neighbours. */
+  onAccepted: (kind: InsightKind, value: string, groups: Group[], index: number) => void;
+  /** Give a film stock to a run of slides (the propagate dialog, from this slide). */
+  onStockRange: (stock: string) => void;
+  /** The Insights section (scene tags and look-alikes; captions and signs in the desktop app). */
+  insights?: {
+    downloading: boolean;
+    ocrDownloading?: boolean;
+    onAccepted: (kind: InsightKind, value: string, groups: Group[], index: number) => void;
+    onReview: () => void;
+    onSettings: () => void;
+  };
 }) {
   const { current: g, sel } = app;
   const sm = session.summary;
@@ -135,11 +229,7 @@ export function Inspector({
         {g && (
           // a locked slide shows its settings but can't change them (the server refuses too)
           <div aria-disabled={g.locked || undefined} className={g.locked ? "ss-readonly" : undefined}>
-            <ProDisclosureGroup
-              title="Frame"
-              summary={frameNote(g)}
-              {...section("rotation")}
-            >
+            <ProDisclosureGroup title="Frame" summary={frameNote(g)} {...section("rotation")}>
               <div className="flex items-center gap-1.5 px-3 py-2.5">
                 <ProButtonGroup>
                   <Tip label="Rotate left" keys="⇧R">
@@ -179,6 +269,7 @@ export function Inspector({
                   </Tip>
                 )}
               </div>
+              <MountSuggestion app={app} g={g} />
             </ProDisclosureGroup>
 
             <ProDisclosureGroup title="Tone curve" summary={curveNote(g.params.curves)} {...section("curve")}>
@@ -196,24 +287,54 @@ export function Inspector({
             <ProDisclosureGroup
               title="Adjust"
               summary={adjustSummary(g, session.defaults)}
-              right={<AdjustActions app={app} />}
+              right={<AdjustActions app={app} onPresets={onPresets} onDevelopLike={onDevelopLike} />}
               {...section("colour")}
             >
               <AdjustPanel app={app} session={session} picking={picking} onPick={onPick} />
             </ProDisclosureGroup>
 
-            <ProDisclosureGroup title="Details" summary={detailsNote(g)} {...section("details")}>
-              <SlideDetails app={app} />
+            <ProDisclosureGroup
+              title="Local"
+              summary={localNote(g)}
+              right={
+                <Tip label={local.open ? "Close the Local tool" : "Shape them on the photo"} keys="A">
+                  <ProButton
+                    plain
+                    aria-label="Local tool"
+                    aria-pressed={local.open || undefined}
+                    data-on={local.open || undefined}
+                    onClick={() => g.locked || setLocal((t) => ({ ...t, open: !t.open }))}
+                  >
+                    <SunDim />
+                  </ProButton>
+                </Tip>
+              }
+              {...section("local")}
+            >
+              <LocalPanel app={app} tool={local} setTool={setLocal} />
             </ProDisclosureGroup>
+
+            <ProDisclosureGroup title="Details" summary={detailsNote(g, session.stock ?? "")} {...section("details")}>
+              <SlideDetails
+                app={app}
+                session={session}
+                onDateRange={onDateRange}
+                onAccepted={onAccepted}
+                onStockRange={onStockRange}
+                onPlaceRange={onPlaceRange}
+                placesDownloading={placesDownloading}
+              />
+            </ProDisclosureGroup>
+
+            {insights && (
+              <ProDisclosureGroup title="Insights" summary={insightsNote(g, session)} {...section("insights")}>
+                <InsightsPanel app={app} session={session} sessionId={sessionId} {...insights} />
+              </ProDisclosureGroup>
+            )}
           </div>
         )}
 
-        <ProDisclosureGroup
-          title="Tray"
-          summary={sm.name}
-          showsBottomSeparator={false}
-          {...section("tray")}
-        >
+        <ProDisclosureGroup title="Tray" summary={sm.name} showsBottomSeparator={false} {...section("tray")}>
           <div className="flex flex-col gap-2 px-3 pt-2.5 pb-3">
             <TrayField label="Name" value={sm.name} onCommit={(v) => app.patchSession({ name: v })} />
             <TrayField label="Immich album" value={sm.album} onCommit={(v) => app.patchSession({ album: v })} />
@@ -226,6 +347,14 @@ export function Inspector({
                   toast("Date saved — slides already in Immich get the new date on the next upload");
               }}
             />
+            <TrayStock value={session.stock ?? ""} onChange={(stock) => app.patchSession({ stock })} />
+            {session.groups.some((x) => x.status === "uploaded" || x.status === "changed") && (
+              <Tip label="Bring captions and dates edited in Immich back into this tray">
+                <ProButton className="self-start" onClick={app.pullFromImmich}>
+                  <CloudDownload /> Pull from Immich
+                </ProButton>
+              </Tip>
+            )}
           </div>
         </ProDisclosureGroup>
       </div>
@@ -290,21 +419,47 @@ export function Inspector({
               </ProButton>
             </span>
           </Tip>
-          <Tip label="Show the finished files" side="top">
-            <ProButton onClick={app.reveal} aria-label="Show files">
-              <FolderOpen />
-            </ProButton>
-          </Tip>
+          {onSave ? (
+            <Tip label="Save the finished slides to disk: a folder you pick, or a zip" side="top">
+              <ProButton onClick={onSave} disabled={busy || !sm.slides} aria-label="Save to disk">
+                <Download />
+              </ProButton>
+            </Tip>
+          ) : (
+            <Tip label="Show the finished files" side="top">
+              <ProButton onClick={app.reveal} aria-label="Show files">
+                <FolderOpen />
+              </ProButton>
+            </Tip>
+          )}
         </div>
       </div>
     </ProInspector>
   );
 }
 
-/** Use learned / copy previous / apply to rest, as icons in the Adjust header. */
-function AdjustActions({ app }: { app: SlideStation }) {
+/** Use learned / presets / develop like / copy previous / apply to rest, as icons in the Adjust header. */
+function AdjustActions({
+  app,
+  onPresets,
+  onDevelopLike,
+}: {
+  app: SlideStation;
+  onPresets: () => void;
+  onDevelopLike: () => void;
+}) {
   return (
     <span className="flex items-center gap-0.5">
+      <Tip label="Presets: save this colour, or apply a saved one">
+        <button type="button" aria-label="Presets" onClick={onPresets}>
+          <Bookmark />
+        </button>
+      </Tip>
+      <Tip label="Develop like another slide, from any tray">
+        <button type="button" aria-label="Develop like" onClick={onDevelopLike}>
+          <Images />
+        </button>
+      </Tip>
       <Tip label="Use what your developed slides suggest (⇧-click: every slide to develop)">
         <button type="button" aria-label="Use learned settings" onClick={(e) => app.resuggest(e.shiftKey)}>
           <Sparkles />
@@ -336,17 +491,54 @@ const DATE_FROM: Record<string, string> = {
   scan: "scanner clock",
 };
 
-function detailsNote(g: Group) {
+function detailsNote(g: Group, trayStock: string) {
   const d = g.date_est;
   const date = d.value ? (d.source === "own" ? d.value : `≈ ${d.value}`) : "no date";
-  return g.caption ? `${date} · ${g.caption}` : date;
+  const stock = g.stock || trayStock;
+  return [
+    date,
+    stock && stock !== "unknown" ? STOCK_NAMES[stock] : "",
+    g.place?.name ?? "",
+    g.caption,
+    g.tags.length ? g.tags.join(", ") : "",
+  ]
+    .filter(Boolean)
+    .join(" · ");
 }
 
-/** The slide's own date (or where its estimate comes from) and its caption. */
-function SlideDetails({ app }: { app: SlideStation }) {
+/** "Kodachrome 1936–2010": the years the slide's film was sold. */
+function eraText(era: EraHint) {
+  return `${STOCK_NAMES[era.stock]} ${era.from}–${era.to ?? "today"}`;
+}
+
+/** The slide's own date (or where its estimate comes from), film stock, place, caption and tags. */
+function SlideDetails({
+  app,
+  session,
+  onDateRange,
+  onAccepted,
+  onStockRange,
+  onPlaceRange,
+  placesDownloading,
+}: {
+  app: SlideStation;
+  session: SessionPayload;
+  onDateRange: () => void;
+  onAccepted: (kind: InsightKind, value: string, groups: Group[], index: number) => void;
+  onStockRange: (stock: string) => void;
+  onPlaceRange: () => void;
+  placesDownloading: boolean;
+}) {
   const g = app.current!;
   const est = g.date_est;
   const from = est.from?.map((i) => `#${i + 1}`).join(" & ");
+  const era = est.era;
+  const dateSug =
+    g.insights?.date?.state === "suggested" && g.insights.date.source === "neighbours+stock" ? g.insights.date : null;
+  const decide = async (kind: InsightKind, action: "accept" | "dismiss", value: string) => {
+    const p = await app.decide(kind, action, value, [g.id]);
+    if (p?.decided && action === "accept") onAccepted(kind, value, p.groups, g.index);
+  };
   return (
     <div className="flex flex-col gap-2 px-3 pt-2.5 pb-3">
       <TrayField
@@ -354,9 +546,56 @@ function SlideDetails({ app }: { app: SlideStation }) {
         label="Date"
         value={g.date}
         placeholder={
-          est.source === "own" || !est.value ? "e.g. 1978-06" : `≈ ${est.value} (${DATE_FROM[est.source]} ${from ?? ""})`.replace(" )", ")")
+          (est.source === "own" || !est.value
+            ? "e.g. 1978-06"
+            : `≈ ${est.value} (${DATE_FROM[est.source]} ${from ?? ""})`.replace(" )", ")")) +
+          (era && est.source !== "own" ? ` · ${eraText(era)}` : "")
         }
         onCommit={(v) => app.patchGroup({ date: v })}
+      />
+      {era?.fits === false && (
+        // a hint, never a correction: the date or the film stock is off
+        <p className="text-[11px] text-primary" role="status">
+          {est.source === "own" ? "This date" : "The estimate"} is outside {eraText(era)}: check the date or the film
+          stock.
+        </p>
+      )}
+      {dateSug && (
+        <SuggestionRow
+          label={
+            <>
+              <span className="text-muted-foreground">Date </span>
+              {dateSug.value}
+            </>
+          }
+          e={dateSug}
+          why={`from the dated slides around it${era ? `, within ${eraText(era)}` : ""}`}
+          onAccept={() => decide("date", "accept", dateSug.value)}
+          onDismiss={() => decide("date", "dismiss", dateSug.value)}
+        />
+      )}
+      <Tip label="Give a run of slides one date, e.g. 12–31: 1978-08">
+        <ProButton className="self-start" onClick={onDateRange}>
+          <CalendarRange /> Date a range…
+        </ProButton>
+      </Tip>
+      <StockField
+        key={`${g.id}-stock`}
+        g={g}
+        trayStock={session.stock ?? ""}
+        onChange={(stock) => app.patchGroup({ stock })}
+        onDecide={(action, value) => decide("stock", action, value)}
+        onRange={onStockRange}
+      />
+      <PlaceField
+        key={`${g.id}-place`}
+        place={g.place}
+        suggestion={g.insights?.place}
+        onDecide={(action, value) => decide("place", action, value)}
+        onChange={app.setPlace}
+        onRange={onPlaceRange}
+        downloading={placesDownloading}
+        onDownload={() => app.downloadPlaces()}
       />
       <TrayField
         key={`${g.id}-caption`}
@@ -365,6 +604,13 @@ function SlideDetails({ app }: { app: SlideStation }) {
         placeholder="Who, where, what — goes to Immich as the description"
         onCommit={(v) => app.patchGroup({ caption: v })}
       />
+      {g.from_immich && (
+        <p className="text-[11px] text-muted-foreground">
+          Pulled in from Immich: uploading it replaces that photo there (same albums, favourite kept).
+        </p>
+      )}
+      {/* the browser version keeps a library's tags but can't send them yet: shown, not edited */}
+      <TagsField key={`${g.id}-tags`} tags={g.tags ?? []} onChange={app.setTags} />
     </div>
   );
 }
@@ -430,6 +676,26 @@ function UploadArea({
           {sm.ready_upload ? `All ${sm.pending_upload}` : `Upload all ${sm.pending_upload}`}
         </ProButton>
       </Tip>
+    </div>
+  );
+}
+
+/** The tray's film stock: every slide without its own is taken to be on it (learning, dates). */
+function TrayStock({ value, onChange }: { value: string; onChange: (stock: string) => void }) {
+  const id = React.useId();
+  return (
+    <div className="flex flex-col gap-1">
+      <Label htmlFor={id} className="text-[11px] font-normal text-muted-foreground">
+        Film stock
+      </Label>
+      <NativeSelect id={id} value={value} onChange={(e) => onChange(e.target.value)} className="min-w-[150px]">
+        <NativeSelectOption value="">Not set — each slide its own</NativeSelectOption>
+        {STOCKS.filter((s) => s !== "unknown").map((s) => (
+          <NativeSelectOption key={s} value={s}>
+            {STOCK_NAMES[s]}
+          </NativeSelectOption>
+        ))}
+      </NativeSelect>
     </div>
   );
 }

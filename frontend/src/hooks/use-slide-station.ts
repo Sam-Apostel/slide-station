@@ -1,7 +1,25 @@
 import * as React from "react";
 import { toast } from "sonner";
 import { desktop } from "@/lib/desktop";
-import { api, needsReview, plural, type AppState, type Group, type Params, type SessionPayload } from "@/lib/api";
+import { droppedFiles, inputFolder, pickedFolder } from "@/lib/files";
+import { isQuota, scansOf, uploadFolder } from "@/lib/upload";
+import {
+  api,
+  needsReview,
+  plural,
+  standalone,
+  STOCK_NAMES,
+  type AppState,
+  type Group,
+  type InsightKind,
+  type Params,
+  type Place,
+  type Preset,
+  type Pulled,
+  type SessionPayload,
+  type SimilarKind,
+  type Source,
+} from "@/lib/api";
 
 const NEUTRAL = { brightness: 0, contrast: 0, warmth: 0, tint: 0, saturation: 0, curves: {} };
 const POLL_MS = 2000;
@@ -33,12 +51,16 @@ const fail = (e: unknown) => toast.error(e instanceof Error ? e.message : String
 export function useSlideStation() {
   const [state, setState] = React.useState<AppState | null>(null);
   const [session, setSession] = React.useState<SessionPayload | null>(null);
-  const [sessionId, setSessionId] = React.useState(storedSession);
+  // The tray asked for (the tray switcher shows it at once) and the tray on screen: while a tray
+  // loads the previous one's payload is still shown, so every URL and action pairs that payload
+  // with its own id, never with the tray still loading (whose id would 404 with its slides).
+  const [openId, setOpenId] = React.useState(storedSession);
+  const sessionId = session?.summary.id ?? openId;
   const [sel, setSel] = React.useState(0);
 
   // Refs so polling, debounced saves and key handlers always see the latest values.
-  const ref = React.useRef({ state, session, sessionId, sel });
-  ref.current = { state, session, sessionId, sel };
+  const ref = React.useRef({ state, session, sessionId, openId, sel });
+  ref.current = { state, session, sessionId, openId, sel };
   const lastJobKey = React.useRef("");
   // Slider moves the server hasn't confirmed yet, per slide. Kept on screen over any payload
   // until the save carrying them returns, and saved one request at a time so responses can't
@@ -70,8 +92,8 @@ export function useSlideStation() {
       if (!id) return;
       const { sessionId: prevId, session: prev, sel: prevSel } = ref.current;
       const keepId = keepSel && prevId === id ? prev?.groups[prevSel]?.id : undefined;
-      ref.current.sessionId = id;
-      setSessionId(id);
+      ref.current.openId = id;
+      setOpenId(id);
       try {
         localStorage.setItem("session", id);
       } catch {
@@ -83,7 +105,8 @@ export function useSlideStation() {
       } catch (e) {
         return fail(e);
       }
-      if (ref.current.sessionId !== id) return; // user switched trays meanwhile
+      if (ref.current.openId !== id) return; // user switched trays meanwhile
+      ref.current.sessionId = id;
       if (keepId) return applyPayload(p, keepId);
       const firstTodo = p.groups.findIndex(needsReview);
       ref.current.session = p;
@@ -103,25 +126,29 @@ export function useSlideStation() {
     }
     ref.current.state = s;
     setState(s);
-    const { sessionId: sid } = ref.current;
+    const { openId: sid } = ref.current;
     const j = s.job;
     const jobKey = j ? `${j.kind}:${j.started}:${j.finished}` : "";
     if (j?.finished && jobKey !== lastJobKey.current && lastJobKey.current) {
       if (j.error) toast.error(j.error, { duration: 8000 });
       else if (j.message) toast.success(j.message);
-      if (j.session === sid) await loadSession(sid, true);
+      if (j.session === sid || j.kind === "model" || j.kind === "ocr") await loadSession(sid, true);
     }
     lastJobKey.current = jobKey;
+    const ins = ref.current.session?.insights;
     if (s.sessions.length && !s.sessions.some((x) => x.id === sid)) {
       loadSession(s.sessions[0].id);
     } else if (j && !j.finished && j.kind === "import" && j.session === sid) {
       // pull in slides as the import makes them ready
       loadSession(sid, true);
+    } else if (ins?.enabled && ins.ready && ins.pending && (!j || j.finished)) {
+      // suggestions arrive as the background analysis gets through the tray
+      loadSession(sid, true);
     }
   }, [loadSession]);
 
   React.useEffect(() => {
-    const { sessionId: sid } = ref.current;
+    const { openId: sid } = ref.current;
     refreshState().then(() => {
       if (sid && ref.current.state?.sessions.some((x) => x.id === sid)) loadSession(sid);
     });
@@ -159,8 +186,9 @@ export function useSlideStation() {
   };
 
   const patchGroup = React.useCallback(
-    async (body: Record<string, unknown>) => {
-      const url = groupUrl();
+    /** The selected slide, or the one with id `gid`. */
+    async (body: Record<string, unknown>, gid?: string) => {
+      const url = gid ? `/api/sessions/${ref.current.sessionId}/groups/${gid}` : groupUrl();
       if (!url) return;
       try {
         const p = await api<SessionPayload>("PATCH", url, body);
@@ -232,6 +260,15 @@ export function useSlideStation() {
     select(nxt >= 0 ? nxt : i + 1);
   };
 
+  /** The review grid's Space: develop the slide under the cursor and step to the next tile. */
+  const developStep = () => {
+    const { session: s, sel: i } = ref.current;
+    const g = s?.groups[i];
+    if (!g) return;
+    select(i + 1); // first, so quick presses each move on
+    if (!g.reviewed) patchGroup({ reviewed: true }, g.id);
+  };
+
   const toggleSkip = () => {
     const g = ref.current.session?.groups[ref.current.sel];
     if (g) patchGroup({ skip: !g.skip });
@@ -266,8 +303,8 @@ export function useSlideStation() {
     if (!editable()) return;
     const { session: s, sel: i } = ref.current;
     if (!s || i === 0) return;
-    // colour only: crop and straighten belong to each slide
-    const { crop: _c, angle: _a, ...colour } = s.groups[i - 1].params;
+    // colour only: crop, straighten and local adjustments belong to each slide
+    const { crop: _c, angle: _a, local: _l, ...colour } = s.groups[i - 1].params;
     patchGroup({ params: colour });
     toast(`Copied colour from slide ${i}`);
   };
@@ -347,12 +384,108 @@ export function useSlideStation() {
     }
   };
 
+  // ---------------------------------------------------------------- looks: presets, develop like
+
+  const [presets, setPresets] = React.useState<Preset[]>([]);
+  const loadPresets = React.useCallback(async () => {
+    try {
+      setPresets((await api<{ presets: Preset[] }>("GET", "/api/presets")).presets);
+    } catch {
+      /* shown as an empty list */
+    }
+  }, []);
+  React.useEffect(() => {
+    loadPresets();
+  }, [loadPresets]);
+
+  /** This slide's colour settings (never its crop or straighten) as a named preset. */
+  const savePreset = async (name: string) => {
+    const { sessionId: sid, session: s, sel: i } = ref.current;
+    const g = s?.groups[i];
+    if (!g || !name.trim()) return false;
+    if (unsaved.current.has(g.id)) await flushParams(g.id); // save what the sliders show
+    try {
+      setPresets(
+        (await api<{ presets: Preset[] }>("POST", "/api/presets", { name, session: sid, group: g.id })).presets,
+      );
+      toast(`Saved the look as “${name.trim()}”`);
+      return true;
+    } catch (e) {
+      fail(e);
+      return false;
+    }
+  };
+
+  const deletePreset = async (name: string) => {
+    try {
+      setPresets((await api<{ presets: Preset[] }>("DELETE", `/api/presets/${encodeURIComponent(name)}`)).presets);
+    } catch (e) {
+      fail(e);
+    }
+  };
+
+  /**
+   * A preset's colour, or that of any slide in any tray, on this slide ("this") or on it and every
+   * following slide still to develop ("rest"). Framing stays; each slide can undo it.
+   */
+  const applyLook = async (
+    look: { preset: string } | { like: { session: string; group: string } },
+    scope: "this" | "rest" = "this",
+  ) => {
+    if (scope === "this" && !editable()) return false;
+    const url = groupUrl();
+    const g = ref.current.session?.groups[ref.current.sel];
+    if (!url || !g) return false;
+    if (unsaved.current.has(g.id)) await flushParams(g.id); // it would land after the look and undo it
+    try {
+      const p = await api<SessionPayload & { applied: number }>("POST", `${url}/look`, { ...look, scope });
+      applyPayload(p);
+      const what = "preset" in look ? `“${look.preset}”` : "the look";
+      toast(scope === "rest" ? `Applied ${what} to ${plural(p.applied, "slide")}` : `Applied ${what}`);
+      return true;
+    } catch (e) {
+      fail(e);
+      return false;
+    }
+  };
+
+  /** Straighten to the slide mount's edge; with trim, also crop to the mount's window. */
+  const straightenToMount = async (trim = false) => {
+    if (!editable()) return;
+    const url = groupUrl();
+    const g = ref.current.session?.groups[ref.current.sel];
+    if (!url || !g) return;
+    if (unsaved.current.has(g.id)) await flushParams(g.id);
+    try {
+      applyPayload(await api<SessionPayload>("POST", `${url}/mount`, { apply: true, trim }));
+    } catch (e) {
+      fail(e);
+    }
+  };
+
+  // Slides imported before mount detection existed (or whose scans changed since) have no mount
+  // yet: look for it once when the slide is shown.
+  const lookedForMount = React.useRef(new Set<string>());
+  React.useEffect(() => {
+    if (!current || current.mount !== null || current.locked) return;
+    const key = `${sessionId}:${current.id}:${current.active.join()}`;
+    if (lookedForMount.current.has(key)) return;
+    lookedForMount.current.add(key);
+    api<SessionPayload>("POST", `/api/sessions/${sessionId}/groups/${current.id}/mount`, {}).then(
+      (p) => ref.current.sessionId === sessionId && applyPayload(p),
+      () => undefined, // a suggestion: nothing to tell if it fails
+    );
+  }, [current, sessionId, applyPayload]);
+
   const STEP_LABEL: Record<string, string> = {
+    mount: "straighten to mount",
     rotation: "rotation",
     fit: "curve fit",
     neutral: "white balance pick",
     learned: "learned settings",
     apply: "applied settings",
+    preset: "preset",
+    like: "develop like",
   };
   /** Step this slide's look back / forward (settings + rotation, drags count as one step). */
   const step = async (direction: "undo" | "redo") => {
@@ -375,6 +508,197 @@ export function useSlideStation() {
   };
   const undo = () => step("undo");
   const redo = () => step("redo");
+
+  /** Date slides fromIndex..toIndex (0-based, either order, both included) at once; "" clears. */
+  const dateRange = async (fromIndex: number, toIndex: number, date: string) => {
+    const { sessionId: sid, session: s } = ref.current;
+    const a = s?.groups[fromIndex];
+    const b = s?.groups[toIndex];
+    if (!a || !b) return false;
+    try {
+      const p = await api<SessionPayload & { dated: number }>("POST", `/api/sessions/${sid}/dates`, {
+        from: a.id,
+        to: b.id,
+        date,
+      });
+      applyPayload(p);
+      const lo = Math.min(fromIndex, toIndex) + 1;
+      const hi = Math.max(fromIndex, toIndex) + 1;
+      const skipped = hi - lo + 1 - p.dated;
+      toast(
+        `${date ? `Dated ${plural(p.dated, "slide")} ${date}` : `Cleared the date of ${plural(p.dated, "slide")}`} (${lo}–${hi})` +
+          (skipped ? `, ${skipped} locked left as they were` : ""),
+      );
+      return true;
+    } catch (e) {
+      fail(e);
+      return false;
+    }
+  };
+
+  // ---------------------------------------------------------------- insights
+
+  /** Accept or dismiss open suggestions of a kind (one value, or all): on the given slides, or the whole tray.
+   *  `text`: a caption as the user edited it before accepting (one slide). */
+  const decide = async (
+    kind: InsightKind,
+    action: "accept" | "dismiss",
+    value?: string,
+    groupIds?: string[],
+    text?: string,
+  ) => {
+    const { sessionId: sid } = ref.current;
+    try {
+      const p = await api<SessionPayload & { decided: number }>("POST", `/api/sessions/${sid}/insights/decide`, {
+        kind,
+        action,
+        value,
+        groups: groupIds,
+        text,
+      });
+      applyPayload(p);
+      return p;
+    } catch (e) {
+      fail(e);
+      return null;
+    }
+  };
+
+  /**
+   * A look-alike suggestion of the tray (by id). Accepting: duplicates keep `keep` (default the best)
+   * and skip the rest, split cuts the stack, merge joins the two slides.
+   */
+  const decideSimilar = async (kind: SimilarKind, action: "accept" | "dismiss", id: string, keep?: string) => {
+    const { sessionId: sid } = ref.current;
+    try {
+      const p = await api<SessionPayload>("POST", `/api/sessions/${sid}/insights/decide`, {
+        kind,
+        action,
+        value: id,
+        keep,
+      });
+      applyPayload(p);
+      if (action === "accept")
+        toast(
+          kind === "duplicates"
+            ? "Kept the best, skipped the rest (X brings one back)"
+            : kind === "split"
+              ? "Split"
+              : "Merged",
+        );
+      return true;
+    } catch (e) {
+      fail(e);
+      return false;
+    }
+  };
+
+  /** A photo in Immich that looks like this slide's upload: replace it (accept) or keep both (dismiss). */
+  const decideLookalike = async (action: "accept" | "dismiss", assetId: string) => {
+    const { sessionId: sid } = ref.current;
+    const g = ref.current.session?.groups[ref.current.sel];
+    if (!g) return;
+    try {
+      applyPayload(
+        await api<SessionPayload>("POST", `/api/sessions/${sid}/insights/decide`, {
+          kind: "lookalike",
+          action,
+          value: assetId,
+          groups: [g.id],
+        }),
+      );
+      if (action === "accept") toast("Replaced in Immich: the old photo is in Immich's trash, its albums carried over");
+    } catch (e) {
+      fail(e);
+    }
+  };
+
+  /** Look for photos in Immich like this tray's uploaded slides (a job); `all`: check every one again. */
+  const checkLookalikes = async (all = false) => {
+    try {
+      await api("POST", `/api/sessions/${ref.current.sessionId}/lookalikes`, { all });
+      refreshState();
+    } catch (e) {
+      fail(e);
+    }
+  };
+
+  /** Give slides fromIndex..toIndex (0-based, either order) a tag, caption, date, film stock or place confirmed on one of them. */
+  const propagate = async (
+    kind: "tags" | "caption" | "date" | "stock" | "place",
+    value: string | Place,
+    fromIndex: number,
+    toIndex: number,
+  ) => {
+    const { sessionId: sid, session: s } = ref.current;
+    const a = s?.groups[fromIndex];
+    const b = s?.groups[toIndex];
+    if (!a || !b) return false;
+    try {
+      const p = await api<SessionPayload & { applied: number }>("POST", `/api/sessions/${sid}/insights/propagate`, {
+        kind,
+        value,
+        from: a.id,
+        to: b.id,
+      });
+      applyPayload(p);
+      const lo = Math.min(fromIndex, toIndex) + 1;
+      const hi = Math.max(fromIndex, toIndex) + 1;
+      const what =
+        typeof value !== "string"
+          ? `Placed in ${value.name}`
+          : kind === "tags"
+            ? `Tagged “${value}”`
+            : kind === "date"
+              ? `Dated ${value}`
+              : kind === "stock"
+                ? `Film stock ${STOCK_NAMES[value] ?? "cleared"}`
+                : "Captioned";
+      toast(`${what}: ${plural(p.applied, "slide")} (${lo}–${hi})`);
+      return true;
+    } catch (e) {
+      fail(e);
+      return false;
+    }
+  };
+
+  /** The slide's own tags; removing a suggested tag counts as dismissing it. */
+  const setTags = (tags: string[]) => {
+    if (editable()) patchGroup({ tags });
+  };
+
+  /** Where the slide was taken (null clears it); settles an open place suggestion. */
+  const setPlace = (place: Place | null) => (editable() ? patchGroup({ place }) : Promise.resolve(undefined));
+
+  /** Fetch the place names (GeoNames) or, with `ocr`, the text reader for place suggestions too (a job). */
+  const downloadPlaces = async (ocr = false) => {
+    try {
+      await api("POST", "/api/places/download", { ocr });
+      refreshState();
+    } catch (e) {
+      fail(e);
+    }
+  };
+
+  /** Analyse the tray in the background (again, with `force`: keeps what was accepted or dismissed). */
+  const analyseTray = async (force = false) => {
+    const { sessionId: sid } = ref.current;
+    try {
+      applyPayload(await api<SessionPayload>("POST", `/api/sessions/${sid}/insights/run`, { force }));
+    } catch (e) {
+      fail(e);
+    }
+  };
+
+  /** Fetch the models turned on (a job in the activity pill); the open tray is analysed once they're there. */
+  const downloadModel = async () => {
+    try {
+      await api("POST", "/api/insights/model");
+      refreshState();
+    } catch (e) {
+      fail(e);
+    }
+  };
 
   // ---------------------------------------------------------------- tray
 
@@ -420,6 +744,136 @@ export function useSlideStation() {
     }
   };
 
+  /** Run the import or upload a server restart cut off (reported as interrupted) again, as it was started. */
+  const resumeJob = async () => {
+    try {
+      await api("POST", "/api/job/resume");
+      refreshState();
+    } catch (e) {
+      fail(e);
+    }
+  };
+
+  /** Save finished JPEGs to disk instead of Immich (browser version): a folder you pick, or a zip. */
+  const startSave = async (onlyReady = false) => {
+    try {
+      await api("POST", `/api/sessions/${ref.current.sessionId}/finish`, { only_ready: onlyReady, target: "disk" });
+      refreshState();
+    } catch (e) {
+      fail(e);
+    }
+  };
+
+  /**
+   * A folder of scans picked, or dropped on the window, as an import source. The browser version
+   * reads it in the page; a server in a browser tab (not the desktop app, which hands over paths)
+   * gets it uploaded (lib/upload.ts) and imports it as `upload:<id>`.
+   */
+  const addSource = async (how: "pick" | DataTransfer): Promise<Source | null> => {
+    if (desktop) return null;
+    if (!standalone) return uploadSource(how);
+    try {
+      const pick = await import("@/standalone/pick");
+      const id = await (how === "pick" ? pick.chooseFolder() : pick.fromDrop(how));
+      if (!id) {
+        if (how !== "pick") toast("Drop a folder of scans (JPEGs)");
+        return null;
+      }
+      await refreshState();
+      const src = ref.current.state?.sources.find((x) => x.path === id) ?? null;
+      if (src && !src.count) toast(`No JPEG scans in “${src.name}”`);
+      return src && src.count ? src : null;
+    } catch (e) {
+      fail(e);
+      return null;
+    }
+  };
+
+  const uploadSource = async (how: "pick" | DataTransfer): Promise<Source | null> => {
+    // a drop's files must be asked for inside the drop event: before anything is awaited
+    const dropped = how === "pick" ? null : droppedFiles(how);
+    const picked = dropped ? await dropped : await inputFolder().then((f) => (f?.length ? pickedFolder(f) : null));
+    if (!picked) {
+      if (how !== "pick") toast("Drop a folder of scans");
+      return null;
+    }
+    const scans = scansOf(picked.files, !!ref.current.state?.server?.raw);
+    if (!scans.length) {
+      toast(`No scans in “${picked.name}”`);
+      return null;
+    }
+    const t = toast.loading(`Uploading ${plural(scans.length, "scan")}…`);
+    try {
+      const id = await uploadFolder(picked.name, scans, (p) =>
+        toast.loading(`Uploading “${picked.name}” · ${p.files}/${p.of} · ${Math.floor((100 * p.sent) / p.bytes)} %`, {
+          id: t,
+        }),
+      );
+      toast.success(`Uploaded ${plural(scans.length, "scan")} from “${picked.name}”`, { id: t });
+      await refreshState();
+      return ref.current.state?.sources.find((x) => x.path === `upload:${id}`) ?? null;
+    } catch (e) {
+      const why = e instanceof Error ? e.message : String(e);
+      // out of room says what to do itself; anything else resumes when the folder is dropped again
+      toast.error(isQuota(e) ? why : `Upload stopped: ${why}. Drop the folder again to carry on.`, {
+        id: t,
+        duration: isQuota(e) ? 15000 : undefined,
+      });
+      return null;
+    }
+  };
+
+  /** Camera rig mode: the tethered camera takes a picture, which is imported into this tray. */
+  const capture = async () => {
+    const { sessionId: sid } = ref.current;
+    if (!sid) return toast("Open or start a tray first");
+    try {
+      await api("POST", `/api/sessions/${sid}/capture`, {});
+      refreshState();
+    } catch (e) {
+      fail(e);
+    }
+  };
+
+  /** Bring captions and dates edited in Immich back into this tray. */
+  const pullFromImmich = async () => {
+    const { sessionId: sid } = ref.current;
+    try {
+      const p = await api<SessionPayload & { pulled: Pulled }>("POST", `/api/sessions/${sid}/pull`);
+      applyPayload(p);
+      const { checked, captions, dates, places = 0, gone } = p.pulled;
+      const what = [
+        captions && plural(captions, "caption"),
+        dates && plural(dates, "date"),
+        places && plural(places, "place"),
+      ].filter(Boolean);
+      toast(
+        !checked
+          ? "Nothing in this tray is in Immich yet"
+          : what.length
+            ? `Pulled ${what.join(", ").replace(/, ([^,]*)$/, " and $1")} from Immich`
+            : `No changes in Immich (${plural(checked, "slide")} checked)`,
+        gone ? { description: `${plural(gone, "slide")} no longer in Immich (deleted or in its trash)` } : undefined,
+      );
+    } catch (e) {
+      fail(e);
+    }
+  };
+
+  /** A new tray with photos from Immich as its scans, to develop them again. */
+  const importFromImmich = async (assets: string[], body: { name: string; album: string }) => {
+    try {
+      const { id } = await api<{ id: string }>("POST", "/api/immich/import", { assets, ...body });
+      await refreshState();
+      await loadSession(id);
+      toast(`Pulling in ${plural(assets.length, "photo")} from Immich…`);
+      return true;
+    } catch (e) {
+      fail(e);
+      return false;
+    }
+  };
+
   const startCleanup = async () => {
     try {
       await api("POST", `/api/sessions/${ref.current.sessionId}/cleanup`);
@@ -450,6 +904,7 @@ export function useSlideStation() {
     state,
     session,
     sessionId,
+    openId,
     sel,
     current,
     refreshState,
@@ -458,6 +913,7 @@ export function useSlideStation() {
     setParam,
     rotate,
     review,
+    developStep,
     toggleSkip,
     toggleScan,
     splitAt,
@@ -468,13 +924,36 @@ export function useSlideStation() {
     resuggest,
     fitCurves,
     pickNeutral,
+    straightenToMount,
     patchGroup,
+    dateRange,
+    presets,
+    loadPresets,
+    savePreset,
+    deletePreset,
+    applyLook,
+    decide,
+    decideSimilar,
+    decideLookalike,
+    checkLookalikes,
+    propagate,
+    setTags,
+    setPlace,
+    downloadPlaces,
+    analyseTray,
+    downloadModel,
     undo,
     redo,
     patchSession,
     startImport,
     createSession,
     startUpload,
+    resumeJob,
+    startSave,
+    addSource,
+    capture,
+    pullFromImmich,
+    importFromImmich,
     startCleanup,
     eject,
     reveal,

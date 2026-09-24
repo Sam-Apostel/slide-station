@@ -2,7 +2,7 @@ import * as React from "react";
 import { Undo2, Wand2 } from "lucide-react";
 import { ProButton } from "@/components/ui/pro-button";
 import { Tip } from "@/components/tip";
-import { histogramUrl, type Group } from "@/lib/api";
+import { api, histogramUrl, type Group } from "@/lib/api";
 import {
   CHANNELS,
   MIN_GAP,
@@ -44,8 +44,7 @@ function useHistogram(url: string) {
   const [hist, setHist] = React.useState<Histogram | null>(null);
   React.useEffect(() => {
     let live = true;
-    fetch(url)
-      .then((r) => (r.ok ? r.json() : null))
+    api<Histogram>("GET", url)
       .then((h) => live && h && setHist(h))
       .catch(() => {});
     return () => {

@@ -8,22 +8,36 @@ import re
 import threading
 import time
 import uuid
+from contextlib import contextmanager
+from contextvars import ContextVar
 from datetime import datetime
 from pathlib import Path
 
+from . import filmstock, stats
 from .imaging import Params
 
 CONFIG_DIR = Path(os.environ.get("SLIDESTATION_HOME", Path.home() / ".slidestation"))
 CONFIG_FILE = CONFIG_DIR / "config.json"
+# Accounts mode (ARCHITECTURE "Hosted container"): every signed-in Immich user has a home of their
+# own, users/<id>/ with config.json and library/, set for the request (and the jobs it starts) by
+# `as_home`. Without it everything is the single user's CONFIG_DIR, as always.
+_home: ContextVar[Path | None] = ContextVar("slidestation_home", default=None)
+# The Immich every account belongs to: set by whoever runs the server, never chosen by a user (the
+# API key says who they are, so the server must be the one that answers it).
+USER_IMMICH_URL = os.environ.get("SLIDESTATION_IMMICH_URL", "")
 
 DEFAULT_CONFIG = {
-    "library": str(Path.home() / "Pictures" / "Slide Station"),
+    "library": os.environ.get("SLIDESTATION_LIBRARY") or str(Path.home() / "Pictures" / "Slide Station"),
     "immich_url": "",
     "immich_key": "",
     "keep_originals": True,
     "keep_exports": False,
     "learning_enabled": True,
+    "people_enabled": False,  # faces -> people (opt-in: downloads a face model)
     "jpeg_quality": 95,
+    # also upload each slide's untouched scans, stacked under the developed photo in Immich
+    "upload_originals_stacked": False,
+    "stats_target": stats.DEFAULT_TARGET,  # slides to digitise in all, for the projected finish
 }
 
 lock = threading.RLock()
@@ -36,19 +50,51 @@ def _atomic_write(path: Path, data: dict) -> None:
     os.replace(tmp, path)
 
 
+def home() -> Path:
+    """Where config.json lives: the signed-in user's own folder, or the single user's."""
+    return _home.get() or CONFIG_DIR
+
+
+def user_home() -> Path | None:
+    """The signed-in user's folder in accounts mode, else None."""
+    return _home.get()
+
+
+@contextmanager
+def as_home(path: Path | None):
+    """Act as the user whose home this is (None: the single user)."""
+    token = _home.set(path)
+    try:
+        yield
+    finally:
+        _home.reset(token)
+
+
 def load_config() -> dict:
     cfg = dict(DEFAULT_CONFIG)
-    if CONFIG_FILE.exists():
-        cfg.update(json.loads(CONFIG_FILE.read_text()))
+    f = home() / "config.json"
+    if f.exists():
+        cfg.update(json.loads(f.read_text()))
+    if _home.get() is not None:  # an account: its library is its own folder, its Immich the server's
+        cfg["library"] = str(_home.get() / "library")
+        cfg["immich_url"] = USER_IMMICH_URL
     return cfg
 
 
 def save_config(cfg: dict) -> None:
-    _atomic_write(CONFIG_FILE, cfg)
+    f = home() / "config.json"
+    _atomic_write(f, cfg)
     try:
-        os.chmod(CONFIG_FILE, 0o600)  # holds the Immich API key
+        os.chmod(f, 0o600)  # holds the Immich API key
     except OSError:
         pass
+
+
+def models_dir() -> Path:
+    """Downloaded models: the library's models/ folder, or one folder every account on a hosted
+    server shares (SLIDESTATION_MODELS), so each user doesn't download their own copy."""
+    shared = os.environ.get("SLIDESTATION_MODELS")
+    return Path(shared) if shared else library() / "models"
 
 
 def library() -> Path:
@@ -89,13 +135,39 @@ def add_to_index(entries: dict) -> None:
         _atomic_write(_index_file(), idx)
 
 
+# --------------------------------------------------------------------------- presets
+
+
+def _presets_file() -> Path:
+    return library() / "presets.json"
+
+
+def load_presets() -> list[dict]:
+    """Named colour looks, library-wide: [{"name", "params", "created"}], in the order saved."""
+    f = _presets_file()
+    try:
+        return json.loads(f.read_text()).get("presets", []) if f.exists() else []
+    except (ValueError, AttributeError):
+        return []
+
+
+def save_presets(presets: list[dict]) -> None:
+    with lock:
+        _atomic_write(_presets_file(), {"presets": presets})
+
+
 # --------------------------------------------------------------------------- sessions
+
+
+SID_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.-]*$")
 
 
 class Session:
     """A batch of slides (typically a tray or box) that becomes one Immich album."""
 
     def __init__(self, sid: str):
+        if not SID_RE.match(sid or ""):  # a tray id is one plain name: never a way out of the library
+            raise FileNotFoundError(sid)
         self.id = sid
         self.dir = library() / "sessions" / sid
         self.file = self.dir / "session.json"
@@ -140,19 +212,31 @@ class Session:
     _summaries: dict = {}
 
     @staticmethod
-    def list_all() -> list[dict]:
+    def _scan_all() -> list[tuple]:
+        """(mtime, summary, slide times) of every tray, re-reading only the trays that changed."""
         out = []
         for f in sorted((library() / "sessions").glob("*/session.json"), reverse=True):
             try:
                 mt = f.stat().st_mtime_ns
                 hit = Session._summaries.get(str(f))
-                if not hit or hit[0] != mt:  # only re-read trays that changed
-                    hit = (mt, summary(json.loads(f.read_text())))
+                if not hit or hit[0] != mt:
+                    d = json.loads(f.read_text())
+                    hit = (mt, summary(d), stats.slide_times(d))
                     Session._summaries[str(f)] = hit
             except Exception:
                 continue
-            out.append(hit[1])
+            out.append(hit)
         return out
+
+    @staticmethod
+    def list_all() -> list[dict]:
+        return [hit[1] for hit in Session._scan_all()]
+
+    @staticmethod
+    def library_stats(target: int) -> dict:
+        """Progress across every tray (stats.library_stats)."""
+        all_ = Session._scan_all()
+        return stats.library_stats([h[1] for h in all_], [t for h in all_ for t in h[2]], target)
 
     def save(self) -> None:
         with lock:
@@ -178,7 +262,9 @@ class Session:
             "reviewed": False,
             "skip": False,
             "export": None,  # {"file","sha1","key"}
-            "immich": None,  # {"asset_id","key"}
+            # {"asset_id", "key", "meta", "pushed": {"date", "caption", "place"}, "stack_id", "originals": {scan: asset},
+            #  "own_originals": [assets this app uploaded]}; see ARCHITECTURE "Round trip with Immich"
+            "immich": None,
         }
 
     def log(self, msg: str) -> None:
@@ -191,23 +277,25 @@ def active_scans(g: dict) -> list[str]:
     return s or g["scans"][:1]
 
 
-NEUTRAL_EXTRAS = {"curves": {}, "angle": 0.0, "crop": None}
+NEUTRAL_EXTRAS = {"curves": {}, "angle": 0.0, "crop": None, "dust": 0.0, "mould": 0.0, "newton": 0.0, "local": []}
 
 
 def render_key(g: dict) -> str:
     """Identifies the exact output of a group; changes whenever the result would change."""
     # settings still at their neutral value are left out, so slides uploaded before a setting
-    # existed (curves, straighten, crop) don't become "changed"
+    # existed (curves, straighten, crop, dust, mould, Newton rings, local adjustments) don't become "changed"
     params = {k: v for k, v in g["params"].items() if not (k in NEUTRAL_EXTRAS and v == NEUTRAL_EXTRAS[k])}
     k = json.dumps([active_scans(g), g["rotation"], params], sort_keys=True)
     return hashlib.sha1(k.encode()).hexdigest()[:12]
 
 
 def tone_key(g: dict) -> str:
-    """Identifies the tone curve's input (what its histogram shows): scans, restore, trim, geometry."""
+    """Identifies the tone curve's input (what its histogram shows): scans, restore, trim, repairs, geometry."""
     p = g["params"]
+    extra = [p["dust"]] if p.get("dust") else []  # only when on, so existing keys stay the same
+    extra += [[k, p[k]] for k in ("mould", "newton") if p.get(k)]  # likewise, named: never a dust value
     k = json.dumps([active_scans(g), g["rotation"], p.get("strength"), p.get("trim"), p.get("angle", 0.0),
-                    p.get("crop")])
+                    p.get("crop"), *extra])
     return hashlib.sha1(k.encode()).hexdigest()[:12]
 
 
@@ -233,40 +321,61 @@ def format_date(t: datetime, precision: int) -> str:
     return t.strftime(["%Y", "%Y-%m", "%Y-%m-%d"][precision - 1])
 
 
+def estimate(own: list, i: int, dated: list[int]) -> tuple[str, str, list[int]] | None:
+    """Slide i's date from the dated slides `dated` (indices into `own`, the parsed own dates) around
+    it in tray order: interpolated between the two either side, else the nearest one's. Returns
+    (value, "between" | "near", the indices used), or None when `dated` is empty."""
+    before = max((j for j in dated if j < i), default=None)
+    after = min((j for j in dated if j > i), default=None)
+    if before is not None and after is not None:
+        (t0, p0), (t1, p1) = own[before], own[after]
+        t = t0 + (t1 - t0) * ((i - before) / (after - before))
+        return format_date(t, min(p0, p1)), "between", [before, after]
+    if before is not None or after is not None:
+        j = before if before is not None else after
+        return format_date(*own[j]), "near", [j]
+    return None
+
+
 def slide_dates(d: dict) -> list[dict]:
     """The date each slide goes to Immich with, and where it came from.
 
     A slide's own date wins. Slides without one are estimated from the dated slides around them in
     tray order — a tray is one stretch of time, so slides between an August 1978 and a July 1979
-    slide are interpolated between the two — then the tray's date, then (empty) the scan's EXIF."""
+    slide are interpolated between the two — then the tray's date, then (empty) the scan's EXIF.
+    A slide whose film stock (own or the tray's) has a known era also gets `era`: {"stock", "from",
+    "to", "fits"} — a hint only, it never changes the value (filmstock.era_hint)."""
     groups = d["groups"]
     own = [parse_date(g.get("date", "")) for g in groups]
     dated = [i for i, x in enumerate(own) if x]
     tray = parse_date(d.get("date", ""))
     out = []
     for i, g in enumerate(groups):
+        hit = None if own[i] else estimate(own, i, dated)
         if own[i]:
-            out.append({"value": format_date(*own[i]), "source": "own"})
-            continue
-        before = max((j for j in dated if j < i), default=None)
-        after = min((j for j in dated if j > i), default=None)
-        if before is not None and after is not None:
-            (t0, p0), (t1, p1) = own[before], own[after]
-            t = t0 + (t1 - t0) * ((i - before) / (after - before))
-            out.append({"value": format_date(t, min(p0, p1)), "source": "between", "from": [before, after]})
-        elif before is not None or after is not None:
-            j = before if before is not None else after
-            out.append({"value": format_date(*own[j]), "source": "near", "from": [j]})
+            e = {"value": format_date(*own[i]), "source": "own"}
+        elif hit:
+            e = {"value": hit[0], "source": hit[1], "from": hit[2]}
         elif tray:
-            out.append({"value": format_date(*tray), "source": "tray"})
+            e = {"value": format_date(*tray), "source": "tray"}
         else:
-            out.append({"value": "", "source": "scan"})
+            e = {"value": "", "source": "scan"}
+        hint = filmstock.era_hint(d, g, e["value"])
+        if hint:
+            e["era"] = hint
+        out.append(e)
     return out
 
 
 def meta_key(g: dict, date: dict) -> str:
-    """What besides the pixels goes to Immich with a slide: its date and caption."""
-    return hashlib.sha1(json.dumps([date.get("value", ""), g.get("caption", "")]).encode()).hexdigest()[:12]
+    """What besides the pixels goes to Immich with a slide: its date, caption, tags and place (its
+    coordinates: that's what Immich and the EXIF get)."""
+    k = [date.get("value", ""), g.get("caption", "")]
+    if g.get("tags"):  # left out when there are none, so slides uploaded before tags existed stay put
+        k.append(sorted(g["tags"]))
+    if g.get("place"):  # likewise; formatted, so the browser version's key is the same string
+        k.append({"gps": [f"{g['place']['lat']:.5f}", f"{g['place']['lon']:.5f}"]})
+    return hashlib.sha1(json.dumps(k).encode()).hexdigest()[:12]
 
 
 def group_status(g: dict, meta: str | None = None) -> str:

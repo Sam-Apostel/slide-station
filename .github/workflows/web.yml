@@ -1,0 +1,49 @@
+name: Web version
+
+# Builds the browser-only version (frontend: `npm run build:web`, no backend) and publishes it to
+# GitHub Pages. Manual for now: hosting it publicly ships the ProUI components the app uses, and
+# ROADMAP §4 asks for their licence terms to be confirmed first. One-time setup: Settings → Pages →
+# Source: GitHub Actions. Runs on GitHub's runners (the release workflow's Mac isn't needed).
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test # the browser pipeline against the Python one (golden fixtures)
+      - run: npm run build:web
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: frontend/dist-web
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - id: deploy
+        uses: actions/deploy-pages@v4

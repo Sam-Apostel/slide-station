@@ -14,12 +14,17 @@ public struct Params: Codable, Equatable, Hashable, Sendable {
     public var curves: [String: [[Double]]] = [:]
     public var angle: Double = 0            // straighten, degrees clockwise (-15..15)
     public var crop: [Double]?              // [left, top, right, bottom] in 0..1 of the straightened frame
+    public var dust: Double = 0             // dust & scratch repair 0..1 (0 = off)
+    public var mould: Double = 0            // mould repair 0..1 (0 = off)
+    public var newton: Double = 0           // Newton ring removal 0..1 (0 = off)
+    /// Local adjustments (graduated / radial / brush), applied in order after the rest; each slide's own.
+    public var local: [LocalAdjustment] = []
 
     public init() {}
 
     public static let learnedKeys: [WritableKeyPath<Params, Double>] = [\.strength, \.brightness, \.contrast, \.warmth, \.tint, \.saturation]
 
-    enum CodingKeys: String, CodingKey { case strength, brightness, contrast, warmth, tint, saturation, trim, curves, angle, crop }
+    enum CodingKeys: String, CodingKey { case strength, brightness, contrast, warmth, tint, saturation, trim, curves, angle, crop, dust, mould, newton, local }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -29,6 +34,9 @@ public struct Params: Codable, Equatable, Hashable, Sendable {
         trim = (try? c.decode(Bool.self, forKey: .trim)) ?? true
         curves = Curves.clean((try? c.decode([String: [[Double]]].self, forKey: .curves)) ?? [:])
         crop = Params.cleanCrop(try? c.decode([Double].self, forKey: .crop))
+        dust = min(1, max(0, num(.dust, 0)))   // trays from before dust repair have none
+        mould = min(1, max(0, num(.mould, 0))); newton = min(1, max(0, num(.newton, 0)))   // likewise
+        local = LocalAdjustment.clean((try? c.decode([LocalAdjustment].self, forKey: .local)) ?? [])   // none in older trays
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -37,7 +45,9 @@ public struct Params: Codable, Equatable, Hashable, Sendable {
         try c.encode(contrast, forKey: .contrast); try c.encode(warmth, forKey: .warmth)
         try c.encode(tint, forKey: .tint); try c.encode(saturation, forKey: .saturation)
         try c.encode(trim, forKey: .trim); try c.encode(curves, forKey: .curves)
-        try c.encode(angle, forKey: .angle); try c.encode(crop, forKey: .crop)
+        try c.encode(angle, forKey: .angle); try c.encode(crop, forKey: .crop); try c.encode(dust, forKey: .dust)
+        try c.encode(mould, forKey: .mould); try c.encode(newton, forKey: .newton)
+        try c.encode(local, forKey: .local)
     }
 
     /// `[l, t, r, b]` in 0..1, at least 5 % each way; the whole frame (or junk) means no crop.

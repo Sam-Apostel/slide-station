@@ -1,13 +1,18 @@
 """Import from the scanner, render previews/exports, upload to Immich, clean up the card."""
 from __future__ import annotations
 
+import base64
+import contextvars
 import hashlib
+import io
+import json
 import os
 import shutil
 import subprocess
 import sys
 import threading
 import time
+import uuid
 from collections import OrderedDict
 from datetime import datetime
 from pathlib import Path
@@ -17,10 +22,16 @@ from PIL import Image
 
 from . import imaging as im
 from .imaging import Params
-from . import learning
+from . import filmstock, learning
+from . import people
+from . import places
+from . import raw
+from . import tether
+from . import uploads
 from .immich import Immich, ImmichError
-from .store import (Session, active_scans, add_to_index, group_status, imported_index, load_config, lock,
-                    meta_key, parse_date, render_key, sha1_file, slide_dates, slugify, statuses)
+from .store import (Session, _atomic_write, active_scans, add_to_index, as_home, group_status, home, imported_index,
+                    library, load_config, lock, meta_key, parse_date, render_key, sha1_file, slide_dates, slugify,
+                    statuses, user_home)
 
 VOLUMES = Path(os.environ.get("SLIDESTATION_VOLUMES", "/Volumes"))
 SCANNER_MODELS = {"RODFS50"}  # Kodak Slide N Scan
@@ -38,22 +49,120 @@ class Job:
         self.error = ""
         self.finished = False
         self.started = time.time()
+        self.id = uuid.uuid4().hex[:12]
+        # how to run it again after a restart ({"source"} for an import, {"only_ready"} for an
+        # upload): set on a job that was interrupted and can be resumed (POST /api/job/resume)
+        self.resume: dict | None = None
+        self.interrupted = False
 
     def as_dict(self):
-        return {k: getattr(self, k) for k in ("kind", "session", "total", "done", "message", "error", "finished", "started")}
+        d = {k: getattr(self, k) for k in ("kind", "session", "total", "done", "message", "error", "finished", "started")}
+        if self.interrupted:
+            d["interrupted"] = True
+            d["resumable"] = self.resume is not None
+        return d
 
 
-current_job: Job | None = None
+# One job at a time per library: the single user's, or each account's own (accounts mode). Read and
+# set as `wf.current_job` / `wf.active_session` from outside (module properties at the end of this
+# file); inside this module use job_now() / the dicts.
+#
+# A running job is also written to `<home>/job.json` (the user's folder, or SLIDESTATION_HOME) and
+# removed when it ends. One still there when this process first looks at that library was cut off
+# by a restart: it is reported as a finished job with an "interrupted, run it again" error, and an
+# import or upload can be resumed as it was started (imports skip what the dedupe index has,
+# uploads what Immich already has, so running one again is safe).
+_jobs: dict[str, Job | None] = {}
+_active: dict[str, str | None] = {}  # the tray each library has open (the background renderer's)
+_homes: dict[str, Path | None] = {"None": None}  # key -> the home to act as (None: the single user)
 _job_lock = threading.Lock()
 
 
-def start_job(kind: str, session: str | None, fn, *args) -> Job:
-    global current_job
+def _key() -> str:
+    h = user_home()
+    _homes.setdefault(str(h), h)
+    return str(h)
+
+
+def homes() -> list[Path | None]:
+    """Every library in use since the server started (the single user's, or each account's)."""
+    return list(_homes.values())
+
+
+def _job_file() -> Path:
+    return home() / "job.json"
+
+
+INTERRUPTED = {
+    "import": "The import was interrupted by a server restart: import again (scans already imported are skipped).",
+    "upload": "The upload was interrupted by a server restart: upload again (slides already in Immich are skipped).",
+    # watched folders (watch.py) pick up an interrupted import by themselves: nothing to resume by hand
+    "watch": "A watched folder's import was interrupted by a server restart: it starts again by itself.",
+}
+
+
+def _interrupted() -> Job | None:
+    """The job a restart cut off in this library (job.json left behind), as a finished, failed job."""
+    try:
+        rec = json.loads(_job_file().read_text())
+    except (OSError, ValueError):
+        return None
+    job = Job(str(rec.get("kind") or "job"), rec.get("session"))
+    job.started, job.done, job.total = rec.get("started", job.started), rec.get("done", 0), rec.get("total", 0)
+    job.finished, job.interrupted = True, True
+    job.resume = rec.get("resume") if job.kind in INTERRUPTED else None
+    job.error = INTERRUPTED.get(job.kind, f"The {job.kind} job was interrupted by a server restart: run it again.")
+    return job
+
+
+def job_now() -> Job | None:
+    """The current library's job (running or last finished; after a restart, the one it cut off)."""
+    k = _key()
+    if k not in _jobs:
+        with _job_lock:
+            if k not in _jobs:
+                _jobs[k] = _interrupted()
+    return _jobs.get(k)
+
+
+def _record(job: Job) -> None:
+    """job.json while a job runs (see above); never lets a job fail over it."""
+    try:
+        _atomic_write(_job_file(), {"id": job.id, "kind": job.kind, "session": job.session, "started": job.started,
+                                    "resume": job.resume})
+    except OSError as e:
+        print("recording the job:", e)
+
+
+def _unrecord(job: Job) -> None:
+    try:
+        if json.loads(_job_file().read_text()).get("id") == job.id:
+            _job_file().unlink()
+    except (OSError, ValueError):
+        pass
+
+
+def any_job_running() -> bool:
+    """A job runs in any library: full-resolution work waits (memory, §3)."""
+    return any(j and not j.finished for j in list(_jobs.values()))
+
+
+def set_active(sid: str | None) -> None:
+    _active[_key()] = sid
+
+
+def start_job(kind: str, session: str | None, fn, *args, resume: dict | None = None) -> Job:
+    """Run fn(job, *args) in a thread as this library's one job. `resume`: what running it again
+    after a restart takes (kept in job.json; only imports and uploads are resumed)."""
+    job_now()  # a job cut off by a restart is known before a new one replaces it
     with _job_lock:
-        if current_job and not current_job.finished:
-            raise RuntimeError(f"Busy with {current_job.kind} - wait for it to finish.")
+        cur = _jobs.get(_key())
+        if cur and not cur.finished:
+            raise RuntimeError(f"Busy with {cur.kind} - wait for it to finish.")
         job = Job(kind, session)
-        current_job = job
+        job.resume = resume
+        _jobs[_key()] = job
+        _record(job)
 
     def run():
         try:
@@ -65,8 +174,10 @@ def start_job(kind: str, session: str | None, fn, *args) -> Job:
             job.error = str(e) or e.__class__.__name__
         finally:
             job.finished = True
+            _unrecord(job)
 
-    threading.Thread(target=run, daemon=True).start()
+    # the job acts as whoever started it (store.as_home): same library, same config
+    threading.Thread(target=contextvars.copy_context().run, args=(run,), daemon=True).start()
     return job
 
 
@@ -74,6 +185,9 @@ def start_job(kind: str, session: str | None, fn, *args) -> Job:
 
 
 def exif_info(path: str) -> dict:
+    if raw.is_raw(path):
+        m = raw.metadata(path)
+        return {"make": m.get("make", ""), "model": m.get("model", ""), "datetime": m.get("datetime", "")}
     try:
         ex = Image.open(path).getexif()
         return {"make": str(ex.get(271, "")).strip(), "model": str(ex.get(272, "")).strip(), "datetime": str(ex.get(306, ""))}
@@ -81,20 +195,32 @@ def exif_info(path: str) -> dict:
         return {"make": "", "model": "", "datetime": ""}
 
 
-def list_jpegs(root: Path) -> list[Path]:
+def scan_exts() -> tuple[str, ...]:
+    """What imports as a scan: JPEGs, and camera RAW files when rawpy is installed (raw.py)."""
+    return JPG + raw.RAW_EXTS if raw.available() else JPG
+
+
+def list_scans(root: Path) -> list[Path]:
+    """The scans under root. A camera shooting RAW + JPEG writes both: the RAW is the scan then, and
+    the JPEG next to it with the same name is left out (it would be a second, 8-bit copy)."""
+    exts = scan_exts()
     out = []
     for dirpath, dirnames, files in os.walk(root):
         dirnames[:] = [d for d in dirnames if not d.startswith(".")]
-        for f in files:
-            if f.lower().endswith(JPG) and not f.startswith("._"):
-                out.append(Path(dirpath) / f)
+        files = [f for f in files if f.lower().endswith(exts) and not f.startswith("._")]
+        raws = {Path(f).stem.lower() for f in files if raw.is_raw(f)}
+        out += [Path(dirpath) / f for f in files if raw.is_raw(f) or Path(f).stem.lower() not in raws]
     return sorted(out)
 
 
+list_jpegs = list_scans  # its name from before RAW files
+
+
 def detect_sources() -> list[dict]:
-    """Mounted volumes that look like a camera/scanner card (have a DCIM folder with JPEGs)."""
-    found = []
-    if not VOLUMES.exists():
+    """Mounted volumes that look like a camera/scanner card (have a DCIM folder with JPEGs), and
+    folders uploaded from the browser that aren't imported yet (uploads.py)."""
+    found = uploads.sources()
+    if user_home() is not None or not VOLUMES.exists():  # accounts don't see the server's drives
         return found
     idx = imported_index()
     for vol in sorted(VOLUMES.iterdir()):
@@ -102,7 +228,7 @@ def detect_sources() -> list[dict]:
         try:
             if not dcim.is_dir():
                 continue
-            files = list_jpegs(dcim)
+            files = list_scans(dcim)
         except OSError:
             continue
         if not files:
@@ -147,20 +273,18 @@ def _taken(path: Path) -> str:
     return dt or datetime.fromtimestamp(path.stat().st_mtime).strftime("%Y:%m:%d %H:%M:%S")
 
 
-def _lost_here(s: Session, sha: str) -> bool:
-    """This tray has a scan with that content whose original was deleted."""
-    return any(r.get("sha1") == sha and not s.original_path(k).exists() for k, r in s.data["scans"].items())
-
-
-def import_scans(job: Job, sid: str, source: str) -> None:
+def import_scans(job: Job, sid: str, source: str, label: str | None = None) -> None:
+    """Copy the new scans under `source` into the tray, verified, and group them into slides.
+    `label` names the source in the tray instead of the folder (uploads, camera captures: folders
+    that are deleted once imported)."""
     s = Session(sid)
     root = Path(source).expanduser()
     if not root.exists():
         raise RuntimeError(f"{root} does not exist")
     # only a card itself (a mounted volume with DCIM at its root) may ever be cleaned up afterwards;
-    # folders - including ones on external drives - are never deleted from
-    removable = root.parent == VOLUMES and (root / "DCIM").is_dir()
-    files = list_jpegs(root / "DCIM" if (root / "DCIM").is_dir() else root)
+    # folders - including ones on external drives, uploads and captures - are never deleted from
+    removable = label is None and root.parent == VOLUMES and (root / "DCIM").is_dir()
+    files = list_scans(root / "DCIM" if (root / "DCIM").is_dir() else root)
     files.sort(key=lambda p: (_taken(p), p.name))
     idx = imported_index()
     job.total = len(files)
@@ -168,9 +292,8 @@ def import_scans(job: Job, sid: str, source: str) -> None:
     new_ids, skipped, restored, fp_index, sha_index, records = [], 0, 0, {}, {}, {}
     for f in files:
         job.done += 1
-        if _quick_fp(f) in idx.get("_fp", {}) and not _lost_here(s, idx["_fp"][_quick_fp(f)]):
-            skipped += 1
-            continue
+        # always by content: the quick fingerprint (name+size+mtime) only estimates "new" on the
+        # card, and a different scan can share it (the scanner restarting its numbering)
         sha = sha1_file(f)
         if sha in idx or sha in sha_index:
             # already imported - but if this tray lost that original (deleted after upload), put
@@ -186,15 +309,18 @@ def import_scans(job: Job, sid: str, source: str) -> None:
             fp_index[_quick_fp(f)] = sha
             continue
         scan_id = f"{f.stem}_{sha[:6]}"
-        dest = s.originals / f"{scan_id}.jpg"
+        dest = s.originals / (scan_id + (f.suffix.lower() if raw.is_raw(f) else ".jpg"))
         shutil.copy2(f, dest)
         if sha1_file(dest) != sha:
             dest.unlink(missing_ok=True)
             raise RuntimeError(f"Copy of {f.name} did not verify - card or disk problem?")
         records[scan_id] = {
-            "file": dest.name, "source": str(f), "source_root": str(root), "removable": removable,
+            "file": dest.name, "source": str(f) if label is None else f"{label}/{f.name}",
+            "source_root": label or str(root), "removable": removable,
             "size": f.stat().st_size, "sha1": sha, "taken": _taken(f), "source_deleted": False,
         }
+        if raw.is_raw(f):  # what the camera says about the shot (make, model, exposure)
+            records[scan_id]["camera"] = raw.metadata(f)
         new_ids.append(scan_id)
         fp_index[_quick_fp(f)] = sha
         sha_index[sha] = sid
@@ -203,6 +329,13 @@ def import_scans(job: Job, sid: str, source: str) -> None:
     fp.update(fp_index)
     sha_index["_fp"] = fp
     add_to_index(sha_index)  # recorded straight after copying, so a crash can't cause double imports
+
+    # scans copied by an import that stopped before grouping them (a crash, a restart): the dedupe
+    # index skips them from now on, so they are grouped here, in their place among the new ones
+    grouped = {x for g in s.data["groups"] for x in g["scans"]}
+    stranded = [k for k in s.data["scans"] if k not in grouped and k not in new_ids]
+    if stranded:
+        new_ids = sorted(stranded + new_ids, key=lambda k: (s.data["scans"][k].get("taken", ""), k))
 
     job.message = "Analysing scans"
     job.done, job.total = 0, len(new_ids)
@@ -240,11 +373,12 @@ def import_scans(job: Job, sid: str, source: str) -> None:
             rot = im.suggest_rotation(proxies)
         fused = fused_proxy(s, g)  # pre-blend the brackets so browsing is instant
         feats = learning.features(fused, len(active_scans(g)))
+        mount = {**im.detect_mount(fused), "scans": active_scans(g)}
         suggestion, neighbours = (None, 0)
         if load_config().get("learning_enabled", True):
-            suggestion, neighbours = learning.model().suggest(feats)
+            suggestion, neighbours = learning.model().suggest(feats, filmstock.effective(s.data, g))
 
-        def commit(fresh: Session, g=g, ids=ids, extend=extend, rot=rot, feats=feats,
+        def commit(fresh: Session, g=g, ids=ids, extend=extend, rot=rot, feats=feats, mount=mount,
                    suggestion=suggestion, neighbours=neighbours):
             if extend:
                 target = fresh.group(last["id"])
@@ -258,18 +392,63 @@ def import_scans(job: Job, sid: str, source: str) -> None:
             if rot and target.get("rot_reason") != "manual":
                 target["rotation"], target["rot_reason"] = rot
             target["feat"] = feats
+            target["mount"] = mount
+            if not extend and straighten_to_mount(target):
+                target["params"]["angle"] = -mount["angle"]
             if suggestion and not target.get("reviewed") and target.get("params_source") != "manual":
                 target["params"] = Params.from_dict({**target["params"], **suggestion}).to_dict()
                 target["params_source"] = f"learned:{neighbours}"
 
         update_session(sid, commit)  # slides appear in the UI one by one
+        if people_on():
+            _faces_quietly(sid, last["id"] if extend else g["id"])
         job.done += 1
-    update_session(sid, lambda fresh: fresh.log(f"Imported {len(new_ids)} scans from {root} ({skipped} already imported)"))
+    update_session(sid, lambda fresh: fresh.log(f"Imported {len(new_ids)} scans from {label or root} ({skipped} already imported)"))
     if restored:
         update_session(sid, sync_locks)
     job.message = f"Imported {len(new_ids)} scans into {len(idx_groups)} slides" + (
         f" ({skipped} were already imported)" if skipped else "") + (
         f"; restored {restored} deleted originals, those slides can be edited again" if restored else "")
+
+
+def import_upload(job: Job, sid: str, upload_id: str) -> None:
+    """Import a folder uploaded from the browser (uploads.py) like any folder, then let the
+    staging copy go: the tray has its own verified copies."""
+    root, name = uploads.folder(upload_id)
+    import_scans(job, sid, str(root), label=f"upload:{name}")
+    uploads.delete(upload_id)
+
+
+def capture_into(job: Job, sid: str, port: str | None = None) -> None:
+    """Tethered capture (camera rig mode): the camera takes a picture, gphoto2 downloads it (RAW,
+    or RAW + JPEG), and it is imported into the tray like a scan from the card — so a bracket shot
+    one exposure at a time joins the slide before it, as a scanner's brackets do."""
+    job.message = "Taking a picture"
+    shot = library() / "captures" / (time.strftime("%Y%m%d-%H%M%S-") + uuid.uuid4().hex[:4])
+    try:
+        files = tether.capture(shot, port)
+        if not files:
+            raise RuntimeError("The camera took no picture (is it in PC / remote mode?)")
+        import_scans(job, sid, str(shot), label="camera")
+    finally:
+        shutil.rmtree(shot, ignore_errors=True)
+
+
+def straighten_to_mount(g: dict) -> bool:
+    """A new slide is straightened to its mount by itself only when the mount is found with
+    confidence and the slide isn't framed or developed yet; otherwise it stays a suggestion."""
+    m = g.get("mount") or {}
+    return (m.get("confidence", 0) >= im.MOUNT_AUTO and abs(m.get("angle", 0)) >= 0.1 and not g.get("reviewed")
+            and not g["params"].get("angle") and not g["params"].get("crop"))
+
+
+def mount_of(s: Session, g: dict) -> dict:
+    """The slide's mount (imaging.detect_mount on the blended proxy), found now if the import
+    didn't (trays from before mount detection) or the active scans changed since."""
+    m = g.get("mount")
+    if m and m.get("scans") == active_scans(g):
+        return m
+    return {**im.detect_mount(fused_proxy(s, g)), "scans": active_scans(g)}
 
 
 def make_proxies(s: Session, scan_id: str) -> None:
@@ -290,10 +469,11 @@ _render_lock = threading.Lock()
 def fused_proxy(s: Session, g: dict) -> np.ndarray:
     scans = active_scans(g)
     key = s.id + ":" + ",".join(scans)
+    mem = str(s.dir) + ":" + key  # tray ids are only unique within one library
     with _render_lock:
-        if key in _fused_cache:
-            _fused_cache.move_to_end(key)
-            return _fused_cache[key]
+        if mem in _fused_cache:
+            _fused_cache.move_to_end(mem)
+            return _fused_cache[mem]
     f = s.cache / ("fused_" + hashlib.sha1(key.encode()).hexdigest()[:12] + ".jpg")
     if f.exists():
         a = im.load_rgb(str(f))
@@ -306,7 +486,7 @@ def fused_proxy(s: Session, g: dict) -> np.ndarray:
         a = im.fuse([im.load_rgb(str(s.cache / f"{x}.proxy.jpg")) for x in scans])
         f.write_bytes(im.to_jpeg_bytes(a, 95))
     with _render_lock:
-        _fused_cache[key] = a
+        _fused_cache[mem] = a
         while len(_fused_cache) > 48:
             _fused_cache.popitem(last=False)
     return a
@@ -378,7 +558,32 @@ def export_fresh(s: Session, g: dict, index: int) -> bool:
     return bool(ex and ex.get("ekey") == export_key(s, g, index) and (s.export_dir / ex["file"]).exists())
 
 
-_export_lock = threading.Lock()
+# Full-resolution renders (exports, 1:1 zoom) running at once across the whole server, every
+# account's together: a 5-scan stack at 22 MP peaks around 3 GB, so the default is one at a time.
+FULL_RENDERS = max(1, int(os.environ.get("SLIDESTATION_FULL_RENDERS", "1")))
+_export_lock = threading.BoundedSemaphore(FULL_RENDERS)
+
+
+def xmp_subjects(tags: list[str]) -> bytes:
+    """An XMP packet with the slide's tags as dc:subject (keywords; Immich reads them as tags too)."""
+    from xml.sax.saxutils import escape
+
+    items = "".join(f"<rdf:li>{escape(t)}</rdf:li>" for t in tags)
+    return ('<?xpacket begin="\ufeff" id="W5M0MpCehiHzreSzNTczkc9d"?>'
+            '<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">'
+            '<rdf:Description rdf:about="" xmlns:dc="http://purl.org/dc/elements/1.1/">'
+            f"<dc:subject><rdf:Bag>{items}</rdf:Bag></dc:subject></rdf:Description></rdf:RDF></x:xmpmeta>"
+            '<?xpacket end="w"?>').encode("utf-8")
+
+
+def gps_ifd(lat: float, lon: float) -> dict:
+    """EXIF GPS tags for a place: version 2.3, N/S + degrees, minutes, seconds, E/W + the same."""
+    def dms(v: float) -> tuple:
+        v = abs(v)
+        d, m = int(v), int(v * 60) % 60
+        return (float(d), float(m), round((v * 3600) % 60, 4))
+
+    return {0: b"\x02\x03\x00\x00", 1: "N" if lat >= 0 else "S", 2: dms(lat), 3: "E" if lon >= 0 else "W", 4: dms(lon)}
 
 
 def originals_missing(s: Session, g: dict) -> bool:
@@ -396,26 +601,33 @@ def render_export(sid: str, gid: str, quality: int) -> Path | None:
         return s.export_dir / g["export"]["file"]
     rkey, ekey = render_key(g), export_key(s, g, index)
     scans = active_scans(g)
-    with _export_lock:  # full-resolution blends take a few GB: never run two at once
-        a = im.fuse([im.load_u8(str(s.original_path(x))) for x in scans])
+    with _export_lock:  # full-resolution blends take a few GB: FULL_RENDERS at once
+        a = im.fuse([im.load_full(str(s.original_path(x))) for x in scans])
         a = im.rotate_arr(a, g["rotation"])
         a = im.develop(a, im.Params.from_dict(g["params"]))
         out = Image.fromarray((a * 255 + 0.5).astype(np.uint8))
         del a
-    exif = Image.open(s.original_path(scans[0])).getexif()
+    first = s.original_path(scans[0])
+    exif = raw.exif_for_export(first) if raw.is_raw(first) else Image.open(first).getexif()
     exif[274] = 1  # orientation: pixels are already upright
     exif[305] = "Slide Station"
     if g.get("caption"):
         exif[270] = g["caption"]  # ImageDescription: Immich shows it as the photo's description
+    else:
+        exif.pop(270, None)  # a photo pulled in from Immich may carry its old description
     when = _photo_datetime(s, g, index).strftime("%Y:%m:%d %H:%M:%S")
     exif[306] = when
     sub = exif.get_ifd(0x8769)
     sub[36867] = when  # DateTimeOriginal (what Immich uses for the timeline)
     sub[36868] = when
+    exif.pop(0x8825, None)  # a photo pulled in from Immich may carry GPS: the slide's place decides
+    if g.get("place"):
+        exif.get_ifd(0x8825).update(gps_ifd(g["place"]["lat"], g["place"]["lon"]))
     name = f"{slugify(s.data['name'])}_{scans[0]}.jpg"
     s.export_dir.mkdir(exist_ok=True)
     tmp = s.export_dir / (name + ".part")
-    out.save(tmp, "JPEG", quality=quality, exif=exif.tobytes(), subsampling=0)
+    extra = {"xmp": xmp_subjects(g["tags"])} if g.get("tags") else {}  # Pillow >= 11 writes it
+    out.save(tmp, "JPEG", quality=quality, exif=exif.tobytes(), subsampling=0, **extra)
     os.replace(tmp, s.export_dir / name)
     sha = sha1_file(s.export_dir / name)
     ok = []
@@ -433,48 +645,321 @@ def render_export(sid: str, gid: str, quality: int) -> Path | None:
     return s.export_dir / name if ok else None
 
 
+# --------------------------------------------------------------------------- 1:1 zoom
+
+TILE = 512  # zoom tiles are TILE x TILE pixels of the full-resolution render, on a fixed grid
+_full: dict = {}  # {"key": (session, slide, render key), "img": uint8 H x W x 3}: one slide only
+_full_lock = threading.Lock()
+
+
+def full_image(s: Session, gid: str) -> np.ndarray:
+    """The slide developed at full resolution, for 1:1 zoom (uint8, ~65 MB for 22 MP).
+
+    Only the slide last zoomed into is kept. A finished export of the same render is decoded
+    instead of fusing again; otherwise it renders like an export, under the same server-wide
+    limit (FULL_RENDERS; a 5-scan stack peaks around 3 GB). Raises FileNotFoundError when the
+    originals are gone and there is no export to show."""
+    g = s.group(gid)
+    key = (str(s.dir), gid, render_key(g))
+    with _full_lock:  # concurrent tile requests wait for one render instead of starting their own
+        if _full.get("key") == key:
+            return _full["img"]
+        _full.clear()  # free the previous slide before rendering this one
+        ex = g.get("export")
+        if ex and ex.get("key") == key[2] and (s.export_dir / ex["file"]).exists():
+            a = im.load_u8(str(s.export_dir / ex["file"]))  # same pixels (the key covers the render)
+        elif originals_missing(s, g):
+            raise FileNotFoundError("The original scans were deleted after upload: no full resolution to zoom into.")
+        else:
+            with _export_lock:
+                f = im.fuse([im.load_full(str(s.original_path(x))) for x in active_scans(g)])
+                f = im.develop(im.rotate_arr(f, g["rotation"]), im.Params.from_dict(g["params"]))
+                a = (f * 255 + 0.5).astype(np.uint8)
+                del f
+        _full.update(key=key, img=a)
+        return a
+
+
+def full_tile(s: Session, gid: str, col: int, row: int) -> bytes:
+    """One TILE x TILE piece (smaller at the right / bottom edge) of the full-resolution render."""
+    a = full_image(s, gid)
+    t = a[row * TILE:(row + 1) * TILE, col * TILE:(col + 1) * TILE]
+    if col < 0 or row < 0 or not t.size:
+        raise KeyError("tile")
+    buf = io.BytesIO()
+    Image.fromarray(np.ascontiguousarray(t)).save(buf, "JPEG", quality=90)
+    return buf.getvalue()
+
+
 # background renderer: renders reviewed slides while you keep reviewing, so uploading is quick
-active_session: str | None = None
+def libraries() -> list[tuple[Path | None, str | None]]:
+    """(home, open tray) of every library someone has opened a tray in since the server started."""
+    return [(_homes.get(k), sid) for k, sid in list(_active.items())]
+
+
+def _render_next(sid: str) -> None:
+    s = Session(sid)
+    for i, g in enumerate(s.data["groups"]):
+        if (g.get("reviewed") and not g.get("skip") and group_status(g) != "uploaded"
+                and not export_fresh(s, g, i) and not originals_missing(s, g)):
+            render_export(s.id, g["id"], int(load_config().get("jpeg_quality", 95)))
+            break
+    else:  # nothing to render: catch up on faces (slides turned since, trays from before)
+        if people_on():
+            todo = faces_pending([s.id])
+            if todo:
+                _faces_quietly(*todo[0])
 
 
 def _background_renderer():
     while True:
         time.sleep(1.5)
-        try:
-            if not active_session or (current_job and not current_job.finished):
+        for home, sid in libraries():  # each library's open tray (accounts: one per user)
+            if not sid or any_job_running():
                 continue
-            s = Session(active_session)
-            for i, g in enumerate(s.data["groups"]):
-                if (g.get("reviewed") and not g.get("skip") and group_status(g) != "uploaded"
-                        and not export_fresh(s, g, i) and not originals_missing(s, g)):
-                    render_export(s.id, g["id"], int(load_config().get("jpeg_quality", 95)))
-                    break
-        except Exception as e:  # never let the helper thread die
-            print("background render:", e)
+            try:
+                with as_home(home):
+                    _render_next(sid)
+            except Exception as e:  # never let the helper thread die
+                print("background render:", e)
 
 
 threading.Thread(target=_background_renderer, daemon=True).start()
 
 
+def _immich_time(t: datetime) -> str:
+    """A slide's date for `PUT /assets/{id}`: naive local time, like the EXIF the upload carries."""
+    return t.strftime("%Y-%m-%dT%H:%M:%S")
+
+
+def _gps(g: dict) -> list[float] | None:
+    p = g.get("place")
+    return [p["lat"], p["lon"]] if p else None
+
+
+def _pushed(s: Session, g: dict, index: int) -> dict:
+    """What Immich was told about a slide besides its pixels: the day, the caption and the place's
+    coordinates. Pulling edits back compares against this, so only what someone changed in Immich
+    comes back."""
+    return {"date": _photo_datetime(s, g, index).strftime("%Y-%m-%d"), "caption": g.get("caption", ""),
+            "place": _gps(g)}
+
+
+def _meta_only(g: dict) -> bool:
+    """Immich already has this slide's pixels: only its date or caption can have changed. A locked
+    slide's Immich copy is final, so it only ever gets its metadata updated."""
+    im = g.get("immich")
+    return bool(im) and (bool(g.get("locked")) or im.get("key") == render_key(g))
+
+
+def _carry_over(client: Immich, asset_id: str | None) -> dict:
+    """What a replacement keeps of the asset it replaces: its albums and whether it's a favourite
+    (faces are Immich's own: it finds them again on the new photo)."""
+    try:
+        a = client.asset(asset_id) if asset_id else None
+    except ImmichError as e:  # a key without asset.read: replace it as before, carrying nothing
+        print("carry over:", e)
+        a = None
+    if a is None:  # nothing replaced, or deleted in Immich meanwhile
+        return {"albums": [], "favorite": False}
+    return {"albums": client.albums_of(asset_id), "favorite": bool(a.get("isFavorite"))}
+
+
+def _originals_in_immich(client: Immich, s: Session, g: dict, when: datetime) -> tuple[dict, list[str]]:
+    """Every scan of a slide in Immich, untouched: ({scan: asset}, the assets this uploaded). Scans
+    Immich already has byte for byte are reused, not sent again - including a pulled-in photo's own
+    asset; ones in its trash come back out."""
+    scans = [x for x in g["scans"] if x in s.data["scans"]]
+    have = client.existing({x: s.data["scans"][x]["sha1"] for x in scans})
+    client.restore([h["asset_id"] for h in have.values() if h["trashed"]])
+    out, created = {}, []
+    for x in scans:
+        if x in have:
+            out[x] = have[x]["asset_id"]
+            continue
+        p = s.original_path(x)
+        if not p.exists():  # deleted after an earlier upload ("keep originals" off)
+            continue
+        asset_id, status = client.upload(str(p), when, f"{s.id}-{x}")
+        out[x] = asset_id
+        if status != "duplicate":
+            created.append(asset_id)
+    return out, created
+# --------------------------------------------------------------------------- people (faces)
+
+
+def people_on() -> bool:
+    """Recognising people is opt-in (Settings), and needs the face model downloaded."""
+    return bool(load_config().get("people_enabled")) and people.model_ready()
+
+
+def find_faces(sid: str, gid: str) -> bool:
+    """Record one slide's faces, if they aren't up to date. Only faces.json is written, never the
+    session: the slide is read fresh and the result is stored under the key it was found for."""
+    s = Session(sid)
+    try:
+        g = s.group(gid)
+    except KeyError:
+        return False
+    if not people.stale(g, people.load_faces(sid).get(gid)):
+        return False
+    people.record(sid, g, im.rotate_arr(fused_proxy(s, g), g["rotation"]))
+    return True
+
+
+def _faces_quietly(sid: str, gid: str) -> None:
+    try:
+        find_faces(sid, gid)
+    except Exception as e:  # faces are extra: never let them fail an import
+        print("faces:", e)
+
+
+def faces_pending(sids: list[str] | None = None) -> list[tuple[str, str]]:
+    """Slides (not skipped) whose faces are missing or were found before an edit (turned, scans
+    changed). Forgets faces of slides that no longer exist (merged, split off and back)."""
+    todo = []
+    for sid in sids if sids is not None else [x["id"] for x in Session.list_all()]:
+        try:
+            s = Session(sid)
+        except (FileNotFoundError, ValueError):
+            continue
+        faces = people.load_faces(sid)
+        gids = {g["id"] for g in s.data["groups"]}
+        if set(faces) - gids:
+            people.update_faces(sid, lambda d: [d.pop(k) for k in list(d) if k not in gids])
+        todo += [(sid, g["id"]) for g in s.data["groups"] if people.stale(g, faces.get(g["id"]))]
+    return todo
+
+
+def scan_people(job: Job) -> None:
+    """Download the face model if needed, then find the faces on every slide in the library."""
+    if not people.model_ready():
+        def progress(done, total):
+            job.done, job.total = done, total
+            job.message = f"Downloading the face model ({done} of {total} MB)"
+
+        progress(0, people.MODEL_MB)
+        people.download_model(progress)
+    todo = faces_pending()
+    job.done, job.total = 0, len(todo)
+    for sid, gid in todo:
+        job.message = f"Finding faces: slide {job.done + 1} of {len(todo)}"
+        _faces_quietly(sid, gid)
+        job.done += 1
+    d = people.refresh()
+    named = sum(1 for p in d["people"].values() if p.get("name"))
+    job.message = f"Looked for faces on {len(todo)} slides: {len(d['people'])} people ({named} named)"
+
+
+def _tag_people(client: Immich, sid: str, slides: dict[str, str], names: dict) -> tuple[int, str]:
+    """Named people as Immich tags (People/<name>) on uploaded slides. (assets tagged, problem)"""
+    try:
+        return people.tag_uploaded(client, slides, names, sid), ""
+    except ImmichError as e:
+        return 0, str(e)
+
+
+def tag_people(job: Job) -> None:
+    """Put the names of the people on every slide already in Immich as tags."""
+    cfg = load_config()
+    names = people.slide_names(people.refresh())
+    client = Immich(cfg["immich_url"], cfg["immich_key"])
+    try:
+        job.message = f"Connecting to Immich {client.version()}"
+        sids = sorted({sid for sid, _ in names})
+        job.total, tagged = len(sids), 0
+        for sid in sids:
+            try:
+                s = Session(sid)
+            except FileNotFoundError:
+                continue
+            slides = {g["id"]: g["immich"]["asset_id"] for g in s.data["groups"] if g.get("immich") and not g.get("skip")}
+            n, problem = _tag_people(client, sid, slides, names)
+            if problem:
+                raise RuntimeError(problem)
+            tagged += n
+            job.done += 1
+        job.message = f"Tagged {tagged} slides in Immich with the people on them" if client.tags_supported is not False \
+            else "This Immich server has no tags API: names were not sent"
+    finally:
+        client.close()
+
+
 def finish_session(job: Job, sid: str, only_ready: bool = False) -> None:
     """Export every slide that is not skipped and upload new/changed ones to the session's Immich album.
 
-    only_ready: just the slides marked developed; the others stay behind to keep working on."""
+    only_ready: just the slides marked developed; the others stay behind to keep working on.
+    Slides whose pixels Immich already has only get their date / caption / place updated there."""
     cfg = load_config()
     s = Session(sid)
-    redate = s.data.get("date_key") != s.data.get("date")  # date changed: every slide needs new EXIF
+    redate = s.data.get("date_key") != s.data.get("date")  # tray date changed: every slide may have a new date
     st = dict(zip((g["id"] for g in s.data["groups"]), statuses(s.data)))
     todo = [g["id"] for g in s.data["groups"] if not g.get("skip") and (redate or st[g["id"]] != "uploaded")
             and (g.get("reviewed") or not only_ready)]
-    lost = [g["id"] for g in s.data["groups"] if g["id"] in todo and originals_missing(s, g)]
-    todo = [x for x in todo if x not in lost]  # nothing to render them from: keep what Immich has
-    job.total = len(todo) * 2
+    meta_only = [g["id"] for g in s.data["groups"] if g["id"] in todo and _meta_only(g)]
+    lost = [g["id"] for g in s.data["groups"] if g["id"] in todo and g["id"] not in meta_only
+            and originals_missing(s, g)]
+    todo = [x for x in todo if x not in lost and x not in meta_only]  # lost: nothing to render them from
+    job.total = len(todo) * 2 + len(meta_only)
     client = Immich(cfg["immich_url"], cfg["immich_key"])
+    want_originals = bool(cfg.get("upload_originals_stacked"))
+    stacks: list[bool] = []  # asked once, and only if needed
+
+    def has_stacks() -> bool:
+        if not stacks:
+            stacks.append(client.has_stacks())
+        return stacks[0]
+
     try:
         job.message = f"Connecting to Immich {client.version()}"
         album = client.find_or_create_album(s.data["album"] or s.data["name"])
         update_session(sid, lambda f: f.data.__setitem__("immich_album_id", album))
-        to_trash, uploaded = [], 0
+        to_trash, uploaded, synced, duplicates, no_update = [], 0, 0, 0, False
+        tagged: dict[str, list[str]] = {}  # tag -> asset ids to tag, uploaded or updated now
+        sent: dict[str, str] = {}  # slide -> asset uploaded now, for the names of the people on it
+
+        for n, gid in enumerate(meta_only, 1):
+            job.message = f"Updating date, caption and place {n} of {len(meta_only)}"
+            job.done += 1
+            s = Session(sid)
+            try:
+                g = s.group(gid)
+            except KeyError:
+                continue
+            idx = s.group_index(gid)
+            meta, asset = slide_meta(s, g, idx), g["immich"]["asset_id"]
+            if g["immich"].get("meta") == meta:
+                continue  # only the tray date moved, and not this slide's
+            fields = {"dateTimeOriginal": _immich_time(_photo_datetime(s, g, idx)), "description": g.get("caption", "")}
+            if g.get("place"):
+                fields.update(latitude=g["place"]["lat"], longitude=g["place"]["lon"])
+            elif (g["immich"].get("pushed") or {}).get("place") and not g.get("locked") and not originals_missing(s, g):
+                # Immich's API can set a location but not remove one: a new copy without GPS goes up
+                todo.append(gid)
+                job.total += 2
+                continue
+            try:
+                client.update_asset(asset, **fields)
+            except ImmichError as e:
+                # a key without asset.update: upload it again with the new EXIF, as before
+                print("metadata update:", e)
+                if not g.get("locked") and not originals_missing(s, g):
+                    todo.append(gid)
+                    job.total += 2
+                    no_update = True
+                continue
+            pushed = _pushed(s, g, idx)
+
+            def commit_meta(fresh: Session, asset=asset, meta=meta, pushed=pushed):
+                fg = fresh.group(gid)
+                if (fg.get("immich") or {}).get("asset_id") == asset:
+                    fg["immich"].update(meta=meta, pushed=pushed)
+
+            update_session(sid, commit_meta)
+            for t in g.get("tags") or []:  # tags are part of the meta key: a new tag comes this way too
+                tagged.setdefault(t, []).append(asset)
+            synced += 1
+
         for n, gid in enumerate(todo, 1):
             job.message = f"Rendering slide {n} of {len(todo)}"
             path = None
@@ -494,44 +979,171 @@ def finish_session(job: Job, sid: str, only_ready: bool = False) -> None:
                 continue
             job.message = f"Uploading slide {n} of {len(todo)}"
             idx = s.group_index(gid)
-            asset_id, status = client.upload(str(path), _photo_datetime(s, g, idx), f"{sid}-{gid}-{g['export']['sha1'][:8]}")
+            when = _photo_datetime(s, g, idx)
+            old = g.get("immich") or {}
+            # the asset this one takes the place of: the slide's last upload, or the Immich photo it
+            # was pulled in from
+            replaces = old.get("asset_id") or (g.get("source_asset") or {}).get("id")
+            carry = _carry_over(client, replaces)
+            # exact duplicate: Immich has these very bytes already (an identical render), so use that
+            hit = client.existing({"slide": g["export"]["sha1"]}).get("slide")
+            if hit:
+                asset_id, status = hit["asset_id"], "duplicate"
+                if hit["trashed"]:
+                    client.restore([asset_id])
+                if carry["favorite"]:
+                    client.update_asset(asset_id, isFavorite=True)
+                duplicates += 1
+            else:
+                asset_id, status = client.upload(str(path), when, f"{sid}-{gid}-{g['export']['sha1'][:8]}",
+                                                 favorite=carry["favorite"])
             client.add_to_album(album, [asset_id])
-            rkey = g["export"]["key"]
+            for a in carry["albums"]:
+                if a != album:
+                    client.add_to_album(a, [asset_id])
 
-            meta = slide_meta(s, g, idx)
+            # Stacks: the untouched scans under the developed photo. A new upload replaces the whole
+            # stack (the old one is dissolved, the scans are stacked again under the new photo), so
+            # the scans Immich has stay stacked even once the setting is turned off.
+            originals = {k: v for k, v in (old.get("originals") or {}).items() if k in g["scans"]}
+            own = list(old.get("own_originals") or [])
+            stack_id = None
+            if (want_originals or originals or old.get("stack_id")) and has_stacks():
+                if old.get("stack_id"):
+                    client.delete_stack(old["stack_id"])
+                if want_originals:
+                    originals, created = _originals_in_immich(client, s, g, when)
+                    own += created
+                ids = [a for a in dict.fromkeys(originals.values()) if a != asset_id]
+                stack_id = client.create_stack([asset_id] + ids)
+            own = [a for a in dict.fromkeys(own) if a in originals.values()]
+            kept = set(originals.values()) if stack_id else set()
+            if replaces and replaces != asset_id:
+                if replaces in kept:
+                    # a pulled-in photo is itself the untouched scan: it stays, stacked under the new
+                    # one, and leaves the albums the new one took its place in
+                    for a in carry["albums"] + [album]:
+                        try:
+                            client.remove_from_album(a, [replaces])
+                        except ImmichError as e:  # albumAsset.delete missing: it just stays there too
+                            print("remove from album:", e)
+                else:
+                    to_trash.append(replaces)
+            # "at": when it went up, for the stats (slides uploaded without being developed)
+            rec = {"asset_id": asset_id, "key": g["export"]["key"], "status": status, "meta": slide_meta(s, g, idx),
+                   "pushed": _pushed(s, g, idx), "at": time.time()}
+            if originals and stack_id:
+                rec.update(originals=originals, own_originals=own, stack_id=stack_id)
 
-            def commit(fresh: Session, asset_id=asset_id, status=status, rkey=rkey, meta=meta):
-                fg = fresh.group(gid)
-                old = (fg.get("immich") or {}).get("asset_id")
-                if old and old != asset_id:
-                    to_trash.append(old)
-                fg["immich"] = {"asset_id": asset_id, "key": rkey, "status": status, "meta": meta}
+            def commit(fresh: Session, rec=rec):
+                fresh.group(gid)["immich"] = rec
 
             update_session(sid, commit)
+            for t in g.get("tags", []):
+                tagged.setdefault(t, []).append(asset_id)
+            sent[gid] = asset_id
             if not cfg.get("keep_exports", False):
                 path.unlink(missing_ok=True)  # it's in Immich; can be re-rendered from the originals
             uploaded += 1
             job.done += 1
 
+        stacks_gone: list[str] = []
+
         def tidy(fresh: Session):
             # slides merged away or skipped after uploading: move their old Immich copies to the trash
             to_trash.extend(fresh.data.pop("orphan_assets", []))
+            stacks_gone.extend(fresh.data.pop("orphan_stacks", []))
+            used = {a for g in fresh.data["groups"] if not g.get("skip")
+                    for a in ((g.get("immich") or {}).get("originals") or {}).values()}
             for g in fresh.data["groups"]:
                 if g.get("skip") and g.get("immich"):
                     to_trash.append(g["immich"]["asset_id"])
+                    if g["immich"].get("stack_id"):
+                        stacks_gone.append(g["immich"]["stack_id"])
+                    # the scans this uploaded for it go too, unless another slide stacks them
+                    to_trash.extend(a for a in g["immich"].get("own_originals", []) if a not in used)
                     g["immich"] = None
             if not only_ready or all(g.get("reviewed") or g.get("skip") for g in fresh.data["groups"]):
                 fresh.data["date_key"] = fresh.data.get("date")  # every slide now carries the date
-            fresh.log(f"Uploaded {uploaded} slides to album '{fresh.data['album']}'")
+            fresh.log(f"Uploaded {uploaded} slides to album '{fresh.data['album']}'"
+                      + (f", updated {synced} in place" if synced else ""))
 
         update_session(sid, tidy)
+        for x in stacks_gone:
+            client.delete_stack(x)
         client.trash(to_trash)
+        tag_note = ""
+        if tagged:
+            job.message = "Tagging in Immich"
+            try:
+                client.tag_each(tagged)
+            except ImmichError as e:  # an older Immich or a key without tag permissions: the upload stands
+                print("immich tags:", e)
+                tag_note = f"; tags not sent ({e})"
+        people_tagged, problem = 0, ""
+        if cfg.get("people_enabled") and sent:  # named people go along as tags (People/<name>)
+            people_tagged, problem = _tag_people(client, sid, sent, people.slide_names(people.refresh()))
+        look_note = ""
+        if cfg.get("lookalike_enabled") and sent:  # photos in Immich that look like what just went up
+            look_note = _lookalikes_quietly(client, sid, list(sent), job)
         if not cfg.get("keep_originals", True):
             _drop_local_originals(Session(sid))
         job.message = f"Done - {uploaded} slides uploaded to '{s.data['album']}'" + (
-            f"; {len(lost)} skipped: their original scans were deleted after the last upload" if lost else "")
+            f"; {synced} updated in place (date, caption, place)" if synced else "") + (
+            "; dates / captions / places went up as new copies: give the API key asset.update to change them "
+            "in place"
+            if no_update else "") + (
+            f"; {duplicates} were in Immich already, not sent again" if duplicates else "") + (
+            "; original scans not stacked: this Immich has no stacks, or the API key lacks stack.read / "
+            "stack.create" if want_originals and uploaded and stacks and not stacks[0] else "") + (
+            f"; {len(lost)} skipped: their original scans were deleted after the last upload" if lost else "") + tag_note + (
+            f"; {people_tagged} tagged with the people on them" if people_tagged else "") + (
+            f"; names not sent: {problem}" if problem else "") + look_note
     finally:
         client.close()
+
+
+def _slides(n: int) -> str:
+    return f"{n} slide{'' if n == 1 else 's'}"
+
+
+def _lookalike_note(n: dict) -> str:
+    return ((f"; {_slides(n['found'])} may already be in Immich (see Insights)" if n["found"] else "")
+            + (f"; {_slides(n['pending'])} to check for look-alikes once Immich has indexed them"
+               if n["pending"] else ""))
+
+
+def _lookalikes_quietly(client: Immich, sid: str, gids: list[str], job: Job) -> str:
+    """The look-alike check after an upload: best effort, never fails the upload."""
+    from . import insights, similar
+
+    b = insights.backend()
+    if b is None:
+        return "; look-alikes not checked: the tag model isn't downloaded"
+    try:
+        return _lookalike_note(similar.check_lookalikes(client, sid, gids, b, job))
+    except Exception as e:  # the upload stands whatever happens here
+        print("look-alikes:", e)
+        return f"; look-alikes not checked ({e})"
+
+
+def check_lookalikes(job: Job, sid: str, everything: bool = False) -> None:
+    """A job: look for photos in Immich like this tray's uploaded slides - those not checked yet or
+    that Immich hadn't indexed at the last check (`everything`: all of them again)."""
+    from . import insights, similar
+
+    cfg = load_config()
+    s = Session(sid)
+    gids = [g["id"] for g in s.data["groups"] if not g.get("skip") and (g.get("immich") or {}).get("asset_id")
+            and (everything or (similar.lookalike_view(g) or {}).get("state") in (None, "pending"))]
+    job.total = len(gids)
+    client = Immich(cfg["immich_url"], cfg["immich_key"])
+    try:
+        n = similar.check_lookalikes(client, sid, gids, insights.backend(), job)
+    finally:
+        client.close()
+    job.done = job.total
+    job.message = f"Checked {_slides(n['checked'])} for look-alikes in Immich" + _lookalike_note(n)
 
 
 def _drop_local_originals(s: Session) -> None:
@@ -582,6 +1194,175 @@ def immich_preview(s: Session, g: dict) -> np.ndarray | None:
     return im.load_rgb(str(f))
 
 
+# --------------------------------------------------------------------------- round trip: back from Immich
+
+PULLABLE = ("image/jpeg", "image/png")
+_ORIENTATION = {3: 180, 6: 90, 8: 270}  # EXIF orientation -> clockwise turn (mirrored ones are left alone)
+
+
+def _exif_time(local: str) -> str:
+    """Immich's localDateTime ("1978-08-01T12:00:00.000Z", the wall clock) as a scan's EXIF-style time."""
+    try:
+        return datetime.strptime(local[:19], "%Y-%m-%dT%H:%M:%S").strftime("%Y:%m:%d %H:%M:%S")
+    except ValueError:
+        return ""
+
+
+def pull_in(job: Job, sid: str, asset_ids: list[str]) -> None:
+    """Import photos from Immich into a tray as scans, one slide each, to develop them again.
+
+    The originals are downloaded byte for byte (checked against Immich's SHA-1), the slide starts
+    with the photo's date and description, and remembers where it came from: its upload replaces
+    that asset (see finish_session). These scans never came from a card, so they are never removable."""
+    cfg = load_config()
+    s = Session(sid)
+    have = {sc.get("immich_asset") for sc in s.data["scans"].values()}
+    client = Immich(cfg["immich_url"], cfg["immich_key"])
+    job.total = len(asset_ids)
+    job.message = f"Downloading {len(asset_ids)} photos from Immich"
+    new, records, skipped, unusable = [], {}, 0, 0
+    try:
+        for aid in asset_ids:
+            job.done += 1
+            if aid in have:
+                skipped += 1
+                continue
+            a = client.asset(aid)
+            name = (a or {}).get("originalFileName") or aid
+            mime = (a or {}).get("originalMimeType") or ("image/png" if name.lower().endswith(".png") else "image/jpeg")
+            if not a or a.get("type") != "IMAGE" or a.get("isTrashed") or mime not in PULLABLE:
+                unusable += 1  # videos, RAW / HEIC, or gone
+                continue
+            scan_id = f"{slugify(Path(name).stem)[:40]}_{aid.replace('-', '')[:6]}"
+            dest = s.originals / f"{scan_id}.jpg"
+            client.download(aid, str(dest))
+            sha = sha1_file(dest)
+            try:
+                expected = base64.b64decode(a.get("checksum") or "").hex()
+            except ValueError:
+                expected = ""
+            if len(expected) == 40 and expected != sha:
+                dest.unlink(missing_ok=True)
+                raise RuntimeError(f"The download of {name} did not verify - try again")
+            try:
+                rotation = _ORIENTATION.get(int(Image.open(dest).getexif().get(274, 1)), 0)
+            except Exception:
+                rotation = 0
+            local = a.get("localDateTime") or ""
+            records[scan_id] = {
+                "file": dest.name, "source": f"immich:{aid}", "source_root": "immich", "removable": False,
+                "size": dest.stat().st_size, "sha1": sha, "taken": _exif_time(local) or _taken(dest),
+                "source_deleted": False, "immich_asset": aid,
+            }
+            day = local[:10] if parse_date(local[:10]) else ""
+            caption = ((a.get("exifInfo") or {}).get("description") or "").strip()[:2000]
+            new.append((scan_id, aid, rotation, day, caption, immich_place(a.get("exifInfo") or {})))
+            have.add(aid)
+        s = update_session(sid, lambda fresh: fresh.data["scans"].update(records))
+
+        job.message = "Analysing photos"
+        job.done, job.total = 0, len(new)
+        for scan_id, aid, rotation, day, caption, place in new:
+            make_proxies(s, scan_id)
+            g = s.new_group([scan_id], rotation, "exif" if rotation else "")
+            g.update(date=day, caption=caption, source_asset={"id": aid})
+            if place:
+                g["place"] = place
+            feats = learning.features(fused_proxy(s, g), 1)
+            suggestion, neighbours = (None, 0)
+            if cfg.get("learning_enabled", True):
+                suggestion, neighbours = learning.model().suggest(feats, s.data.get("stock", ""))
+
+            def commit(fresh: Session, g=g, feats=feats, suggestion=suggestion, neighbours=neighbours):
+                g["params"] = dict(fresh.data["defaults"])
+                g["feat"] = feats
+                if suggestion:
+                    g["params"] = Params.from_dict({**g["params"], **suggestion}).to_dict()
+                    g["params_source"] = f"learned:{neighbours}"
+                fresh.data["groups"].append(g)
+
+            update_session(sid, commit)  # slides appear in the UI one by one
+            job.done += 1
+        update_session(sid, lambda fresh: fresh.log(f"Pulled in {len(new)} photos from Immich"))
+    finally:
+        client.close()
+    job.message = f"Pulled in {len(new)} photos from Immich" + (
+        f" ({skipped} were in this tray already)" if skipped else "") + (
+        f"; left out {unusable} that aren't JPEG or PNG photos" if unusable else "")
+
+
+def immich_place(exif: dict) -> dict | None:
+    """A place from an Immich asset's exifInfo (its GPS and reverse-geocoded city / country)."""
+    lat, lon = exif.get("latitude"), exif.get("longitude")
+    if lat is None or lon is None:
+        return None
+    try:
+        return places.clean_place({"name": exif.get("city") or "", "lat": lat, "lon": lon,
+                                   "country": exif.get("country") or "", "admin": exif.get("state") or ""})
+    except ValueError:
+        return None
+
+
+def pull_metadata(sid: str) -> dict:
+    """Bring edits made in Immich back: each uploaded slide's description, date and location, where
+    they differ from what this app last sent (so only what someone changed in Immich comes back).
+    Immich wins over an unsent local edit of the same field."""
+    cfg = load_config()
+    s = Session(sid)
+    client = Immich(cfg["immich_url"], cfg["immich_key"])
+    try:
+        found = {g["id"]: client.asset(g["immich"]["asset_id"]) for g in s.data["groups"] if g.get("immich")}
+    finally:
+        client.close()
+    out = {"checked": len(found), "captions": 0, "dates": 0, "places": 0, "gone": 0}
+
+    def commit(fresh: Session):
+        touched = []
+        for i, g in enumerate(fresh.data["groups"]):
+            if g["id"] not in found or not g.get("immich"):
+                continue
+            a = found[g["id"]]
+            if a is None or a.get("isTrashed"):
+                out["gone"] += 1
+                continue
+            if a.get("id") != g["immich"]["asset_id"] or not a.get("exifInfo"):
+                continue  # uploaded again meanwhile, or Immich hasn't read the file yet
+            pushed = g["immich"].get("pushed") or _pushed(fresh, g, i)
+            if "place" not in pushed:  # uploaded before places: what the slide has stands in
+                pushed = {**pushed, "place": _gps(g)}
+            caption = (a["exifInfo"].get("description") or "").strip()[:2000]
+            day = (a.get("localDateTime") or "")[:10]
+            new = dict(pushed)
+            if caption != pushed.get("caption", ""):
+                g["caption"] = caption
+                new["caption"] = caption
+                out["captions"] += 1
+            if parse_date(day) and day != pushed.get("date"):
+                g["date"] = day
+                new["date"] = day
+                out["dates"] += 1
+            place = immich_place(a["exifInfo"])
+            was = pushed.get("place")
+            if place and not (was and abs(place["lat"] - was[0]) < 1e-4 and abs(place["lon"] - was[1]) < 1e-4):
+                g["place"] = place  # moved (or placed) on Immich's map
+                new["place"] = [place["lat"], place["lon"]]
+                out["places"] += 1
+            if new != pushed:
+                g["immich"]["pushed"] = new
+                touched.append(g)
+        # Immich has these already: record them as sent, unless the slide's date still differs from
+        # Immich's (then the next upload updates it there)
+        for g in touched:
+            i = fresh.group_index(g["id"])
+            if _photo_datetime(fresh, g, i).strftime("%Y-%m-%d") == g["immich"]["pushed"]["date"]:
+                g["immich"]["meta"] = slide_meta(fresh, g, i)
+        if touched:
+            fresh.log(f"Pulled {out['captions']} captions, {out['dates']} dates and {out['places']} places from Immich")
+
+    update_session(sid, commit)
+    return out
+
+
 # --------------------------------------------------------------------------- card cleanup
 
 
@@ -590,7 +1371,7 @@ def cleanup_blockers(s: Session) -> list[str]:
     pending = [i + 1 for i, g in enumerate(s.data["groups"]) if group_status(g) not in ("uploaded", "skipped")]
     if pending:
         problems.append(f"{len(pending)} slide(s) not uploaded yet (e.g. #{pending[0]})")
-    if not any(sc.get("removable") for sc in s.data["scans"].values()):
+    if not any(sc.get("removable") for sc in s.data["scans"].values()):  # folders, photos pulled in from Immich
         problems.append("these scans were imported from a folder, not from a card")
     return problems
 
@@ -628,3 +1409,30 @@ def cleanup_card(job: Job, sid: str) -> None:
     update_session(sid, commit)
     job.message = f"Deleted {deleted} scans from the card" + (f", {missing} were already gone" if missing else "") + (
         f", left {mismatched} that didn't match" if mismatched else "")
+
+
+# --------------------------------------------------------------------------- per-library globals
+
+
+class _Workflow(type(sys)):
+    """`wf.current_job` and `wf.active_session` as they always were, but of the library the caller
+    acts as (store.as_home): each account has its own job and open tray."""
+
+    @property
+    def current_job(self) -> Job | None:
+        return job_now()
+
+    @current_job.setter
+    def current_job(self, job: Job | None) -> None:
+        _jobs[_key()] = job
+
+    @property
+    def active_session(self) -> str | None:
+        return _active.get(_key())
+
+    @active_session.setter
+    def active_session(self, sid: str | None) -> None:
+        set_active(sid)
+
+
+sys.modules[__name__].__class__ = _Workflow

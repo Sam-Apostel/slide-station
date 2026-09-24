@@ -5,6 +5,11 @@ import Foundation
 public enum Develop {
     // MARK: auto restore
 
+    /// A channel median at white counts as this (log 1 = 0 made the gamma NaN / inf).
+    static let restoreMedMax = 0.999
+    /// The midtone gamma stays within these.
+    static let restoreGamma = (0.25, 4.0)
+
     /// Per-channel levels + partial grey-world midtone balance, with a guard against yellow skies.
     public static func autoRestore(_ a: RGBImage, strength: Double) -> RGBImage {
         var out = a
@@ -32,17 +37,20 @@ public enum Develop {
         for c in 0..<3 {
             L[c] = percentile(sorted: sorted[c], 0.4) * k
             H[c] = 1 - (1 - percentile(sorted: sorted[c], 99.6)) * k
+            // a flat channel (an empty, white frame) has no range to stretch: leave its levels alone
+            if H[c] - L[c] < 1e-3 { L[c] = 0; H[c] = 1 }
         }
         // the median of the stretched samples is the stretched median (the stretch is monotonic)
+        // a blown-out channel's median (1) is kept just below 1 and the gamma bounded, as in imaging.py
         var med = [Double](repeating: 0, count: 3)
         for c in 0..<3 {
             let raw = percentile(sorted: sorted[c], 50)
-            med[c] = Double(min(1, max(1e-4, (raw - L[c]) / max(H[c] - L[c], 1e-3))))
+            med[c] = min(restoreMedMax, Double(min(1, max(1e-4, (raw - L[c]) / max(H[c] - L[c], 1e-3)))))
         }
         let tgt = exp(med.map(log).reduce(0, +) / 3)
         for c in 0..<3 {
-            let lm = log(med[c])
-            g[c] = lm == 0 ? 1 : Float(1 + (log(tgt) / lm - 1) * strength)
+            let gc = 1 + (log(tgt) / log(med[c]) - 1) * strength
+            g[c] = Float(min(restoreGamma.1, max(restoreGamma.0, gc)))
         }
         let hb = percentile(sorted: sorted[2], 99.6)
         // the sky guard's mask comes from the untouched blue channel, so build it first
@@ -174,16 +182,21 @@ public enum Develop {
         return out
     }
 
+    /// Rows `top..<bottom` and columns `left..<right` of a straightened `h` x `w` frame that `crop` keeps.
+    public static func cropBox(_ h: Int, _ w: Int, _ c: [Double]) -> (top: Int, bottom: Int, left: Int, right: Int) {
+        let t = Int(c[1] * Double(h)), l = Int(c[0] * Double(w))
+        return (t, max(t + 1, Int(c[3] * Double(h))), l, max(l + 1, Int(c[2] * Double(w))))
+    }
+
     public static func geometryInPlace(_ a: inout RGBImage, _ p: Params, crop: Bool = true) {
         if abs(p.angle) >= 0.01 { a = straighten(a, angle: p.angle) }
         if crop, let c = p.crop {
-            let h = Double(a.height), w = Double(a.width)
-            let t = Int(c[1] * h), l = Int(c[0] * w)
-            a.cropInPlace(top: t, bottom: max(t + 1, Int(c[3] * h)), left: l, right: max(l + 1, Int(c[2] * w)))
+            let b = cropBox(a.height, a.width, c)
+            a.cropInPlace(top: b.top, bottom: b.bottom, left: b.left, right: b.right)
         }
     }
 
-    /// The image the tone curve works on: auto-restored, trimmed, straightened and cropped.
+    /// The image the tone curve works on: auto-restored, trimmed, repaired (dust, mould, Newton rings), straightened and cropped.
     public static func toneBase(_ a: RGBImage, _ p: Params, crop: Bool = true) -> RGBImage {
         var out = a
         toneBaseInPlace(&out, p, crop: crop)
@@ -193,6 +206,10 @@ public enum Develop {
     public static func toneBaseInPlace(_ a: inout RGBImage, _ p: Params, crop: Bool = true) {
         autoRestoreInPlace(&a, strength: p.strength)
         if p.trim { let (t, b, l, r) = trimBounds(a); a.cropInPlace(top: t, bottom: b, left: l, right: r) }
+        // after the trim, so the mount's edge is never taken for a scratch
+        if p.dust > 0 { repairDustInPlace(&a, amount: p.dust) }
+        if p.mould > 0 { repairMouldInPlace(&a, amount: p.mould) }   // after the dust
+        if p.newton > 0 { repairNewtonInPlace(&a, amount: p.newton) }
         geometryInPlace(&a, p, crop: crop)
     }
 
@@ -207,9 +224,18 @@ public enum Develop {
 
     /// The whole develop without a second full-size buffer (except when straightening).
     public static func developInPlace(_ a: inout RGBImage, _ p: Params, crop: Bool = true) {
-        toneBaseInPlace(&a, p, crop: crop)
+        toneBaseInPlace(&a, p, crop: false)
+        // the picture's frame, which local masks are drawn in (straighten keeps the size)
+        let frame = (w: a.width, h: a.height)
+        var at = (x: 0, y: 0)
+        if crop, let c = p.crop {
+            let b = cropBox(a.height, a.width, c)
+            a.cropInPlace(top: b.top, bottom: b.bottom, left: b.left, right: b.right)
+            at = (b.left, b.top)
+        }
         Curves.applyInPlace(&a, p.curves)
         finish(&a, p)
+        if !p.local.isEmpty { applyLocal(&a, p.local, frame: frame, at: at, angle: p.angle) }
     }
 
     /// Everything after the tone curves: white balance, brightness, contrast, saturation.

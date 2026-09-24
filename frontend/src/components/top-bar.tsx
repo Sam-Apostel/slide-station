@@ -1,12 +1,22 @@
 import type * as React from "react";
-import { CircleHelp, HardDriveDownload, Plus, Settings } from "lucide-react";
+import {
+  Camera,
+  ChartNoAxesColumn,
+  CircleHelp,
+  Eye,
+  FolderInput,
+  HardDriveDownload,
+  Plus,
+  Settings,
+  Users,
+} from "lucide-react";
 import { ProButton } from "@/components/ui/pro-button";
 import { Tip } from "@/components/tip";
 import { desktop, isMac } from "@/lib/desktop";
 import { ProSeparator, ProToolbar } from "@/components/ui/pro-toolbar";
 import { ProTitlebarWell } from "@/components/ui/pro-titlebar";
 import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select";
-import { plural, sourceLabel, type AppState, type Source } from "@/lib/api";
+import { plural, sourceLabel, standalone, type AppState, type Source } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
 /** Shows a job for a few seconds after it finishes, and failures until the next job. */
@@ -23,8 +33,18 @@ type TopBarProps = {
   onNewTray: () => void;
   onImport: (src: Source) => void;
   onEject: (src: Source) => void;
+  /** Browser version: pick a folder of scans (there is no scanner to wait for). */
+  onChooseFolder?: () => void;
+  /** Camera rig mode: take a picture with the tethered camera into the open tray. */
+  onCapture?: () => void;
+  /** An import or upload a server restart cut off: run it again. */
+  onResume?: () => void;
   onHelp: () => void;
+  /** Progress across the library (slides per hour, projected finish). */
+  onStats?: () => void;
   onSettings: () => void;
+  /** The People dialog; only when recognising people is on. */
+  onPeople?: () => void;
 };
 
 /** Which tray is open, and a new one. */
@@ -67,10 +87,23 @@ export function ActivityWell({
   state,
   onImport,
   onEject,
+  onChooseFolder,
+  onCapture,
+  onResume,
+  onSettings,
   className,
-}: Pick<TopBarProps, "state" | "onImport" | "onEject"> & { className?: string }) {
+}: Pick<TopBarProps, "state" | "onImport" | "onEject" | "onChooseFolder" | "onCapture" | "onResume"> &
+  Partial<Pick<TopBarProps, "onSettings">> & {
+    className?: string;
+  }) {
   const src = state?.sources.find((x) => x.new > 0) ?? state?.sources[0];
   const job = visibleJob(state);
+  // watched folders (Settings): shown while something in them waits or failed, unless a card has news
+  const w = state?.watch;
+  const watching = w && (w.waiting || w.queued || w.errors) && !src?.new ? w : null;
+  // a hosted server has no scanner of yours to wait for: folders are uploaded from the browser
+  const pickOnly = standalone || !!state?.server?.accounts;
+  const camera = onCapture ? state?.camera?.cameras[0] : undefined;
   return (
     <ProTitlebarWell
       data-tone={job?.error ? "bad" : !job && src ? "ok" : undefined}
@@ -78,6 +111,7 @@ export function ActivityWell({
       className={cn(
         "ss-well h-[28px] max-w-full flex-row gap-2 text-[12px]",
         job ? "relative w-[320px] px-3" : "w-auto py-0 pr-[3px] pl-3",
+        job?.interrupted && job.resumable && onResume && "pr-[3px]",
         className,
       )}
     >
@@ -98,12 +132,47 @@ export function ActivityWell({
               job.error ? "text-destructive" : "text-foreground/90",
             )}
           >
-            {job.error
-              ? `Failed: ${job.error}`
-              : job.finished
-                ? job.message
-                : `${job.message} · ${job.done}/${job.total || "?"}`}
+            {job.interrupted && job.resumable && onResume
+              ? `${job.kind === "upload" ? "Upload" : "Import"} cut off by a server restart`
+              : job.interrupted
+                ? job.error
+                : job.error
+                  ? `Failed: ${job.error}`
+                  : job.finished
+                    ? job.message
+                    : `${job.message} · ${job.done}/${job.total || "?"}`}
           </span>
+          {job.interrupted && job.resumable && onResume && (
+            <Tip
+              label={
+                job.kind === "upload"
+                  ? "Upload again: slides already in Immich are skipped"
+                  : "Import again: scans already imported are skipped"
+              }
+            >
+              <ProButton active className="relative" onClick={onResume}>
+                Resume
+              </ProButton>
+            </Tip>
+          )}
+        </>
+      ) : watching ? (
+        <>
+          <Eye
+            aria-hidden
+            className={cn("size-3.5 shrink-0", watching.errors ? "text-destructive" : "text-[var(--pro-green)]")}
+          />
+          <span role="status" className="min-w-0 truncate">
+            Watched folders ·{" "}
+            {[
+              watching.waiting && `${watching.waiting} waiting`,
+              watching.queued && `${watching.queued} queued`,
+              watching.errors && `${plural(watching.errors, "error")}`,
+            ]
+              .filter(Boolean)
+              .join(" · ")}
+          </span>
+          {onSettings && <ProButton onClick={onSettings}>Show</ProButton>}
         </>
       ) : src ? (
         <>
@@ -119,9 +188,30 @@ export function ActivityWell({
             <ProButton active onClick={() => onImport(src)}>
               <HardDriveDownload /> Import
             </ProButton>
+          ) : pickOnly ? (
+            <ProButton onClick={onChooseFolder}>
+              <FolderInput /> Another folder
+            </ProButton>
           ) : (
             <ProButton onClick={() => onEject(src)}>Eject</ProButton>
           )}
+        </>
+      ) : camera ? (
+        <>
+          <Camera aria-hidden className="size-3.5 shrink-0 text-[var(--pro-green)]" />
+          <span className="min-w-0 truncate">{camera.model}</span>
+          <Tip label="Take a picture into this tray" keys="P">
+            <ProButton active onClick={onCapture}>
+              Capture
+            </ProButton>
+          </Tip>
+        </>
+      ) : pickOnly ? (
+        <>
+          <span className="min-w-0 truncate pl-1 text-muted-foreground">Drop a folder of scans, or</span>
+          <ProButton active onClick={onChooseFolder}>
+            <FolderInput /> Choose folder
+          </ProButton>
         </>
       ) : (
         <span className="px-1 text-muted-foreground">Waiting for the scanner…</span>
@@ -131,9 +221,28 @@ export function ActivityWell({
 }
 
 /** Shortcuts and settings, at the right end of whichever bar is on top. */
-export function AppActions({ onHelp, onSettings }: Pick<TopBarProps, "onHelp" | "onSettings">) {
+export function AppActions({
+  onHelp,
+  onSettings,
+  onStats,
+  onPeople,
+}: Pick<TopBarProps, "onHelp" | "onSettings" | "onStats" | "onPeople">) {
   return (
     <>
+      {onStats && (
+        <Tip label="Stats: slides per hour, projected finish">
+          <ProButton onClick={onStats} aria-label="Stats">
+            <ChartNoAxesColumn />
+          </ProButton>
+        </Tip>
+      )}
+      {onPeople && (
+        <Tip label="People">
+          <ProButton onClick={onPeople} aria-label="People">
+            <Users />
+          </ProButton>
+        </Tip>
+      )}
       <Tip label="Keyboard shortcuts" keys="?">
         <ProButton onClick={onHelp} aria-label="Keyboard shortcuts">
           <CircleHelp />

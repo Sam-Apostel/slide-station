@@ -1,9 +1,16 @@
 """Learns your colour corrections and applies them to new slides.
 
 Every slide you approve is stored as one example: a small set of image features describing the
-scan (how faded, how dark, what cast) together with the settings you settled on. A new slide is
+scan (how faded, how dark, what cast) together with the settings you settled on (sliders, trim
+and tone curves; never the crop or straighten, framing is each slide's own). A new slide is
 matched against those examples with distance-weighted k-nearest-neighbours, so a tray of faded
 blue slides gets the treatment you gave the last faded blue ones, while a neutral tray does not.
+
+Film stock: an example remembers the slide's stock ("s") when it was known. A slide of a known
+stock learns from examples of that stock only once there are MIN_EXAMPLES of them; until then
+examples of *another* known stock count OTHER_STOCK_WEIGHT as much, so a Kodachrome tray doesn't
+learn from Ektachrome corrections. Examples without a stock (and learning.json from before) count
+fully, and a slide of unknown stock is matched exactly as before.
 
 No training step, no dependencies: it is a few hundred numbers on disk and runs in microseconds.
 """
@@ -17,7 +24,8 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from .imaging import Params
+from .filmstock import CLASSES as STOCKS
+from .imaging import CURVE_CHANNELS, Params, clean_curves, curve_lut
 from .store import _atomic_write, library, lock
 
 FEATURES = 14
@@ -27,6 +35,39 @@ MAX_EXAMPLES = 20_000
 # how far a neighbour may be (in standardised feature space) before it stops counting
 MAX_DISTANCE = 3.0
 LEARNED_KEYS = ("strength", "brightness", "contrast", "warmth", "tint", "saturation")
+# a learned curve is the neighbours' curves averaged at these inputs (0, 1/8 ... 1)
+CURVE_SAMPLES = 9
+CURVE_STRAIGHT = 0.005  # an averaged curve closer than this to the diagonal everywhere is dropped
+OTHER_STOCK_WEIGHT = 0.3  # an example of another known stock, while this stock has too few of its own
+
+
+def _sample(pts: list | None) -> np.ndarray:
+    """A curve's output at the CURVE_SAMPLES inputs (a missing curve is the straight line)."""
+    xs = np.linspace(0, 1, CURVE_SAMPLES)
+    if not pts:
+        return xs
+    lut = curve_lut(pts)
+    return np.interp(xs, np.linspace(0, 1, len(lut)), lut.astype(np.float64))
+
+
+def learned_curves(curves: list[dict], w: np.ndarray) -> dict:
+    """Weighted average of the neighbours' tone curves, channel by channel.
+
+    A channel is curved only if neighbours holding at least half the weight curved it; then every
+    neighbour's curve (straight where it had none) is sampled and averaged. Curves are in absolute
+    input levels, so a "Fit to data" curve sits at its own scan's percentiles: that transfers well
+    because the neighbours are chosen on exactly those percentiles (features 0-8), so they are
+    scans faded like this one."""
+    xs = np.linspace(0, 1, CURVE_SAMPLES)
+    out = {}
+    for ch in CURVE_CHANNELS:
+        if sum(wi for c, wi in zip(curves, w) if c.get(ch)) < 0.5:
+            continue
+        y = sum(wi * _sample(c.get(ch)) for c, wi in zip(curves, w))
+        if np.abs(y - xs).max() < CURVE_STRAIGHT:
+            continue
+        out[ch] = [[round(float(x), 4), round(float(v), 4)] for x, v in zip(xs, y)]
+    return clean_curves(out)
 
 
 def features(rgb: np.ndarray, scans: int = 1) -> list[float]:
@@ -81,13 +122,16 @@ class Model:
         self._X = (X - self._mu) / self._sd
 
     # ------------------------------------------------------------------ use
-    def remember(self, key: str, feats: list[float], params: dict) -> None:
-        """Record (or update) the settings a slide was approved with."""
+    def remember(self, key: str, feats: list[float], params: dict, stock: str = "") -> None:
+        """Record (or update) the settings a slide was approved with (and its film stock, if known)."""
         if len(feats) != FEATURES:
             return
         entry = {"key": key, "f": [round(float(x), 5) for x in feats],
                  "p": {k: float(params[k]) for k in LEARNED_KEYS if k in params},
-                 "trim": bool(params.get("trim", True)), "t": time.time()}
+                 "trim": bool(params.get("trim", True)),
+                 "c": clean_curves(params.get("curves") or {}), "t": time.time()}
+        if stock in STOCKS:
+            entry["s"] = stock
         with lock:
             for i, e in enumerate(self.examples):
                 if e.get("key") == key:
@@ -106,17 +150,28 @@ class Model:
             self.save()
             self._fit()
 
-    def suggest(self, feats: list[float]) -> tuple[dict | None, int]:
-        """Predict settings for a new slide. Returns (params or None, neighbours used)."""
+    def suggest(self, feats: list[float], stock: str = "") -> tuple[dict | None, int]:
+        """Predict settings for a new slide (of film `stock`, "" if not known). Returns (params or
+        None, neighbours used)."""
         if self._X is None or len(feats) != FEATURES:
             return None, 0
         q = (np.array(feats, dtype=np.float32) - self._mu) / self._sd
         d = np.sqrt(((self._X - q) ** 2).mean(1))
+        other = None
+        if stock in STOCKS:
+            s = [e.get("s") for e in self.examples]
+            same = np.array([x == stock for x in s])
+            if same.sum() >= MIN_EXAMPLES:  # enough of its own stock: learn from those only
+                d = np.where(same, d, np.float32(np.inf))
+            else:  # too few: examples of another known stock count less
+                other = np.array([x in STOCKS and x != stock for x in s])
         idx = np.argsort(d)[: min(K, len(d))]
         idx = [i for i in idx if d[i] <= MAX_DISTANCE]
         if not idx:
             return None, 0
         w = 1.0 / (d[idx] + 0.25)
+        if other is not None:
+            w = np.where(other[idx], w * np.float32(OTHER_STOCK_WEIGHT), w)
         w = w / w.sum()
         out: dict = {}
         for k in LEARNED_KEYS:
@@ -124,6 +179,12 @@ class Model:
             out[k] = float(np.round((vals * w).sum(), 3))
         trims = np.array([self.examples[i].get("trim", True) for i in idx], dtype=np.float32)
         out["trim"] = bool((trims * w).sum() >= 0.5)
+        # curves: only from examples that recorded them (learning.json from before curves were
+        # learned has no "c"); none of those among the neighbours leaves the slide's curves alone
+        withc = [(self.examples[i]["c"], wi) for i, wi in zip(idx, w) if isinstance(self.examples[i].get("c"), dict)]
+        if withc:
+            cw = np.array([wi for _, wi in withc], dtype=np.float64)
+            out["curves"] = learned_curves([c for c, _ in withc], cw / cw.sum())
         return out, len(idx)
 
     def stats(self) -> dict:
@@ -135,14 +196,15 @@ class Model:
         }
 
 
-_model: Model | None = None
+_models: dict[Path, Model] = {}  # one per library (accounts each have their own)
 
 
 def model() -> Model:
-    global _model
-    if _model is None or _model.path != (library() / "learning.json"):
-        _model = Model()
-    return _model
+    path = library() / "learning.json"
+    with lock:
+        if path not in _models:
+            _models[path] = Model(path)
+        return _models[path]
 
 
 def reset() -> None:

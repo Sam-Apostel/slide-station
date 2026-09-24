@@ -1223,6 +1223,92 @@ body {
   accent-color: var(--ss-accent);
 }
 
+/* ------------------------------------------------------------------ local adjustments */
+
+.ss-local {
+  position: absolute;
+  overflow: hidden;
+  touch-action: none;
+}
+.ss-local[data-kind="brush"] {
+  cursor: crosshair;
+}
+/* the picture's own frame: turned and zoomed like the straighten, shifted by the crop */
+.ss-local-frame {
+  position: absolute;
+  transform-origin: 50% 50%;
+  pointer-events: none;
+}
+.ss-local-mask {
+  position: absolute;
+  left: 0;
+  top: 0;
+}
+.ss-local-svg {
+  position: absolute;
+  inset: 0;
+  overflow: visible;
+}
+.ss-local-line {
+  fill: none;
+  stroke: rgb(255 255 255 / 85%);
+  stroke-width: 1.25px;
+  vector-effect: non-scaling-stroke;
+  filter: drop-shadow(0 0 1px rgb(0 0 0 / 90%));
+}
+.ss-local-axis {
+  stroke: rgb(255 255 255 / 35%);
+}
+.ss-local-erase {
+  stroke-dasharray: 3 3;
+}
+.ss-local-handle {
+  fill: #fff;
+  stroke: rgb(0 0 0 / 70%);
+  stroke-width: 1px;
+  vector-effect: non-scaling-stroke;
+  cursor: grab;
+  pointer-events: all;
+}
+.ss-local-handle[data-h="line"],
+.ss-local-handle[data-h="center"] {
+  fill: var(--ss-accent);
+  cursor: move;
+}
+.ss-local[data-active] .ss-local-handle {
+  cursor: grabbing;
+}
+.ss-local-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 6px;
+  border-radius: 6px;
+  font-size: 12px;
+  cursor: default;
+}
+.ss-local-item > svg {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+  color: var(--ss-muted);
+}
+.ss-local-item:hover {
+  background: rgb(255 255 255 / 4%);
+}
+.ss-local-item-on {
+  background: rgb(242 179 75 / 12%);
+  box-shadow: inset 0 0 0 1px rgb(242 179 75 / 35%);
+}
+.ss-local-item button {
+  color: var(--ss-muted);
+  opacity: 0.6;
+}
+.ss-local-item button:hover {
+  color: var(--ss-text);
+  opacity: 1;
+}
+
 /* ------------------------------------------------------------------ split compare */
 
 .ss-compare {
@@ -1356,4 +1442,282 @@ body {
   opacity: 0.45;
   pointer-events: none;
   filter: saturate(0.4);
+}
+
+/* ------------------------------------------------------------------ review grid, zoom, loupe */
+
+/* developed slides in the grid get the gold edge their filmstrip mount has */
+.ss-grid-tile[data-status="reviewed"]:not([aria-selected="true"]) {
+  border-color: color-mix(in srgb, var(--ss-accent) 35%, transparent);
+}
+.ss-grid-tile[aria-selected="true"] {
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--ss-accent) 25%, transparent);
+}
+
+/* 1:1 zoom: what it shows, how to leave */
+.ss-zoom-tag {
+  position: absolute;
+  top: 14px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 12px;
+  border-radius: 999px;
+  background: rgb(10 10 12 / 85%);
+  color: var(--ss-text);
+  font-size: 11px;
+  white-space: nowrap;
+  pointer-events: none;
+}
+.ss-zoom-tag kbd {
+  padding: 0 4px;
+  border-radius: 3px;
+  background: rgb(255 255 255 / 10%);
+  font: 10px ui-monospace, monospace;
+}
+
+/* the loupe: a round window at 100 % under the pointer */
+.ss-loupe {
+  overflow: hidden;
+  border-radius: 50%;
+  background: var(--ss-sunken);
+  box-shadow:
+    0 0 0 2px color-mix(in srgb, var(--ss-accent) 70%, transparent),
+    0 8px 28px rgb(0 0 0 / 60%);
+}
+
+/* ------------------------------------------------------------------ insights (suggestions, tags) */
+
+.ss-suggestion {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 4px 0 8px;
+  border-radius: 6px;
+  background: var(--ss-panel-2);
+  box-shadow: inset 0 0 0 1px var(--ss-line-soft);
+  font-size: 12px;
+}
+.ss-suggestion button,
+.ss-tag button,
+.ss-tag-add,
+.ss-pile-dismiss {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 4px;
+  color: var(--ss-muted);
+}
+.ss-suggestion button:hover,
+.ss-tag button:hover,
+.ss-tag-add:hover {
+  background: var(--ss-line);
+  color: var(--ss-text);
+}
+.ss-suggestion button[aria-label^="Accept"]:hover {
+  color: var(--ss-accent);
+}
+/* a suggested caption: the words in an editable box, the meter and ✓ × under it */
+.ss-caption-suggestion {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 2px;
+  height: auto;
+  padding: 4px 4px 2px 4px;
+}
+.ss-caption-suggestion textarea {
+  width: 100%;
+  min-height: 40px;
+  padding: 3px 5px;
+  resize: vertical;
+  border-radius: 4px;
+  background: var(--ss-field);
+  color: var(--ss-text);
+  font: inherit;
+  line-height: 1.35;
+}
+.ss-caption-suggestion textarea:focus-visible {
+  outline: 1.5px solid var(--ss-accent);
+  outline-offset: 0;
+}
+.ss-suggestion button:disabled {
+  opacity: 0.4;
+}
+.ss-suggestion svg,
+.ss-tag svg,
+.ss-tag-add svg,
+.ss-pile-dismiss svg {
+  width: 13px;
+  height: 13px;
+}
+/* a small meter: how sure the model is */
+.ss-confidence {
+  min-width: 34px;
+  padding: 1px 4px;
+  border-radius: 3px;
+  background: linear-gradient(
+    90deg,
+    color-mix(in srgb, var(--ss-accent) 28%, transparent) calc(var(--c) * 100%),
+    var(--ss-field) 0
+  );
+  color: var(--ss-muted);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+.ss-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  height: 24px;
+  padding: 0 2px 0 8px;
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--ss-accent) 14%, var(--ss-panel-2));
+  color: var(--ss-text);
+  font-size: 12px;
+}
+/* the place field's suggestions, under the input */
+.ss-place-list {
+  position: absolute;
+  z-index: 20;
+  top: calc(100% + 4px);
+  right: 0;
+  left: 0;
+  max-height: 240px;
+  overflow-y: auto;
+  padding: 4px;
+  border-radius: 6px;
+  background: var(--ss-panel);
+  box-shadow:
+    inset 0 0 0 1px var(--ss-line),
+    0 8px 24px rgb(0 0 0 / 50%);
+}
+.ss-place-list li {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 4px 8px;
+  border-radius: 4px;
+  font-size: 12px;
+  cursor: default;
+}
+.ss-place-list li.ss-place-credit {
+  padding-top: 6px;
+  color: var(--ss-muted);
+  font-size: 10px;
+}
+.ss-place-list li[aria-selected="true"] {
+  background: var(--ss-panel-2);
+  box-shadow: inset 0 0 0 1px var(--ss-line-soft);
+}
+.ss-tag:not(:has(button)) {
+  padding-right: 8px;
+}
+.ss-tag button {
+  width: 18px;
+  height: 18px;
+  border-radius: 9px;
+}
+.ss-pile {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  border-radius: 8px;
+  background: var(--ss-panel-2);
+  box-shadow: inset 0 0 0 1px var(--ss-line-soft);
+}
+.ss-pile-slide {
+  position: relative;
+}
+.ss-pile-slide > button:first-child {
+  display: flex;
+  flex-direction: column;
+  width: 76px;
+  border-radius: 4px;
+  overflow: hidden;
+  background: var(--ss-sunken);
+  font-size: 10px;
+  color: var(--ss-muted);
+}
+.ss-pile-slide img {
+  width: 76px;
+  height: 56px;
+  object-fit: cover;
+}
+.ss-pile-slide > button:first-child:hover {
+  box-shadow: 0 0 0 2px var(--ss-accent);
+}
+/* the captions pile: one row per slide, the thumbnail and its suggested words */
+.ss-pile-caption {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 12px;
+}
+.ss-pile-caption > span {
+  flex: 1;
+  min-width: 0;
+  padding-right: 24px;
+}
+.ss-pile-caption .ss-pile-dismiss {
+  top: 50%;
+  transform: translateY(-50%);
+  opacity: 1;
+  background: none;
+  color: var(--ss-muted);
+}
+.ss-pile-dismiss {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  width: 18px;
+  height: 18px;
+  background: rgb(0 0 0 / 0.65);
+  color: #fff;
+  opacity: 0;
+}
+.ss-pile-slide:hover .ss-pile-dismiss,
+.ss-pile-dismiss:focus-visible {
+  opacity: 1;
+}
+/* look-alikes: the slide "keep the best" keeps, the others dimmed */
+.ss-pile-slide > button.ss-keep {
+  box-shadow: 0 0 0 2px var(--ss-accent);
+  color: var(--ss-text);
+}
+.ss-pile-slide > button[aria-pressed="false"] img {
+  opacity: 0.55;
+}
+/* a scene of the tray: a label across the filmstrip before its first slide */
+.ss-scene {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 2px;
+  padding: 2px 2px 3px;
+  border-bottom: 1px solid var(--ss-line-soft);
+  color: var(--ss-muted);
+  font-size: 11px;
+}
+.ss-scene:first-child {
+  margin-top: 0;
+}
+.ss-scene b {
+  color: var(--ss-text);
+  font-weight: 600;
+}
+.ss-scene button {
+  padding: 1px 6px;
+  border-radius: 4px;
+  color: var(--ss-muted);
+}
+.ss-scene button:hover {
+  background: var(--ss-line);
+  color: var(--ss-text);
 }
