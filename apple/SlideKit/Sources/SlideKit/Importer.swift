@@ -88,6 +88,17 @@ public struct Importer: Sendable {
         try await library.addToIndex(sha: shaIndex, fp: fpIndex)
         result.imported = newIDs.count
 
+        // scans copied by an import that stopped before grouping them (a crash, the app killed):
+        // the dedupe index skips them from now on, so they are grouped here, in their place
+        let grouped = Set(tray.groups.flatMap(\.scans))
+        let stranded = tray.scans.keys.filter { !grouped.contains($0) && !newIDs.contains($0) }
+        if !stranded.isEmpty {
+            newIDs = (newIDs + stranded).sorted {
+                let a = tray.scans[$0]?.taken ?? "", b = tray.scans[$1]?.taken ?? ""
+                return a == b ? $0 < $1 : a < b
+            }
+        }
+
         // signatures for grouping
         var sigs: [String: [Float]] = [:]
         for (n, id) in newIDs.enumerated() {

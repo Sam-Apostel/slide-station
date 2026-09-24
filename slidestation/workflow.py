@@ -330,6 +330,13 @@ def import_scans(job: Job, sid: str, source: str, label: str | None = None) -> N
     sha_index["_fp"] = fp
     add_to_index(sha_index)  # recorded straight after copying, so a crash can't cause double imports
 
+    # scans copied by an import that stopped before grouping them (a crash, a restart): the dedupe
+    # index skips them from now on, so they are grouped here, in their place among the new ones
+    grouped = {x for g in s.data["groups"] for x in g["scans"]}
+    stranded = [k for k in s.data["scans"] if k not in grouped and k not in new_ids]
+    if stranded:
+        new_ids = sorted(stranded + new_ids, key=lambda k: (s.data["scans"][k].get("taken", ""), k))
+
     job.message = "Analysing scans"
     job.done, job.total = 0, len(new_ids)
     sigs = {}

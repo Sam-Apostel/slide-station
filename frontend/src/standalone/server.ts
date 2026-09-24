@@ -1515,6 +1515,20 @@ async function importScans(job: Job, sid: string, sourceId: string) {
   // recorded straight after copying, so a crash can't cause double imports
   await addToIndex({ ...shaIndex, _fp: { ...((await index())._fp ?? {}), ...fpIndex } });
 
+  // scans copied by an import that stopped before grouping them (a closed tab, a crash): the dedupe
+  // index skips them from now on, so they are grouped here, in their place among the new ones
+  const grouped = new Set(d.groups.flatMap((g) => g.scans));
+  const stranded = Object.keys(d.scans).filter((k) => !grouped.has(k) && !newIds.includes(k));
+  if (stranded.length) {
+    const key = (k: string) => [d.scans[k].taken ?? "", k] as const;
+    newIds.push(...stranded);
+    newIds.sort((a, b) => {
+      const [ta, ka] = key(a);
+      const [tb, kb] = key(b);
+      return ta < tb ? -1 : ta > tb ? 1 : ka < kb ? -1 : ka > kb ? 1 : 0;
+    });
+  }
+
   job.message = "Analysing scans";
   job.done = 0;
   job.total = newIds.length;

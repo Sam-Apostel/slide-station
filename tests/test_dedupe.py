@@ -42,3 +42,33 @@ def test_same_fingerprint_different_scan_is_imported(api, tmp_path):
     # the same file again is still recognised
     assert "already imported" in _import(api, sid, fb.parent)["message"]
     assert api.get(f"/api/sessions/{sid}").json()["summary"]["scans"] == 2
+
+
+def test_scans_stranded_by_a_crash_are_grouped_on_the_next_import(api, tmp_path, monkeypatch):
+    """An import that dies after copying (the index already knows the scans) but before grouping
+    them: the next import of the same card must still turn them into slides."""
+    from synthetic import make_scans
+
+    from slidestation import imaging as im
+
+    folder = tmp_path / "card"
+    make_scans(folder, 3, salt=9191, first=9000)
+    sid = api.post("/api/sessions", json={"name": "Crash"}).json()["id"]
+
+    def boom(*a, **k):
+        raise RuntimeError("the power went out")
+
+    monkeypatch.setattr(im, "group_sequence", boom)
+    api.post(f"/api/sessions/{sid}/import", json={"source": str(folder)})
+    job = api.get("/api/state").json()["job"]
+    while not job["finished"]:
+        job = api.get("/api/state").json()["job"]
+    assert "power" in job["error"]
+    d = api.get(f"/api/sessions/{sid}").json()
+    assert d["summary"]["scans"] == 5 and not d["groups"]  # copied, not grouped
+    monkeypatch.undo()
+
+    assert api.post(f"/api/sessions/{sid}/import", json={"source": str(folder)}).json() == {"ok": True}
+    wait_job(api)
+    d = api.get(f"/api/sessions/{sid}").json()
+    assert len(d["groups"]) == 3 and sum(len(g["scans"]) for g in d["groups"]) == 5
