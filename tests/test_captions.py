@@ -47,6 +47,8 @@ def florence(monkeypatch):
     monkeypatch.setattr(captions, "backend", lambda: fake)
     monkeypatch.setattr(captions, "model_ready", lambda: True)
     monkeypatch.setattr(insights, "step", lambda: False)
+    with insights.worker_busy:  # a slide the background worker was already analysing: let it finish
+        pass
     store.save_config({**store.load_config(), "captions_enabled": True, "insights_enabled": False})
     yield fake
     store.save_config({**store.load_config(), "captions_enabled": False})

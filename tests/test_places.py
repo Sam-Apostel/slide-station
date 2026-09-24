@@ -257,6 +257,8 @@ def reader(monkeypatch, gazetteer):
     fake = FakeOcr()
     monkeypatch.setattr(insights, "backend", lambda: FakeClip())
     monkeypatch.setattr(insights, "step", lambda: False)
+    with insights.worker_busy:  # a slide the background worker was already analysing: let it finish
+        pass
     monkeypatch.setattr(insights, "ocr_on", lambda: True)
     monkeypatch.setattr(places, "ocr_backend", lambda: fake)
     store.save_config({**store.load_config(), "insights_enabled": True})

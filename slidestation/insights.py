@@ -562,12 +562,16 @@ def step() -> bool:
     return False
 
 
+# held while the worker analyses: whoever swaps `step` out (the tests) can wait for one in flight
+worker_busy = threading.Lock()
+
+
 def _worker():
     while True:
         time.sleep(1.0)
         for home in wf.homes():  # every library in use (accounts: each user's), one after the other
             try:
-                with as_home(home):
+                with as_home(home), worker_busy:
                     while step():
                         pass
             except Exception as e:  # never let the helper thread die

@@ -77,6 +77,8 @@ def on(monkeypatch):
     monkeypatch.setattr(insights, "model_ready", lambda: True)
     monkeypatch.setattr(insights, "backend", lambda: None)
     monkeypatch.setattr(insights, "step", lambda: False)
+    with insights.worker_busy:  # a slide the background worker was already analysing: let it finish
+        pass
     store.save_config({**store.load_config(), "insights_enabled": True})
     (store.library() / "insights.json").unlink(missing_ok=True)
 
