@@ -20,9 +20,11 @@ Built but never run where it matters — the first things to check:
   and places (does a naive `dateTimeOriginal` land on the right day?), v3.2 search paging, tags,
   smart search for look-alikes, and the "no embedding yet" error text.
 - **On real slides** (only synthetic so far): tag and caption quality, the duplicate threshold
-  (0.93), the film-stock heuristic's confidences, sign OCR, face clustering, mount detection.
+  (0.93), the film-stock heuristic's confidences, sign OCR, face clustering, mount detection, the
+  eyes-open thresholds (set on photos, not faded slides).
 - **Hardware:** the camera rig's tethered capture (a stand-in script only) and RAW files from a
-  real camera; the container on a real server next to Immich.
+  real camera; the container on a real server next to Immich; watched folders on a real SMB / NFS
+  share.
 - **Browsers:** Firefox and Safari themselves (their code path was only simulated in Chromium);
   Safari on iPad / iPhone for the large-scan fallback.
 
@@ -36,7 +38,8 @@ Small known items:
 Done: insights plumbing (suggestions with source and confidence, accept / dismiss, review a tray,
 propagate to neighbours), scene tags (CLIP), captions (Florence-2), faces → people (SFace), places
 (GeoNames, sign OCR, neighbours), film stock (fade signature / k-NN) with era hints for dating,
-near-duplicates / split / merge hints / scenes (CLIP embeddings), dust & scratch, mould and
+near-duplicates / split / merge hints / scenes (CLIP embeddings) with "keep the best" preferring
+open eyes (MediaPipe face mesh), dust & scratch, mould and
 Newton-ring repair. All of it but captions also runs in the browser version (onnxruntime-web).
 ARCHITECTURE §4c, §5a–5f.
 
@@ -48,7 +51,6 @@ Left:
 | **Mount OCR** | The mount itself isn't in the scan: photograph or scan the mounts (or a scanner that images the frame edge), then OCR handwritten dates / lab stamps ("KODAK · JUN 74") into the date suggestion. | Still the single best dating signal. |
 | **Landmarks** | CLIP zero-shot over a landmark list was too overconfident to ship; needs a calibration set of real slides (or a retrieval index) before it can suggest places honestly. | Immich map view for places without signs. |
 | **Era cues** | Florence rarely says anything datable; a model or prompt that does (cars, clothes, signage). | Dates for trays without dated slides. |
-| **Eyes open** | Best-of-burst by blink detection needs an eye-state model on top of the face boxes. | "Keep the best" for portraits. |
 
 ## 2. Round-trip with Immich
 
@@ -116,8 +118,8 @@ cheap, but needs the Mac on, which defeats the "on her own" goal.)
 Done: the browser version (static site, no backend — ARCHITECTURE §4c/§4d) and the container next
 to Immich (`Dockerfile`, `docker-compose.example.yml`: folder uploads from the browser, optional
 accounts per Immich user with sign-in rate limits, key re-checks, quotas, resumable jobs and a
-server-wide render limit — §4e). Left: an Immich plugin / app if their plugin system lands; an
-"external library" watcher (folders dropped into a share).
+server-wide render limit — §4e), and watched folders: sub-folders dropped into a share become
+trays by themselves. Left: an Immich plugin / app if their plugin system lands.
 
 ## 5. Capture
 
