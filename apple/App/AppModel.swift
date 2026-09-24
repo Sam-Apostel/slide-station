@@ -200,6 +200,7 @@ final class AppModel {
     private func save(_ trayID: String, _ slideID: String, debounce: Bool) {
         guard let i = tray?.index(of: slideID) else { return }
         let snapshot = tray!.groups[i]
+        let stock = snapshot.effectiveStock(in: tray!)
         let learnKey = "\(trayID):\(slideID)"
         pendingSave[slideID]?.cancel()
         let library = library, learning = learning, learn = learningEnabled
@@ -220,7 +221,9 @@ final class AppModel {
             // learning (Python: server._learn): developed slides teach, skipped ones are forgotten
             guard learn, let f = snapshot.feat else { return }
             if snapshot.skip { learning.forget(key: learnKey) }
-            else if snapshot.reviewed || snapshot.immich != nil { learning.remember(key: learnKey, features: f, params: snapshot.params) }
+            else if snapshot.reviewed || snapshot.immich != nil {
+                learning.remember(key: learnKey, features: f, params: snapshot.params, stock: stock)
+            }
         }
     }
 
@@ -262,7 +265,7 @@ final class AppModel {
 
     /// Put the learned suggestion back (Python: resuggest).
     func useLearned() {
-        guard let s = slide, let f = s.feat, let sug = learning.suggest(f) else { notice = "Nothing learned for this slide yet."; return }
+        guard let s = slide, let f = s.feat, let sug = learning.suggest(f, stock: tray.flatMap { s.effectiveStock(in: $0) }) else { notice = "Nothing learned for this slide yet."; return }
         edit(s.id, what: "learned") { $0.params = sug.apply(to: $0.params); $0.paramsSource = "learned:\(sug.neighbours)" }
     }
 

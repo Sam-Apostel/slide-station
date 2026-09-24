@@ -1,8 +1,10 @@
 // Learns your colour corrections and applies them to new slides (slidestation/learning.py):
 // 14 image features per developed slide plus the settings you accepted, distance-weighted k-NN.
 // The examples are stored in the library's learning.json in the same format as the Python app's.
+// A slide of a known film stock learns from examples of that stock (learning.py's docstring).
 import type { Params } from "@/lib/api";
 import type { CurveChannel, Curves, Point } from "@/lib/curves";
+import { STOCK_CLASSES } from "./filmstock";
 import { cleanCurves, curveLut } from "./imaging";
 import { percentile, resized, type RGB } from "./pixels";
 
@@ -23,6 +25,7 @@ const DEFAULTS: Record<string, number> = {
 // a learned curve is the neighbours' curves averaged at these inputs (0, 1/8 ... 1)
 const CURVE_SAMPLES = 9;
 const CURVE_STRAIGHT = 0.005; // an averaged curve closer than this to the diagonal everywhere is dropped
+const OTHER_STOCK_WEIGHT = 0.3; // an example of another known stock, while this stock has too few of its own
 const XS = Array.from({ length: CURVE_SAMPLES }, (_, i) => i / (CURVE_SAMPLES - 1));
 
 /** A curve's output at the sample inputs (a missing curve is the straight line). */
@@ -74,7 +77,18 @@ export function features(a: RGB, scans = 1): number[] {
   ];
 }
 
-export type Example = { key: string; f: number[]; p: Record<string, number>; trim: boolean; c?: Curves; t: number };
+export type Example = {
+  key: string;
+  f: number[];
+  p: Record<string, number>;
+  trim: boolean;
+  c?: Curves;
+  /** The slide's film stock, when it was known (examples from before stocks have none). */
+  s?: string;
+  t: number;
+};
+
+const knownStock = (s: string | undefined): s is string => !!s && (STOCK_CLASSES as readonly string[]).includes(s);
 
 /** Examples + standardisation. `save` is called with the JSON to persist after every change. */
 export class Model {
@@ -111,8 +125,8 @@ export class Model {
     this.fit();
   }
 
-  /** Record (or update) the settings a slide was developed with. */
-  remember(key: string, feats: number[], params: Params) {
+  /** Record (or update) the settings a slide was developed with (and its film stock, if known). */
+  remember(key: string, feats: number[], params: Params, stock = "") {
     if (feats.length !== FEATURES) return;
     const p: Record<string, number> = {};
     for (const k of LEARNED_KEYS) if (k in params) p[k] = Number(params[k]);
@@ -124,6 +138,7 @@ export class Model {
       c: cleanCurves(params.curves ?? {}),
       t: Date.now() / 1000,
     };
+    if (knownStock(stock)) entry.s = stock;
     const i = this.examples.findIndex((e) => e.key === key);
     if (i >= 0) this.examples[i] = entry;
     else this.examples.push(entry);
@@ -141,18 +156,26 @@ export class Model {
     this.persist();
   }
 
-  /** Predict settings for a new slide: the settings, and how many neighbours they came from. */
-  suggest(feats: number[]): [Partial<Params> | null, number] {
+  /** Predict settings for a new slide (of film `stock`, "" if not known): the settings, and how
+   *  many neighbours they came from. */
+  suggest(feats: number[], stock = ""): [Partial<Params> | null, number] {
     if (!this.X || feats.length !== FEATURES) return [null, 0];
     const q = feats.map((v, j) => (v - this.mu[j]) / this.sd[j]);
-    const d = this.X.map((x) => Math.sqrt(x.reduce((s, v, j) => s + (v - q[j]) ** 2, 0) / FEATURES));
+    let d = this.X.map((x) => Math.sqrt(x.reduce((s, v, j) => s + (v - q[j]) ** 2, 0) / FEATURES));
+    let other: boolean[] | null = null;
+    if (knownStock(stock)) {
+      const same = this.examples.map((e) => e.s === stock);
+      // enough of its own stock: learn from those only; too few: examples of another known stock count less
+      if (same.filter(Boolean).length >= MIN_EXAMPLES) d = d.map((v, i) => (same[i] ? v : Infinity));
+      else other = this.examples.map((e) => knownStock(e.s) && e.s !== stock);
+    }
     const idx = d
       .map((v, i) => i)
-      .sort((a, b) => d[a] - d[b])
+      .sort((a, b) => d[a] - d[b] || 0) // || 0: Infinity - Infinity is NaN
       .slice(0, Math.min(K, d.length))
       .filter((i) => d[i] <= MAX_DISTANCE);
     if (!idx.length) return [null, 0];
-    const w0 = idx.map((i) => 1 / (d[i] + 0.25));
+    const w0 = idx.map((i) => (other?.[i] ? OTHER_STOCK_WEIGHT : 1) / (d[i] + 0.25));
     const ws = w0.reduce((s, v) => s + v, 0);
     const w = w0.map((v) => v / ws);
     const out: Record<string, unknown> = {};

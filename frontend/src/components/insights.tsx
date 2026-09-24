@@ -1,6 +1,6 @@
-// Insights (desktop app only): what the models suggest about a slide — scene tags today — shown as
-// suggestions to accept or dismiss, never applied silently. The browser version hides all of it
-// (its models would need onnxruntime-web).
+// Insights: what the models suggest about a slide — scene tags today — shown as suggestions to
+// accept or dismiss, never applied silently. The browser version hides the model parts (they would
+// need onnxruntime-web); the film stock and date guesses need no model and work in both.
 import * as React from "react";
 import { Check, Download, ListChecks, Plus, RefreshCw, Settings, X } from "lucide-react";
 import { ProButton } from "@/components/ui/pro-button";
@@ -16,24 +16,42 @@ import {
 } from "@/components/ui/dialog";
 import { Field, FieldDescription, FieldGroup, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
+import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select";
 import { Tip } from "@/components/tip";
 import { rangeEnd } from "@/components/dialogs";
-import { plural, previewUrl, type Group, type InsightKind, type SessionPayload, type Suggestion } from "@/lib/api";
+import {
+  plural,
+  previewUrl,
+  standalone,
+  STOCK_NAMES,
+  STOCKS,
+  type Group,
+  type InsightKind,
+  type SessionPayload,
+  type Suggestion,
+} from "@/lib/api";
 import type { SlideStation } from "@/hooks/use-slide-station";
 
 const pct = (c: number) => `${Math.round(c * 100)}%`;
 
-/** A slide's open suggestions, tags first. */
-export function openSuggestions(g: Group): [InsightKind, Suggestion][] {
+/** Film stock and date guesses need no model: the Details section shows them, in both versions. */
+const MODEL_FREE = (kind: InsightKind, e: Suggestion) =>
+  kind === "stock" || (kind === "date" && e.source === "neighbours+stock");
+
+/** A slide's open suggestions, tags first; `models`: only what the models suggested. */
+export function openSuggestions(g: Group, models = false): [InsightKind, Suggestion][] {
   const ins = g.insights;
   if (!ins) return [];
   const out: [InsightKind, Suggestion][] = ins.tags.filter((e) => e.state === "suggested").map((e) => ["tags", e]);
-  for (const k of ["caption", "date", "place"] as const) {
+  for (const k of ["caption", "date", "place", "stock"] as const) {
     const e = ins[k];
-    if (e?.state === "suggested") out.push([k, e]);
+    if (e?.state === "suggested" && !(models && MODEL_FREE(k, e))) out.push([k, e]);
   }
   return out;
 }
+
+/** How a suggested value reads: film stocks by name. */
+export const shown = (kind: InsightKind, value: string) => (kind === "stock" ? (STOCK_NAMES[value] ?? value) : value);
 
 /** One line for the collapsed Insights section. */
 export function insightsNote(g: Group, session: SessionPayload) {
@@ -42,7 +60,7 @@ export function insightsNote(g: Group, session: SessionPayload) {
   if (!st.ready) return "model not downloaded";
   if (g.skip) return "skipped";
   if (!g.insights || g.insights.stale) return "analysing…";
-  const open = openSuggestions(g);
+  const open = openSuggestions(g, true);
   return open.length ? open.map(([, e]) => e.value).join(" · ") : "nothing new";
 }
 
@@ -93,7 +111,7 @@ export function InsightsPanel({
       </div>
     );
   }
-  const open = openSuggestions(g);
+  const open = openSuggestions(g, true);
   const decided = (g.insights?.tags ?? []).filter((e) => e.state !== "suggested").length;
   const accept = async (kind: InsightKind, value: string) => {
     const p = await app.decide(kind, "accept", value, [g.id]);
@@ -232,6 +250,111 @@ export function TagsField({
   );
 }
 
+// ------------------------------------------------------------------ film stock (no model: both versions)
+
+const whyStock = (source: string) =>
+  source.startsWith("knn:")
+    ? `like the ${source.slice(4)} closest slides you set a film stock for`
+    : "a guess from how the colours faded (red / magenta: Ektachrome, cyan: Agfachrome, unfaded: Kodachrome)";
+
+/** One open suggestion with its confidence, ✓ and ×, for the Details section. */
+export function SuggestionRow({
+  label,
+  e,
+  why,
+  onAccept,
+  onDismiss,
+}: {
+  label: React.ReactNode;
+  e: Suggestion;
+  why: string;
+  onAccept: () => void;
+  onDismiss: () => void;
+}) {
+  return (
+    <div className="ss-suggestion" role="group" aria-label="Suggestion">
+      <span className="min-w-0 flex-1 truncate">{label}</span>
+      <Tip label={`${pct(e.confidence)} sure: ${why}`}>
+        <span className="ss-confidence" style={{ "--c": e.confidence } as React.CSSProperties}>
+          {pct(e.confidence)}
+        </span>
+      </Tip>
+      <Tip label="Accept">
+        <button type="button" aria-label={`Accept ${e.value}`} onClick={onAccept}>
+          <Check />
+        </button>
+      </Tip>
+      <Tip label="Dismiss: it won't be suggested for this slide again">
+        <button type="button" aria-label={`Dismiss ${e.value}`} onClick={onDismiss}>
+          <X />
+        </button>
+      </Tip>
+    </div>
+  );
+}
+
+/**
+ * The slide's film stock: its own, or the tray's (the first option), plus the guess when it has
+ * none. Accepting offers it to the neighbours; a set stock can be given to a range of slides.
+ */
+export function StockField({
+  g,
+  trayStock,
+  onChange,
+  onDecide,
+  onRange,
+}: {
+  g: Group;
+  trayStock: string;
+  onChange: (stock: string) => void;
+  onDecide: (action: "accept" | "dismiss", value: string) => void;
+  /** Give this stock to a run of slides (the propagate dialog). */
+  onRange: (stock: string) => void;
+}) {
+  const id = React.useId();
+  const e = g.insights?.stock;
+  return (
+    <div className="flex flex-col gap-1">
+      <label htmlFor={id} className="text-[11px] text-muted-foreground">
+        Film stock
+      </label>
+      <div className="flex items-center gap-1.5">
+        <NativeSelect id={id} value={g.stock} onChange={(ev) => onChange(ev.target.value)} className="min-w-[150px]">
+          <NativeSelectOption value="">
+            {trayStock ? `Tray's: ${STOCK_NAMES[trayStock]}` : "Not set"}
+          </NativeSelectOption>
+          {STOCKS.map((s) => (
+            <NativeSelectOption key={s} value={s}>
+              {STOCK_NAMES[s]}
+            </NativeSelectOption>
+          ))}
+        </NativeSelect>
+        {!!g.stock && g.stock !== "unknown" && (
+          <Tip label="Give this film stock to a run of slides">
+            <ProButton plain aria-label="Film stock for a range" onClick={() => onRange(g.stock)}>
+              <ListChecks />
+            </ProButton>
+          </Tip>
+        )}
+      </div>
+      {e?.state === "suggested" && (
+        <SuggestionRow
+          label={
+            <>
+              <span className="text-muted-foreground">Looks like </span>
+              {shown("stock", e.value)}
+            </>
+          }
+          e={e}
+          why={whyStock(e.source)}
+          onAccept={() => onDecide("accept", e.value)}
+          onDismiss={() => onDecide("dismiss", e.value)}
+        />
+      )}
+    </div>
+  );
+}
+
 // ------------------------------------------------------------------ tray review
 
 type Pile = { kind: InsightKind; value: string; items: { g: Group; e: Suggestion }[] };
@@ -286,13 +409,15 @@ export function ReviewDialog({
           {piles.map((p) => (
             <section
               key={`${p.kind}:${p.value}`}
-              aria-label={`${p.value}, ${plural(p.items.length, "slide")}`}
+              aria-label={`${shown(p.kind, p.value)}, ${plural(p.items.length, "slide")}`}
               className="ss-pile"
             >
               <header className="flex items-center gap-2">
                 <b className="min-w-0 flex-1 truncate text-[13px] font-semibold">
-                  {p.kind !== "tags" && <span className="font-normal text-muted-foreground">{p.kind}: </span>}
-                  {p.value}
+                  {p.kind !== "tags" && (
+                    <span className="font-normal text-muted-foreground">{p.kind === "stock" ? "film" : p.kind}: </span>
+                  )}
+                  {shown(p.kind, p.value)}
                   <span className="ml-2 font-normal text-muted-foreground">
                     {plural(p.items.length, "slide")} · ≈
                     {pct(p.items.reduce((s, x) => s + x.e.confidence, 0) / p.items.length)}
@@ -340,11 +465,15 @@ export function ReviewDialog({
           ))}
         </div>
         <DialogFooter className="sm:justify-between">
-          <Tip label="Analyse every slide again (what you accepted or dismissed stays)">
-            <Button variant="outline" onClick={() => app.analyseTray(true)}>
-              <RefreshCw /> Analyse again
-            </Button>
-          </Tip>
+          {standalone ? (
+            <span /> // the browser version has no models to run again: film stock and dates only
+          ) : (
+            <Tip label="Analyse every slide again (what you accepted or dismissed stays)">
+              <Button variant="outline" onClick={() => app.analyseTray(true)}>
+                <RefreshCw /> Analyse again
+              </Button>
+            </Tip>
+          )}
           <DialogClose asChild>
             <Button type="button" variant="outline">
               Done
@@ -358,10 +487,16 @@ export function ReviewDialog({
 
 // ------------------------------------------------------------------ tray-level propagation
 
-export type Offer = { kind: "tags" | "caption" | "date"; value: string; from: number; to: number };
+export type Offer = { kind: "tags" | "caption" | "date" | "stock"; value: string; from: number; to: number };
 
 const holds = (g: Group, kind: Offer["kind"], value: string) =>
-  kind === "tags" ? g.tags.includes(value) : kind === "date" ? g.date === value : g.caption === value;
+  kind === "tags"
+    ? g.tags.includes(value)
+    : kind === "date"
+      ? g.date === value
+      : kind === "stock"
+        ? g.stock === value
+        : g.caption === value;
 
 const suggests = (g: Group, kind: Offer["kind"], value: string) => {
   const ins = g.insights;
@@ -371,9 +506,10 @@ const suggests = (g: Group, kind: Offer["kind"], value: string) => {
 };
 
 /**
- * The run of slides around `i` to offer a confirmed tag / caption / date to: neighbours that have
- * it or were suggested it (a date: up to the next slide with its own date, like "Date a range").
- * With nothing around saying so, just the next slide. Null when every slide in the run has it.
+ * The run of slides around `i` to offer a confirmed tag / caption / date / film stock to:
+ * neighbours that have it or were suggested it (a date: up to the next slide with its own date,
+ * like "Date a range"). With nothing around saying so, just the next slide. Null when every slide
+ * in the run has it.
  */
 export function propagationOffer(groups: Group[], i: number, kind: Offer["kind"], value: string): Offer | null {
   let a = i;
@@ -415,7 +551,13 @@ export function PropagateDialog({
   const valid = Number.isInteger(a) && Number.isInteger(b) && a >= 1 && b >= 1 && a <= n && b <= n;
   const count = valid ? Math.abs(b - a) + 1 : 0;
   const what =
-    offer?.kind === "tags" ? `the tag “${offer.value}”` : offer?.kind === "date" ? offer.value : "this caption";
+    offer?.kind === "tags"
+      ? `the tag “${offer.value}”`
+      : offer?.kind === "date"
+        ? offer.value
+        : offer?.kind === "stock"
+          ? shown("stock", offer.value)
+          : "this caption";
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (offer && valid && (await onApply(offer.kind, offer.value, a - 1, b - 1))) onOpenChange(false);
@@ -431,7 +573,9 @@ export function PropagateDialog({
                 ? "Every slide in the range gets the tag."
                 : offer?.kind === "date"
                   ? "Every slide in the range gets this date as its own."
-                  : `“${offer?.value}” replaces the captions of the slides in the range.`}
+                  : offer?.kind === "stock"
+                    ? "Every slide in the range gets this film stock as its own."
+                    : `“${offer?.value}” replaces the captions of the slides in the range.`}
             </DialogDescription>
           </DialogHeader>
           <FieldGroup className="gap-4">

@@ -9,6 +9,7 @@ import type { Src } from "./engine.worker";
 import { exifSegment, readExif, withExif } from "./exif";
 import { cleanParams, groupSequence, MOUNT_AUTO, rotateBox, weakScans, type Quality } from "./imaging";
 import { Immich, ImmichError } from "./immich";
+import { cleanStock, effective, label, Labels, views } from "./filmstock";
 import { Model } from "./learning";
 import { canPickFolders, kvGet, kvSet, permission, pickDirectory, type Library } from "./library";
 import { npy, readNpy } from "./npy";
@@ -205,7 +206,47 @@ async function learn(d: SessionData, g: GroupData) {
   const key = `${d.id}:${g.id}`;
   const m = await model();
   if (g.skip) m.forget(key);
-  else if (g.reviewed || g.immich) m.remember(key, g.feat, g.params);
+  else if (g.reviewed || g.immich) m.remember(key, g.feat, g.params, effective(d, g));
+}
+
+// ------------------------------------------------------------------ film stock (filmstock.ts)
+
+let stockLabels: Labels | null = null;
+async function labels(): Promise<Labels> {
+  if (!stockLabels) {
+    let data: unknown = null;
+    try {
+      data = JSON.parse((await lib.readText("stocks.json")) ?? "null");
+    } catch {
+      /* start fresh */
+    }
+    stockLabels = new Labels(data, (json) => void lib.write("stocks.json", JSON.stringify(json, null, 1)));
+  }
+  return stockLabels;
+}
+
+/** A slide's film stock (or the tray's) changed: its label and its learning example follow. */
+async function stockChanged(d: SessionData, gs: GroupData[]) {
+  const l = await labels();
+  for (const g of gs) {
+    label(l, d, g);
+    await learn(d, g);
+  }
+}
+
+function checkedStock(v: unknown): string {
+  const s = cleanStock(v);
+  if (s === null)
+    throw new HttpError(
+      400,
+      "Film stock must be one of kodachrome, ektachrome, agfachrome, fujichrome, other, unknown",
+    );
+  return s;
+}
+
+function setStock(g: GroupData, v: string) {
+  if (v) g.stock = v;
+  else delete g.stock;
 }
 
 // ------------------------------------------------------------------ undo
@@ -303,9 +344,11 @@ async function mountOf(d: SessionData, g: GroupData): Promise<NonNullable<GroupD
 async function payload(d: SessionData): Promise<SessionPayload> {
   const dates = slideDates(d);
   const st = statuses(d);
+  const live = views(d, dates, await labels()); // film stock and date guesses: no model
   return {
     summary: summary(d),
     defaults: d.defaults,
+    stock: d.stock ?? "",
     groups: d.groups.map((g, i) => ({
       id: g.id,
       scans: g.scans,
@@ -323,6 +366,12 @@ async function payload(d: SessionData): Promise<SessionPayload> {
       date: g.date ?? "",
       caption: g.caption ?? "",
       tags: g.tags ?? [],
+      stock: g.stock ?? "",
+      // only the model-free kinds here: the scene tags' model doesn't run in the browser (yet)
+      insights:
+        live[i].stock || live[i].date
+          ? { tags: [], caption: null, place: null, ...live[i], stale: false, error: "" }
+          : null,
       date_est: dates[i],
       active: activeScans(g),
       key: renderKey(g),
@@ -606,7 +655,7 @@ async function importScans(job: Job, sid: string, sourceId: string) {
     const mount = { ...analysis.mount, scans: activeScans(g) };
     let suggestion: Partial<Params> | null = null;
     let neighbours = 0;
-    if (learning) [suggestion, neighbours] = (await model()).suggest(feats);
+    if (learning) [suggestion, neighbours] = (await model()).suggest(feats, effective(d, g));
 
     await update(sid, (fresh) => {
       let target: GroupData;
@@ -1250,7 +1299,7 @@ async function pullIn(job: Job, sid: string, ids: string[]) {
     });
     let suggestion: Partial<Params> | null = null;
     let neighbours = 0;
-    if (learning) [suggestion, neighbours] = (await model()).suggest(analysis.features);
+    if (learning) [suggestion, neighbours] = (await model()).suggest(analysis.features, d.stock ?? "");
     await update(sid, (f) => {
       g.params = structuredClone(f.defaults);
       g.feat = analysis.features;
@@ -1452,9 +1501,14 @@ export async function handle(method: string, url: string, body: Body = {}): Prom
     return payload(d);
   }
   if ((m = is("PATCH", /^\/api\/sessions\/([^/]+)$/))) {
-    const { d } = await update(m[1], (d) => {
+    const stock = "stock" in body ? checkedStock(body.stock) : null;
+    const { d } = await update(m[1], async (d) => {
       for (const k of ["name", "album", "date"] as const) if (k in body) d[k] = String(body[k]).trim();
       if ("defaults" in body) d.defaults = cleanParams(body.defaults as Params);
+      if (stock !== null) {
+        d.stock = stock;
+        await stockChanged(d, d.groups);
+      }
     });
     return payload(d);
   }
@@ -1515,6 +1569,8 @@ export async function handle(method: string, url: string, body: Body = {}): Prom
       for (const k of ["reviewed", "skip"] as const) if (k in body) g[k] = !!body[k];
       if ("date" in body) g.date = cleanDate(body.date);
       if ("caption" in body) g.caption = String(body.caption).trim().slice(0, 2000);
+      if ("stock" in body) setStock(g, checkedStock(body.stock));
+      if ("stock" in body || "skip" in body) label(await labels(), d, g);
       await learn(d, g);
       if ("excluded" in body) {
         g.excluded = (body.excluded as string[]).filter((x) => g.scans.includes(x));
@@ -1537,6 +1593,60 @@ export async function handle(method: string, url: string, body: Body = {}): Prom
     });
     return { ...(await payload(d)), dated };
   }
+  if ((m = is("POST", /^\/api\/sessions\/([^/]+)\/insights\/decide$/))) {
+    // film stock and date guesses only: the kinds that need no model (server.py insights_decide)
+    const { kind, action } = body as { kind?: string; action?: string };
+    const value = body.value == null ? null : String(body.value);
+    if (
+      !["tags", "caption", "date", "place", "stock"].includes(kind ?? "") ||
+      !["accept", "dismiss"].includes(action ?? "")
+    )
+      throw new HttpError(400, "kind must be tags, caption, date, place or stock; action accept or dismiss");
+    const gids = Array.isArray(body.groups) ? (body.groups as string[]) : null;
+    let decided = 0;
+    const { d } = await update(m[1], async (d) => {
+      const targets = d.groups.filter((g) => !gids || gids.includes(g.id));
+      if (gids && targets.length === 1 && action === "accept") editable(targets[0]);
+      if (kind !== "stock" && kind !== "date") return; // nothing else is suggested in the browser
+      const live = views(d, slideDates(d), await labels());
+      for (const g of targets) {
+        if (action === "accept" && g.locked) continue;
+        const e = live[groupIndex(d, g.id)][kind];
+        if (!e || e.state !== "suggested" || (value !== null && e.value !== value)) continue;
+        if (action === "accept") {
+          if (kind === "date") g.date = cleanDate(e.value);
+          else setStock(g, e.value);
+        }
+        (g.insights ??= {})[kind] = { ...e, state: action === "accept" ? "accepted" : "dismissed" };
+        if (kind === "stock") await stockChanged(d, [g]);
+        decided++;
+      }
+    });
+    return { ...(await payload(d)), decided };
+  }
+  if ((m = is("POST", /^\/api\/sessions\/([^/]+)\/insights\/propagate$/))) {
+    // a film stock or a date over a range of slides (server.py insights_propagate; tags and captions
+    // have no suggestions in the browser)
+    const kind = body.kind;
+    if (kind !== "stock" && kind !== "date") throw new HttpError(400, "kind must be date or stock here");
+    const value = kind === "stock" ? checkedStock(body.value) : cleanDate(body.value ?? "");
+    let applied = 0;
+    const { d } = await update(m[1], async (d) => {
+      const [a, b] = [groupIndex(d, String(body.from)), groupIndex(d, String(body.to))].sort((x, y) => x - y);
+      if (a < 0) throw new HttpError(404, "Slide not found");
+      const live = views(d, slideDates(d), await labels());
+      for (const [i, g] of d.groups.entries()) {
+        if (i < a || i > b || g.locked) continue;
+        if (kind === "stock") setStock(g, value);
+        else g.date = value;
+        const e = live[i][kind];
+        if (value && e?.value === value) (g.insights ??= {})[kind] = { ...e, state: "accepted" };
+        if (kind === "stock") await stockChanged(d, [g]);
+        applied++;
+      }
+    });
+    return { ...(await payload(d)), applied };
+  }
   if ((m = is("POST", /^\/api\/sessions\/([^/]+)\/groups\/([^/]+)\/split$/))) {
     const [, sid, gid] = m;
     const { d } = await update(sid, (d) => {
@@ -1547,6 +1657,7 @@ export async function handle(method: string, url: string, body: Body = {}): Prom
       const tail = newGroup(d, g.scans.slice(at), g.rotation, g.rot_reason);
       tail.params = { ...g.params };
       tail.excluded = (g.excluded ?? []).filter((x) => tail.scans.includes(x));
+      if (g.stock) tail.stock = g.stock; // one piece of film
       g.scans = g.scans.slice(0, at);
       g.excluded = (g.excluded ?? []).filter((x) => g.scans.includes(x));
       d.groups.splice(groupIndex(d, gid) + 1, 0, tail);
@@ -1675,7 +1786,7 @@ export async function handle(method: string, url: string, body: Body = {}): Prom
       const targets = body.all ? d.groups : [group(d, gid)];
       for (const g of targets) {
         if (g.reviewed || g.skip || g.locked || !g.feat) continue;
-        const [sug, n] = mdl.suggest(g.feat);
+        const [sug, n] = mdl.suggest(g.feat, effective(d, g));
         if (sug) {
           remember(g, "learned");
           g.params = cleanParams({ ...g.params, ...sug });

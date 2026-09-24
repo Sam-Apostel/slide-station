@@ -129,6 +129,7 @@ meta["learning_curve_examples"] = model.examples
 sugg, _ = model.suggest(meta["learning_query"])
 meta["learning_curve_suggestion"] = sugg["curves"]
 
+
 # mount detection: the scene turned 2.5° clockwise inside a dark mount window
 def mounted(a: np.ndarray, angle: float, inner=(0.84, 0.8)) -> np.ndarray:
     h, w = a.shape[:2]
@@ -169,6 +170,26 @@ meta["dust_amount"] = 0.7
 dm, dr = im.dust_mask(dusty, 0.7)
 meta["dust_marked"], meta["dust_r"] = int(dm.sum()), dr
 save_f32(im.repair_dust(dusty, 0.7), "dust.f32")
+
+# learning per film stock (added later: computed from the keys above only, so the rest of this file
+# didn't have to be regenerated). Even examples are Kodachrome (6: learns from those only), two
+# are Ektachrome (too few: the others count OTHER_STOCK_WEIGHT), the rest have no stock.
+# --- stock fixture start
+stock_ex = [dict(e) for e in meta["learning_examples"]]
+for i, e in enumerate(stock_ex):
+    if i % 2 == 0:
+        e["s"] = "kodachrome"
+    elif i in (1, 3):
+        e["s"] = "ektachrome"
+stock_model = learning.Model(path=OUT / "_learning_unused.json")
+stock_model.examples = stock_ex
+stock_model._fit()
+stock_cases = {}
+for st in ("kodachrome", "ektachrome", "fujichrome", ""):
+    sugg, n = stock_model.suggest(meta["learning_query"], st)
+    stock_cases[st or "none"] = {"suggestion": sugg, "neighbours": n}
+meta["learning_stock"] = {"examples": stock_ex, "cases": stock_cases}
+# --- stock fixture end
 
 (OUT / "golden.json").write_text(json.dumps(meta, indent=1))
 print("wrote", OUT)

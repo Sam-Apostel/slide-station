@@ -19,7 +19,7 @@ from PIL import Image
 
 from . import imaging as im
 from .imaging import Params
-from . import learning
+from . import filmstock, learning
 from . import people
 from .immich import Immich, ImmichError
 from .store import (Session, active_scans, add_to_index, group_status, imported_index, load_config, lock,
@@ -240,7 +240,7 @@ def import_scans(job: Job, sid: str, source: str) -> None:
         mount = {**im.detect_mount(fused), "scans": active_scans(g)}
         suggestion, neighbours = (None, 0)
         if load_config().get("learning_enabled", True):
-            suggestion, neighbours = learning.model().suggest(feats)
+            suggestion, neighbours = learning.model().suggest(feats, filmstock.effective(s.data, g))
 
         def commit(fresh: Session, g=g, ids=ids, extend=extend, rot=rot, feats=feats, mount=mount,
                    suggestion=suggestion, neighbours=neighbours):
@@ -1023,7 +1023,7 @@ def pull_in(job: Job, sid: str, asset_ids: list[str]) -> None:
             feats = learning.features(fused_proxy(s, g), 1)
             suggestion, neighbours = (None, 0)
             if cfg.get("learning_enabled", True):
-                suggestion, neighbours = learning.model().suggest(feats)
+                suggestion, neighbours = learning.model().suggest(feats, s.data.get("stock", ""))
 
             def commit(fresh: Session, g=g, feats=feats, suggestion=suggestion, neighbours=neighbours):
                 g["params"] = dict(fresh.data["defaults"])

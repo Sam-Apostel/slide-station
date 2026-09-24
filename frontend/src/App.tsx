@@ -23,7 +23,7 @@ import { PropagateDialog, ReviewDialog, propagationOffer, type Offer } from "@/c
 import { PeopleDialog } from "@/components/people";
 import { useSlideStation, type SlideStation } from "@/hooks/use-slide-station";
 import { useDesktop, useFolderDrop, type DesktopHandlers } from "@/hooks/use-desktop";
-import { needsReview, plural, standalone, type Group, type InsightKind, type Source } from "@/lib/api";
+import { needsReview, plural, standalone, STOCK_NAMES, type Group, type InsightKind, type Source } from "@/lib/api";
 import { desktop, isMac } from "@/lib/desktop";
 
 type Panels = { filmstrip: boolean; inspector: boolean };
@@ -221,7 +221,8 @@ function SlideStationApp() {
 
   /** A suggestion accepted on one slide: offer it to the run of neighbours ("Apply 'beach' to 12–31?"). */
   const offerNeighbours = (kind: InsightKind, value: string, groups: Group[], index: number) => {
-    const what = kind === "tags" ? `“${value}”` : kind === "date" ? value : "the caption";
+    const what =
+      kind === "tags" ? `“${value}”` : kind === "date" ? value : kind === "stock" ? STOCK_NAMES[value] : "the caption";
     const o = kind === "place" ? null : propagationOffer(groups, index, kind, value);
     toast(`Accepted ${what}`, {
       action: o ? { label: `Apply to ${o.from + 1}–${o.to + 1}…`, onClick: () => setOffer(o) } : undefined,
@@ -463,6 +464,10 @@ function SlideStationApp() {
                     onDateRange={() => setDateRangeOpen(true)}
                     onPresets={views.presets}
                     onDevelopLike={views.developLike}
+                    onAccepted={offerNeighbours}
+                    onStockRange={(stock) =>
+                      setOffer({ kind: "stock", value: stock, from: app.sel, to: session.groups.length - 1 })
+                    }
                     insights={
                       standalone
                         ? undefined // needs its models in the page (onnxruntime-web): a follow-up
@@ -547,7 +552,7 @@ function SlideStationApp() {
         onFromImmich={openImmich}
         views={views}
         grid={grid}
-        onReview={standalone ? undefined : () => setReviewOpen(true)}
+        onReview={() => setReviewOpen(true)}
         onPeople={onPeople}
         busy={busy}
       />
@@ -564,7 +569,8 @@ function SlideStationApp() {
           onApply={app.dateRange}
         />
       )}
-      {session && !standalone && (
+      {session && (
+        // in the browser version: film stock and date guesses only (no models there)
         <>
           <ReviewDialog
             open={reviewOpen}

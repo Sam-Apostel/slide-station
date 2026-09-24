@@ -86,7 +86,8 @@ def test_off_by_default_and_without_model(api, tray, monkeypatch):
     assert not STEP()  # disabled: nothing happens
     store.save_config({**store.load_config(), "insights_enabled": True})
     assert not STEP()  # enabled, but no model downloaded
-    assert all(g["insights"] is None and g["tags"] == [] for g in payload(api, sid)["groups"])
+    # nothing from a model (a film-stock guess needs none: test_filmstock.py)
+    assert all(not (g["insights"] or {}).get("tags") and g["tags"] == [] for g in payload(api, sid)["groups"])
 
 
 def test_suggestions_are_never_applied(api, tray, clip):

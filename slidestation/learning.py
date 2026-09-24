@@ -6,6 +6,12 @@ and tone curves; never the crop or straighten, framing is each slide's own). A n
 matched against those examples with distance-weighted k-nearest-neighbours, so a tray of faded
 blue slides gets the treatment you gave the last faded blue ones, while a neutral tray does not.
 
+Film stock: an example remembers the slide's stock ("s") when it was known. A slide of a known
+stock learns from examples of that stock only once there are MIN_EXAMPLES of them; until then
+examples of *another* known stock count OTHER_STOCK_WEIGHT as much, so a Kodachrome tray doesn't
+learn from Ektachrome corrections. Examples without a stock (and learning.json from before) count
+fully, and a slide of unknown stock is matched exactly as before.
+
 No training step, no dependencies: it is a few hundred numbers on disk and runs in microseconds.
 """
 from __future__ import annotations
@@ -18,6 +24,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
+from .filmstock import CLASSES as STOCKS
 from .imaging import CURVE_CHANNELS, Params, clean_curves, curve_lut
 from .store import _atomic_write, library, lock
 
@@ -31,6 +38,7 @@ LEARNED_KEYS = ("strength", "brightness", "contrast", "warmth", "tint", "saturat
 # a learned curve is the neighbours' curves averaged at these inputs (0, 1/8 ... 1)
 CURVE_SAMPLES = 9
 CURVE_STRAIGHT = 0.005  # an averaged curve closer than this to the diagonal everywhere is dropped
+OTHER_STOCK_WEIGHT = 0.3  # an example of another known stock, while this stock has too few of its own
 
 
 def _sample(pts: list | None) -> np.ndarray:
@@ -114,14 +122,16 @@ class Model:
         self._X = (X - self._mu) / self._sd
 
     # ------------------------------------------------------------------ use
-    def remember(self, key: str, feats: list[float], params: dict) -> None:
-        """Record (or update) the settings a slide was approved with."""
+    def remember(self, key: str, feats: list[float], params: dict, stock: str = "") -> None:
+        """Record (or update) the settings a slide was approved with (and its film stock, if known)."""
         if len(feats) != FEATURES:
             return
         entry = {"key": key, "f": [round(float(x), 5) for x in feats],
                  "p": {k: float(params[k]) for k in LEARNED_KEYS if k in params},
                  "trim": bool(params.get("trim", True)),
                  "c": clean_curves(params.get("curves") or {}), "t": time.time()}
+        if stock in STOCKS:
+            entry["s"] = stock
         with lock:
             for i, e in enumerate(self.examples):
                 if e.get("key") == key:
@@ -140,17 +150,28 @@ class Model:
             self.save()
             self._fit()
 
-    def suggest(self, feats: list[float]) -> tuple[dict | None, int]:
-        """Predict settings for a new slide. Returns (params or None, neighbours used)."""
+    def suggest(self, feats: list[float], stock: str = "") -> tuple[dict | None, int]:
+        """Predict settings for a new slide (of film `stock`, "" if not known). Returns (params or
+        None, neighbours used)."""
         if self._X is None or len(feats) != FEATURES:
             return None, 0
         q = (np.array(feats, dtype=np.float32) - self._mu) / self._sd
         d = np.sqrt(((self._X - q) ** 2).mean(1))
+        other = None
+        if stock in STOCKS:
+            s = [e.get("s") for e in self.examples]
+            same = np.array([x == stock for x in s])
+            if same.sum() >= MIN_EXAMPLES:  # enough of its own stock: learn from those only
+                d = np.where(same, d, np.float32(np.inf))
+            else:  # too few: examples of another known stock count less
+                other = np.array([x in STOCKS and x != stock for x in s])
         idx = np.argsort(d)[: min(K, len(d))]
         idx = [i for i in idx if d[i] <= MAX_DISTANCE]
         if not idx:
             return None, 0
         w = 1.0 / (d[idx] + 0.25)
+        if other is not None:
+            w = np.where(other[idx], w * np.float32(OTHER_STOCK_WEIGHT), w)
         w = w / w.sum()
         out: dict = {}
         for k in LEARNED_KEYS:

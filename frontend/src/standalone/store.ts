@@ -1,7 +1,8 @@
 // Tray data and the keys derived from it (slidestation/store.py). session.json is the same file
 // the Python app writes, and the keys are computed byte for byte like Python's, so a library
 // folder can move between the browser and the desktop app without every slide turning "changed".
-import type { GroupStatus, Params } from "@/lib/api";
+import type { GroupStatus, Params, Suggestion } from "@/lib/api";
+import { eraHint, type EraHint } from "./filmstock";
 
 export type Scan = {
   file: string;
@@ -63,6 +64,11 @@ export type GroupData = {
   caption?: string;
   /** The slide's own tags (the desktop app's scene tags; the browser version keeps them as they are). */
   tags?: string[];
+  /** The slide's own film stock (filmstock.ts); none = the tray's. */
+  stock?: string;
+  /** Stored suggestions (the desktop app's models write more; the browser version only decides film
+   *  stock and date guesses, which it computes itself). */
+  insights?: { stock?: Suggestion | null; date?: Suggestion | null; [k: string]: unknown };
   feat?: number[];
   history?: { undo: Snapshot[]; redo: Snapshot[] };
   /** The slide mount found on these (active) scans (imaging.detect_mount). */
@@ -74,6 +80,8 @@ export type SessionData = {
   name: string;
   album: string;
   date: string;
+  /** The tray's film stock, for slides without their own. */
+  stock?: string;
   created: number;
   defaults: Params;
   scans: Record<string, Scan>;
@@ -263,28 +271,53 @@ export function formatDate(t: number, precision: number): string {
   return parts.slice(0, precision).join("-");
 }
 
-export type DateEst = { value: string; source: "own" | "between" | "near" | "tray" | "scan"; from?: number[] };
+export type DateEst = {
+  value: string;
+  source: "own" | "between" | "near" | "tray" | "scan";
+  from?: number[];
+  /** The slide's film stock era, as a hint (filmstock.eraHint): never changes `value`. */
+  era?: EraHint;
+};
+
+/**
+ * Slide i's date from the dated slides `dated` (indices into `own`) around it in tray order:
+ * interpolated between the two either side, else the nearest one's (store.estimate).
+ */
+export function estimate(
+  own: ([number, number] | null)[],
+  i: number,
+  dated: number[],
+): [string, "between" | "near", number[]] | null {
+  const before = dated.filter((j) => j < i).pop();
+  const after = dated.find((j) => j > i);
+  if (before !== undefined && after !== undefined) {
+    const [t0, p0] = own[before]!;
+    const [t1, p1] = own[after]!;
+    const t = t0 + (t1 - t0) * ((i - before) / (after - before));
+    return [formatDate(t, Math.min(p0, p1)), "between", [before, after]];
+  }
+  const j = before ?? after;
+  return j !== undefined ? [formatDate(...own[j]!), "near", [j]] : null;
+}
 
 /** The date each slide goes to Immich with, and where it came from (store.slide_dates). */
 export function slideDates(d: SessionData): DateEst[] {
   const own = d.groups.map((g) => parseDate(g.date));
   const dated = own.flatMap((x, i) => (x ? [i] : []));
   const tray = parseDate(d.date);
-  return d.groups.map((_, i) => {
+  return d.groups.map((g, i) => {
     const mine = own[i];
-    if (mine) return { value: formatDate(...mine), source: "own" };
-    const before = dated.filter((j) => j < i).pop();
-    const after = dated.find((j) => j > i);
-    if (before !== undefined && after !== undefined) {
-      const [t0, p0] = own[before]!;
-      const [t1, p1] = own[after]!;
-      const t = t0 + (t1 - t0) * ((i - before) / (after - before));
-      return { value: formatDate(t, Math.min(p0, p1)), source: "between", from: [before, after] };
-    }
-    const j = before ?? after;
-    if (j !== undefined) return { value: formatDate(...own[j]!), source: "near", from: [j] };
-    if (tray) return { value: formatDate(...tray), source: "tray" };
-    return { value: "", source: "scan" };
+    const hit = mine ? null : estimate(own, i, dated);
+    const e: DateEst = mine
+      ? { value: formatDate(...mine), source: "own" }
+      : hit
+        ? { value: hit[0], source: hit[1], from: hit[2] }
+        : tray
+          ? { value: formatDate(...tray), source: "tray" }
+          : { value: "", source: "scan" };
+    const hint = eraHint(d, g, e.value);
+    if (hint) e.era = hint;
+    return e;
   });
 }
 

@@ -11,7 +11,7 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 
-from . import stats
+from . import filmstock, stats
 from .imaging import Params
 
 CONFIG_DIR = Path(os.environ.get("SLIDESTATION_HOME", Path.home() / ".slidestation"))
@@ -274,34 +274,49 @@ def format_date(t: datetime, precision: int) -> str:
     return t.strftime(["%Y", "%Y-%m", "%Y-%m-%d"][precision - 1])
 
 
+def estimate(own: list, i: int, dated: list[int]) -> tuple[str, str, list[int]] | None:
+    """Slide i's date from the dated slides `dated` (indices into `own`, the parsed own dates) around
+    it in tray order: interpolated between the two either side, else the nearest one's. Returns
+    (value, "between" | "near", the indices used), or None when `dated` is empty."""
+    before = max((j for j in dated if j < i), default=None)
+    after = min((j for j in dated if j > i), default=None)
+    if before is not None and after is not None:
+        (t0, p0), (t1, p1) = own[before], own[after]
+        t = t0 + (t1 - t0) * ((i - before) / (after - before))
+        return format_date(t, min(p0, p1)), "between", [before, after]
+    if before is not None or after is not None:
+        j = before if before is not None else after
+        return format_date(*own[j]), "near", [j]
+    return None
+
+
 def slide_dates(d: dict) -> list[dict]:
     """The date each slide goes to Immich with, and where it came from.
 
     A slide's own date wins. Slides without one are estimated from the dated slides around them in
     tray order — a tray is one stretch of time, so slides between an August 1978 and a July 1979
-    slide are interpolated between the two — then the tray's date, then (empty) the scan's EXIF."""
+    slide are interpolated between the two — then the tray's date, then (empty) the scan's EXIF.
+    A slide whose film stock (own or the tray's) has a known era also gets `era`: {"stock", "from",
+    "to", "fits"} — a hint only, it never changes the value (filmstock.era_hint)."""
     groups = d["groups"]
     own = [parse_date(g.get("date", "")) for g in groups]
     dated = [i for i, x in enumerate(own) if x]
     tray = parse_date(d.get("date", ""))
     out = []
     for i, g in enumerate(groups):
+        hit = None if own[i] else estimate(own, i, dated)
         if own[i]:
-            out.append({"value": format_date(*own[i]), "source": "own"})
-            continue
-        before = max((j for j in dated if j < i), default=None)
-        after = min((j for j in dated if j > i), default=None)
-        if before is not None and after is not None:
-            (t0, p0), (t1, p1) = own[before], own[after]
-            t = t0 + (t1 - t0) * ((i - before) / (after - before))
-            out.append({"value": format_date(t, min(p0, p1)), "source": "between", "from": [before, after]})
-        elif before is not None or after is not None:
-            j = before if before is not None else after
-            out.append({"value": format_date(*own[j]), "source": "near", "from": [j]})
+            e = {"value": format_date(*own[i]), "source": "own"}
+        elif hit:
+            e = {"value": hit[0], "source": hit[1], "from": hit[2]}
         elif tray:
-            out.append({"value": format_date(*tray), "source": "tray"})
+            e = {"value": format_date(*tray), "source": "tray"}
         else:
-            out.append({"value": "", "source": "scan"})
+            e = {"value": "", "source": "scan"}
+        hint = filmstock.era_hint(d, g, e["value"])
+        if hint:
+            e["era"] = hint
+        out.append(e)
     return out
 
 

@@ -32,8 +32,22 @@ export const MOUNT_SUGGEST = 0.5;
 
 export type GroupStatus = "new" | "reviewed" | "uploaded" | "changed" | "skipped";
 
-/** Kinds of suggestion a slide can get (ARCHITECTURE "Insights"); only tags have a model so far. */
-export type InsightKind = "tags" | "caption" | "date" | "place";
+/** Kinds of suggestion a slide can get (ARCHITECTURE "Insights"); tags come from a model, film
+ *  stock and date from the fade signature and the tray (ARCHITECTURE "Film stock"), no model. */
+export type InsightKind = "tags" | "caption" | "date" | "place" | "stock";
+
+/** Film stocks a slide (or tray) can be set to; "" = not set (a slide then takes the tray's). */
+export const STOCKS = ["kodachrome", "ektachrome", "agfachrome", "fujichrome", "other", "unknown"] as const;
+export const STOCK_NAMES: Record<string, string> = {
+  kodachrome: "Kodachrome",
+  ektachrome: "Ektachrome",
+  agfachrome: "Agfachrome",
+  fujichrome: "Fujichrome",
+  other: "Other",
+  unknown: "Unknown",
+};
+/** A stock's era (filmstock.ERAS) and whether the slide's date lies inside it. */
+export type EraHint = { stock: string; from: number; to: number | null; fits: boolean | null };
 export type Suggestion = {
   value: string;
   /** 0..1: the model's share for this value. */
@@ -48,6 +62,8 @@ export type SlideInsights = {
   caption: Suggestion | null;
   date: Suggestion | null;
   place: Suggestion | null;
+  /** The film stock guessed from how the slide faded (heuristic or k-NN over your labels). */
+  stock?: Suggestion | null;
   /** Computed from other scans or another rotation: being analysed again. */
   stale: boolean;
   /** Why the slide couldn't be analysed ("" when it was). */
@@ -87,10 +103,18 @@ export type Group = {
   caption: string;
   /** The slide's own tags: go to Immich as tags and into the JPEG's XMP keywords. */
   tags: string[];
-  /** What the models suggest (desktop app only); null until analysed. */
+  /** The slide's own film stock ("" = the tray's, `SessionPayload.stock`). */
+  stock: string;
+  /** What the models suggest, plus the film stock and date guesses; null when there's nothing. */
   insights?: SlideInsights | null;
   /** The date it goes to Immich with: its own, or estimated from the dated slides around it. */
-  date_est: { value: string; source: "own" | "between" | "near" | "tray" | "scan"; from?: number[] };
+  date_est: {
+    value: string;
+    source: "own" | "between" | "near" | "tray" | "scan";
+    from?: number[];
+    /** Its film stock's era: a hint only, never changes the value. */
+    era?: EraHint;
+  };
 };
 
 export type Summary = {
@@ -117,6 +141,8 @@ export type SessionPayload = {
   groups: Group[];
   cleanup_blockers: string[];
   log: unknown[];
+  /** The tray's film stock ("" = not set), for slides without their own. */
+  stock: string;
   /** Background analysis (desktop app only): turned on, model downloaded, slides still to analyse. */
   insights?: { enabled: boolean; ready: boolean; pending: number };
 };

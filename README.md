@@ -179,6 +179,26 @@ own:
 
 Not in the browser version yet.
 
+## Film stock
+
+Each slide can say what film it was shot on — Kodachrome, Ektachrome, Agfachrome, Fujichrome,
+other or unknown — in **Details → Film stock**; the **Tray** section sets it for every slide
+without its own. It is on in both the desktop app and the browser version (no model, no download).
+
+- **A guess from the fading.** A slide with no stock gets a suggestion (✓ accept, × dismiss; ⌘K →
+  Review suggestions takes a whole tray at once): Ektachrome tends to go red / magenta with grey
+  blacks, Agfachrome cyan / blue-green, Kodachrome keeps its colour. That is a rule of thumb, so the
+  guess never claims more than 75 % and weighs the whole tray, not just one slide (a sunset is red
+  on any film). Once you've set the stock of five or more slides each of two stocks, the guess
+  comes from the slides you labelled that look most like this one instead.
+- **Better first colour settings.** Learned colour settings prefer slides of the same stock: a
+  Kodachrome tray learns from your Kodachrome corrections, not your Ektachrome ones.
+- **A dating hint.** Each stock was sold in certain years (Kodachrome 1936–2010, Agfachrome to
+  2005 …). The Date field shows that range, warns when a date falls outside it, and offers a
+  date from the dated slides of the same stock around a slide. It never changes a date by itself.
+- Accepting a stock offers it to the neighbouring slides; the button next to a slide's stock gives
+  it to a range of slides.
+
 ## People
 
 Settings → **Recognise people across my slides** (off by default; the desktop app, not the browser
@@ -210,6 +230,7 @@ Library folder → `sessions/<tray>/originals`, `cache` (previews), `export` (fi
 Face detection uses OpenCV's YuNet model (MIT licence, from opencv_zoo), bundled in
 `slidestation/models`. Tag suggestions download OpenAI's CLIP (MIT licence) into the library's
 `models` folder when turned on; `insights.json` in the library remembers which tags you accept and dismiss.
+`stocks.json` in the library holds the slides whose film stock you set (for the film stock guess).
 
 `slidestation/models`. Recognising people uses OpenCV's SFace model (Apache 2.0), downloaded when
 you turn it on.

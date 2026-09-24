@@ -6,6 +6,7 @@ import {
   needsReview,
   plural,
   standalone,
+  STOCK_NAMES,
   type AppState,
   type Group,
   type InsightKind,
@@ -546,8 +547,13 @@ export function useSlideStation() {
     }
   };
 
-  /** Give slides fromIndex..toIndex (0-based, either order) a tag, caption or date confirmed on one of them. */
-  const propagate = async (kind: "tags" | "caption" | "date", value: string, fromIndex: number, toIndex: number) => {
+  /** Give slides fromIndex..toIndex (0-based, either order) a tag, caption, date or film stock confirmed on one of them. */
+  const propagate = async (
+    kind: "tags" | "caption" | "date" | "stock",
+    value: string,
+    fromIndex: number,
+    toIndex: number,
+  ) => {
     const { sessionId: sid, session: s } = ref.current;
     const a = s?.groups[fromIndex];
     const b = s?.groups[toIndex];
@@ -562,7 +568,14 @@ export function useSlideStation() {
       applyPayload(p);
       const lo = Math.min(fromIndex, toIndex) + 1;
       const hi = Math.max(fromIndex, toIndex) + 1;
-      const what = kind === "tags" ? `Tagged “${value}”` : kind === "date" ? `Dated ${value}` : "Captioned";
+      const what =
+        kind === "tags"
+          ? `Tagged “${value}”`
+          : kind === "date"
+            ? `Dated ${value}`
+            : kind === "stock"
+              ? `Film stock ${STOCK_NAMES[value] ?? "cleared"}`
+              : "Captioned";
       toast(`${what}: ${plural(p.applied, "slide")} (${lo}–${hi})`);
       return true;
     } catch (e) {

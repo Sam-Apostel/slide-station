@@ -4,7 +4,7 @@ import Foundation
 /// in Swift, reading and writing the same `learning.json` in the library. Every developed slide is
 /// one example: 14 features of the blended, undeveloped scan plus the settings it was developed
 /// with (sliders, trim and tone curves; never the crop or straighten). New slides get
-/// distance-weighted k-nearest-neighbour settings.
+/// distance-weighted k-nearest-neighbour settings, preferring examples of the slide's film stock.
 public enum Learning {
     public static let featureCount = 14
     public static let minExamples = 5
@@ -19,6 +19,10 @@ public enum Learning {
     public static let curveSamples = 9
     /// An averaged curve closer than this to the diagonal everywhere is dropped.
     public static let curveStraight = 0.005
+    /// Film stocks an example can remember (Python: `filmstock.CLASSES`).
+    public static let stocks: Set<String> = ["kodachrome", "ektachrome", "agfachrome", "fujichrome", "other"]
+    /// An example of another known stock, while the slide's stock has too few of its own.
+    public static let otherStockWeight: Float = 0.3
 
     /// A curve's output at the `curveSamples` inputs; a missing curve is the straight line
     /// (Python: `learning._sample`, linear interpolation into the LUT).
@@ -85,6 +89,8 @@ public enum Learning {
         public var trim: Bool
         /// Tone curves it was developed with; nil in examples from before curves were learned.
         public var c: [String: [[Double]]]?
+        /// The slide's film stock when it was known; nil in examples from before stocks.
+        public var s: String?
         public var t: Double
     }
 
@@ -133,13 +139,14 @@ public enum Learning {
             X = rows.map { r in (0..<Learning.featureCount).map { (r[$0] - mu[$0]) / sd[$0] } }
         }
 
-        /// Record (or update) the settings a slide was developed with.
-        public func remember(key: String, features f: [Double], params: Params) {
+        /// Record (or update) the settings a slide was developed with (and its film stock, if known).
+        public func remember(key: String, features f: [Double], params: Params, stock: String? = nil) {
             guard f.count == Learning.featureCount else { return }
             lock.withLock {
                 let e = Example(key: key, f: f.map { ($0 * 100_000).rounded() / 100_000 },
                                 p: Dictionary(uniqueKeysWithValues: Learning.keys.map { ($0.0, params[keyPath: $0.1]) }),
-                                trim: params.trim, c: Curves.clean(params.curves), t: Date().timeIntervalSince1970)
+                                trim: params.trim, c: Curves.clean(params.curves),
+                                s: stock.flatMap { Learning.stocks.contains($0) ? $0 : nil }, t: Date().timeIntervalSince1970)
                 if let i = examples.firstIndex(where: { $0.key == key }) { examples[i] = e } else { examples.append(e) }
                 save(); fit()
             }
@@ -155,15 +162,27 @@ public enum Learning {
 
         public func reset() { lock.withLock { examples = []; save(); fit() } }
 
-        /// Settings for a new slide, or nil when too few examples or none close enough.
-        public func suggest(_ f: [Double]) -> Suggestion? {
+        /// Settings for a new slide (of film `stock`, nil if not known), or nil when too few
+        /// examples or none close enough. A known stock learns from its own examples once there are
+        /// `minExamples` of them; until then examples of another known stock count
+        /// `otherStockWeight` (Python: `learning.Model.suggest`).
+        public func suggest(_ f: [Double], stock: String? = nil) -> Suggestion? {
             lock.withLock {
                 guard let X, f.count == Learning.featureCount else { return nil }
                 let q = (0..<Learning.featureCount).map { (Float(f[$0]) - mu[$0]) / sd[$0] }
-                let d = X.map { row in (zip(row, q).reduce(Float(0)) { $0 + ($1.0 - $1.1) * ($1.0 - $1.1) } / Float(Learning.featureCount)).squareRoot() }
+                var d = X.map { row in (zip(row, q).reduce(Float(0)) { $0 + ($1.0 - $1.1) * ($1.0 - $1.1) } / Float(Learning.featureCount)).squareRoot() }
+                var other: [Bool]?
+                if let stock, Learning.stocks.contains(stock) {
+                    let same = examples.map { $0.s == stock }
+                    if same.filter({ $0 }).count >= Learning.minExamples {
+                        d = zip(d, same).map { $1 ? $0 : .infinity }
+                    } else {
+                        other = examples.map { e in e.s.map { Learning.stocks.contains($0) && $0 != stock } ?? false }
+                    }
+                }
                 let idx = d.indices.sorted { d[$0] < d[$1] }.prefix(Learning.k).filter { d[$0] <= Learning.maxDistance }
                 guard !idx.isEmpty else { return nil }
-                var w = idx.map { 1 / (d[$0] + 0.25) }
+                var w = idx.map { i in ((other?[i] ?? false) ? Learning.otherStockWeight : 1) / (d[i] + 0.25) }
                 let s = w.reduce(0, +); w = w.map { $0 / s }
                 var values: [String: Double] = [:]
                 let defaults = Params()

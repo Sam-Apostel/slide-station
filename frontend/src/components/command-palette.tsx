@@ -43,6 +43,7 @@ import {
   CommandList,
   CommandShortcut,
 } from "@/components/ui/command";
+import { suggestionPiles } from "@/components/insights";
 import type { DesktopHandlers } from "@/hooks/use-desktop";
 import type { SlideStation } from "@/hooks/use-slide-station";
 import { plural, sourceLabel } from "@/lib/api";
@@ -222,9 +223,10 @@ export function CommandPalette({
         },
         {
           id: "review-insights",
-          label: "Review suggestions (tags)…",
+          label: "Review suggestions (tags, film stock, dates)…",
           icon: <ListChecks />,
-          hidden: !session || !onReview || !session.insights?.enabled,
+          // film stock and date guesses need no model: reviewable with the tag model off (and in the browser)
+          hidden: !session || !onReview || !(session.insights?.enabled || suggestionPiles(session.groups).length),
           run: () => onReview?.(),
         },
         {

@@ -11,8 +11,14 @@ final class FeatureTests: XCTestCase {
         var learning_neighbours: Int
         var learning_curve_examples: [Learning.Example]
         var learning_curve_suggestion: [String: [[Double]]]
+        var learning_stock: StockFixture
         var developed_crop_shape: [Int]
         var params_crop: Params
+    }
+    struct StockFixture: Decodable {
+        struct Case: Decodable { var suggestion: [String: AnyNumberOrBool]; var neighbours: Int }
+        var examples: [Learning.Example]
+        var cases: [String: Case]
     }
     enum AnyNumberOrBool: Decodable {
         case n(Double), b(Bool)
@@ -60,6 +66,31 @@ final class FeatureTests: XCTestCase {
         XCTAssertNotNil(small.suggest(golden.features))
         small.forget(key: "k4")
         XCTAssertEqual(Learning.Model(url: small.url).examples.count, 4)
+    }
+
+    /// A slide of a known film stock learns from its own stock (restricted with enough examples,
+    /// weighted without); no stock matches the old behaviour.
+    func testLearningPerStockMatchesPython() throws {
+        struct File: Encodable { var version = 1; var examples: [Learning.Example] }
+        let url = try tmp().appendingPathComponent("learning.json")
+        try JSONEncoder().encode(File(examples: golden.learning_stock.examples)).write(to: url)
+        let model = Learning.Model(url: url)
+        XCTAssertEqual(model.examples.filter { $0.s == "kodachrome" }.count, 6)
+        for (stock, want) in golden.learning_stock.cases {
+            let s = try XCTUnwrap(model.suggest(golden.learning_query, stock: stock == "none" ? nil : stock), stock)
+            XCTAssertEqual(s.neighbours, want.neighbours, stock)
+            for (k, v) in want.suggestion {
+                switch v {
+                case .n(let n): XCTAssertEqual(s.values[k]!, n, accuracy: 0.002, "\(stock) \(k)")
+                case .b(let b): XCTAssertEqual(s.trim, b, stock)
+                }
+            }
+        }
+        // remember keeps a known stock, drops anything else
+        let m = Learning.Model(url: try tmp().appendingPathComponent("s.json"))
+        m.remember(key: "a", features: golden.features, params: Params(), stock: "agfachrome")
+        m.remember(key: "b", features: golden.features, params: Params(), stock: "unknown")
+        XCTAssertEqual(m.examples.map(\.s), ["agfachrome", nil])
     }
 
     func testLearnedCurvesMatchPython() throws {

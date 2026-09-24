@@ -36,7 +36,7 @@ from . import imaging as im
 from . import workflow as wf
 from .store import Session, _atomic_write, active_scans, library, load_config, lock
 
-KINDS = ("tags", "caption", "date", "place")
+KINDS = ("tags", "caption", "date", "place", "stock")  # stock and date: filmstock.py, no model
 
 # ------------------------------------------------------------------------------------ labels
 
@@ -387,7 +387,7 @@ def merge(old: dict | None, new: dict, own_tags: list[str]) -> dict:
             tags.append({**e, "state": "accepted" if e["value"] in own_tags else "suggested"})
     tags += kept.values()
     out = {"key": new["key"], "tags": tags}
-    for k in ("caption", "date", "place"):
+    for k in ("caption", "date", "place", "stock"):
         out[k] = new.get(k) if new.get(k) is not None else old.get(k)
     return out
 

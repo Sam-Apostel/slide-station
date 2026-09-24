@@ -126,7 +126,7 @@ public struct Importer: Sendable {
             let feats = Learning.features(fused, scans: g.activeScans.count)
             let found = Develop.detectMount(fused)
             let mount = MountEdge(angle: found.angle, confidence: found.confidence, box: found.box, scans: g.activeScans)
-            let suggestion = learning?.suggest(feats)
+            let suggestion = learning?.suggest(feats, stock: g.effectiveStock(in: tray))
             let slide = g
             tray = try await library.update(trayID) { fresh in
                 var target: Slide

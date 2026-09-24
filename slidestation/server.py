@@ -12,7 +12,7 @@ from fastapi import Body, FastAPI, HTTPException
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-from . import insights, learning
+from . import filmstock, insights, learning
 from . import people
 from . import workflow as wf
 from . import imaging as im
@@ -180,7 +180,21 @@ def _learn(s: Session, g: dict) -> None:
     if g.get("skip"):
         learning.model().forget(key)
     elif g.get("reviewed") or g.get("immich"):
-        learning.model().remember(key, g["feat"], g["params"])
+        learning.model().remember(key, g["feat"], g["params"], filmstock.effective(s.data, g))
+
+
+def _stock_changed(s: Session, gs: list[dict]) -> None:
+    """A slide's film stock (or the tray's) changed: its label and its learning example follow."""
+    for g in gs:
+        filmstock.label(s.data, g, s.id)
+        _learn(s, g)
+
+
+def _clean_stock(v) -> str:
+    try:
+        return filmstock.clean(v)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
 
 
 def _mount_view(g: dict) -> dict | None:
@@ -195,6 +209,7 @@ def _session_payload(s: Session) -> dict:
     groups = []
     dates = slide_dates(d)
     st = statuses(d)
+    live = filmstock.views(d, dates)  # film stock and date guesses: no model, always on
     for i, g in enumerate(d["groups"]):
         groups.append({
             **{k: g[k] for k in ("id", "scans", "excluded", "rotation", "rot_reason", "params", "reviewed", "skip")},
@@ -208,7 +223,8 @@ def _session_payload(s: Session) -> dict:
             "date": g.get("date", ""),
             "caption": g.get("caption", ""),
             "tags": g.get("tags", []),
-            "insights": _slide_insights(g),
+            "stock": g.get("stock", ""),  # its own ("" = the tray's, below)
+            "insights": _slide_insights(g, live[i]),
             "date_est": dates[i],  # {"value", "source": own|between|near|tray|scan, "from": [indices]}
             "active": active_scans(g),
             "key": render_key(g),  # preview cache key: the UI must use this, not its own guess
@@ -226,6 +242,7 @@ def _session_payload(s: Session) -> dict:
         "groups": groups,
         "cleanup_blockers": wf.cleanup_blockers(s),
         "log": d.get("log", [])[-20:],
+        "stock": d.get("stock", ""),  # the tray's film stock, for slides without their own
         "insights": {"enabled": insights.enabled(), "ready": insights.model_ready(), "pending": insights.pending(d)},
     }
 
@@ -256,6 +273,9 @@ def patch_session(sid: str, body: dict = Body(...)):
                 s.data[k] = str(body[k]).strip()
         if "defaults" in body:
             s.data["defaults"] = Params.from_dict(body["defaults"]).to_dict()
+        if "stock" in body:
+            s.data["stock"] = _clean_stock(body["stock"])
+            _stock_changed(s, s.data["groups"])
         s.save()
     return _session_payload(s)
 
@@ -371,6 +391,10 @@ def patch_group(sid: str, gid: str, body: dict = Body(...)):
             g["caption"] = str(body["caption"]).strip()[:2000]
         if "tags" in body:
             _set_tags(g, _clean_tags(body["tags"]))
+        if "stock" in body:
+            _set_stock(g, _clean_stock(body["stock"]))
+        if "stock" in body or "skip" in body:
+            filmstock.label(s.data, g, s.id)
         _learn(s, g)
         if "excluded" in body:
             g["excluded"] = [x for x in body["excluded"] if x in g["scans"]]
@@ -437,11 +461,20 @@ def _set_tags(g: dict, tags: list[str]) -> None:
         g.pop("tags", None)
 
 
-def _slide_insights(g: dict) -> dict | None:
-    ins = g.get("insights")
-    if not ins:
+def _set_stock(g: dict, v: str) -> None:
+    if v:
+        g["stock"] = v
+    else:
+        g.pop("stock", None)
+
+
+def _slide_insights(g: dict, live: dict) -> dict | None:
+    """The slide's suggestions: the models' (stored), plus the film stock and date guesses (`live`,
+    filmstock.views), which need no model."""
+    ins = g.get("insights") or {}
+    if not ins and not live["stock"] and not live["date"]:
         return None
-    return {**{k: ins.get(k) for k in insights.KINDS}, "tags": ins.get("tags", []),
+    return {**{k: ins.get(k) for k in insights.KINDS}, **live, "tags": ins.get("tags", []),
             "stale": ins.get("key") != insights.insights_key(g), "error": ins.get("error", "")}
 
 
@@ -529,18 +562,27 @@ def insights_decide(sid: str, body: dict = Body(...)):
     tray, the review view's "accept all"). Locked slides can't take accepted values."""
     kind, action, value = body.get("kind"), body.get("action"), body.get("value")
     if kind not in insights.KINDS or action not in ("accept", "dismiss"):
-        raise HTTPException(400, "kind must be tags, caption, date or place; action accept or dismiss")
+        raise HTTPException(400, "kind must be tags, caption, date, place or stock; action accept or dismiss")
     with lock:
         s = _session(sid)
         gids = body.get("groups")
         targets = [g for g in s.data["groups"] if gids is None or g["id"] in gids]
         if gids is not None and len(targets) == 1 and action == "accept":
             _editable(targets[0])
+        # film stock and date guesses live in no file until decided: write down what is shown
+        live = filmstock.views(s.data, slide_dates(s.data)) if kind in ("stock", "date") else None
         n = 0
         for g in targets:
             if action == "accept" and g.get("locked"):
                 continue
-            n += _decide(g, kind, action, value)
+            if live:
+                e = live[s.group_index(g["id"])][kind]
+                if e and e.get("state") == "suggested" and (value is None or e["value"] == value):
+                    g.setdefault("insights", {})[kind] = dict(e)
+            if _decide(g, kind, action, value):
+                n += 1
+                if kind == "stock":
+                    _stock_changed(s, [g])
         s.save()
     return {**_session_payload(s), "decided": n}
 
@@ -552,9 +594,14 @@ def insights_propagate(sid: str, body: dict = Body(...)):
     A tag is added to each slide's own tags (and marks the same suggestion there accepted); a caption
     or date replaces theirs. Locked slides are left as they are."""
     kind = body.get("kind")
-    if kind not in ("tags", "caption", "date"):
-        raise HTTPException(400, "kind must be tags, caption or date")
-    value = _clean_date(body.get("value", "")) if kind == "date" else str(body.get("value", "")).strip()
+    if kind not in ("tags", "caption", "date", "stock"):
+        raise HTTPException(400, "kind must be tags, caption, date or stock")
+    if kind == "date":
+        value = _clean_date(body.get("value", ""))
+    elif kind == "stock":
+        value = _clean_stock(body.get("value", ""))
+    else:
+        value = str(body.get("value", "")).strip()
     if kind == "tags":
         value = (_clean_tags([value]) or [""])[0]
         if not value:
@@ -566,10 +613,18 @@ def insights_propagate(sid: str, body: dict = Body(...)):
         except (KeyError, ValueError):
             raise HTTPException(404, "Slide not found")
         n = 0
+        live = filmstock.views(s.data, slide_dates(s.data)) if kind == "stock" else None
         for g in s.data["groups"][a : b + 1]:
             if g.get("locked"):
                 continue
-            if kind == "tags":
+            if kind == "stock":
+                _set_stock(g, value)
+                e = live[s.group_index(g["id"])]["stock"]
+                if value and e and e.get("value") == value:
+                    g.setdefault("insights", {})["stock"] = {**e, "state": "accepted"}
+                _stock_changed(s, [g])
+                n += 1
+            elif kind == "tags":
                 if value not in g.get("tags", []):
                     _set_tags(g, g.get("tags", []) + [value])
                     n += 1
@@ -598,6 +653,8 @@ def split_group(sid: str, gid: str, body: dict = Body(...)):
         tail["excluded"] = [x for x in g.get("excluded", []) if x in tail["scans"]]
         if g.get("tags"):
             tail["tags"] = list(g["tags"])
+        if g.get("stock"):
+            tail["stock"] = g["stock"]  # one piece of film
         g["scans"] = g["scans"][:at]
         g["excluded"] = [x for x in g.get("excluded", []) if x in g["scans"]]
         s.data["groups"].insert(s.group_index(gid) + 1, tail)
@@ -867,7 +924,7 @@ def resuggest(sid: str, gid: str, body: dict = Body(default={})):
         for g in targets:
             if g.get("reviewed") or g.get("skip") or g.get("locked") or not g.get("feat"):
                 continue
-            sug, n = learning.model().suggest(g["feat"])
+            sug, n = learning.model().suggest(g["feat"], filmstock.effective(s.data, g))
             if sug:
                 _remember(g, "learned")
                 g["params"] = Params.from_dict({**g["params"], **sug}).to_dict()

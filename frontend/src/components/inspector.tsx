@@ -35,8 +35,20 @@ import { Kbd } from "@/components/ui/kbd";
 import { Tip } from "@/components/tip";
 import { ToneCurve } from "@/components/tone-curve";
 import { AdjustPanel, adjustSummary } from "@/components/adjust";
-import { InsightsPanel, TagsField, insightsNote } from "@/components/insights";
-import { MOUNT_SUGGEST, needsReview, plural, standalone, type Group, type InsightKind, type SessionPayload } from "@/lib/api";
+import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select";
+import { InsightsPanel, StockField, SuggestionRow, TagsField, insightsNote } from "@/components/insights";
+import {
+  MOUNT_SUGGEST,
+  needsReview,
+  plural,
+  standalone,
+  STOCK_NAMES,
+  STOCKS,
+  type EraHint,
+  type Group,
+  type InsightKind,
+  type SessionPayload,
+} from "@/lib/api";
 import { CHANNELS, isStraight } from "@/lib/curves";
 import type { SlideStation } from "@/hooks/use-slide-station";
 
@@ -139,6 +151,8 @@ export function Inspector({
   onDateRange,
   onPresets,
   onDevelopLike,
+  onAccepted,
+  onStockRange,
   insights,
 }: {
   app: SlideStation;
@@ -161,6 +175,10 @@ export function Inspector({
   /** Opens the presets dialog, and the "develop like another slide" picker. */
   onPresets: () => void;
   onDevelopLike: () => void;
+  /** A suggestion (film stock, date) was accepted on slide `index`: offer it to the neighbours. */
+  onAccepted: (kind: InsightKind, value: string, groups: Group[], index: number) => void;
+  /** Give a film stock to a run of slides (the propagate dialog, from this slide). */
+  onStockRange: (stock: string) => void;
   /** The Insights section (desktop app only; the browser version has no models yet). */
   insights?: {
     downloading: boolean;
@@ -261,8 +279,14 @@ export function Inspector({
               <AdjustPanel app={app} session={session} picking={picking} onPick={onPick} />
             </ProDisclosureGroup>
 
-            <ProDisclosureGroup title="Details" summary={detailsNote(g)} {...section("details")}>
-              <SlideDetails app={app} onDateRange={onDateRange} />
+            <ProDisclosureGroup title="Details" summary={detailsNote(g, session.stock ?? "")} {...section("details")}>
+              <SlideDetails
+                app={app}
+                session={session}
+                onDateRange={onDateRange}
+                onAccepted={onAccepted}
+                onStockRange={onStockRange}
+              />
             </ProDisclosureGroup>
 
             {insights && (
@@ -286,6 +310,7 @@ export function Inspector({
                   toast("Date saved — slides already in Immich get the new date on the next upload");
               }}
             />
+            <TrayStock value={session.stock ?? ""} onChange={(stock) => app.patchSession({ stock })} />
             {session.groups.some((x) => x.status === "uploaded" || x.status === "changed") && (
               <Tip label="Bring captions and dates edited in Immich back into this tray">
                 <ProButton className="self-start" onClick={app.pullFromImmich}>
@@ -429,17 +454,49 @@ const DATE_FROM: Record<string, string> = {
   scan: "scanner clock",
 };
 
-function detailsNote(g: Group) {
+function detailsNote(g: Group, trayStock: string) {
   const d = g.date_est;
   const date = d.value ? (d.source === "own" ? d.value : `≈ ${d.value}`) : "no date";
-  return [date, g.caption, g.tags.length ? g.tags.join(", ") : ""].filter(Boolean).join(" · ");
+  const stock = g.stock || trayStock;
+  return [
+    date,
+    stock && stock !== "unknown" ? STOCK_NAMES[stock] : "",
+    g.caption,
+    g.tags.length ? g.tags.join(", ") : "",
+  ]
+    .filter(Boolean)
+    .join(" · ");
 }
 
-/** The slide's own date (or where its estimate comes from) and its caption. */
-function SlideDetails({ app, onDateRange }: { app: SlideStation; onDateRange: () => void }) {
+/** "Kodachrome 1936–2010": the years the slide's film was sold. */
+function eraText(era: EraHint) {
+  return `${STOCK_NAMES[era.stock]} ${era.from}–${era.to ?? "today"}`;
+}
+
+/** The slide's own date (or where its estimate comes from), film stock, caption and tags. */
+function SlideDetails({
+  app,
+  session,
+  onDateRange,
+  onAccepted,
+  onStockRange,
+}: {
+  app: SlideStation;
+  session: SessionPayload;
+  onDateRange: () => void;
+  onAccepted: (kind: InsightKind, value: string, groups: Group[], index: number) => void;
+  onStockRange: (stock: string) => void;
+}) {
   const g = app.current!;
   const est = g.date_est;
   const from = est.from?.map((i) => `#${i + 1}`).join(" & ");
+  const era = est.era;
+  const dateSug =
+    g.insights?.date?.state === "suggested" && g.insights.date.source === "neighbours+stock" ? g.insights.date : null;
+  const decide = async (kind: InsightKind, action: "accept" | "dismiss", value: string) => {
+    const p = await app.decide(kind, action, value, [g.id]);
+    if (p?.decided && action === "accept") onAccepted(kind, value, p.groups, g.index);
+  };
   return (
     <div className="flex flex-col gap-2 px-3 pt-2.5 pb-3">
       <TrayField
@@ -447,17 +504,47 @@ function SlideDetails({ app, onDateRange }: { app: SlideStation; onDateRange: ()
         label="Date"
         value={g.date}
         placeholder={
-          est.source === "own" || !est.value
+          (est.source === "own" || !est.value
             ? "e.g. 1978-06"
-            : `≈ ${est.value} (${DATE_FROM[est.source]} ${from ?? ""})`.replace(" )", ")")
+            : `≈ ${est.value} (${DATE_FROM[est.source]} ${from ?? ""})`.replace(" )", ")")) +
+          (era && est.source !== "own" ? ` · ${eraText(era)}` : "")
         }
         onCommit={(v) => app.patchGroup({ date: v })}
       />
+      {era?.fits === false && (
+        // a hint, never a correction: the date or the film stock is off
+        <p className="text-[11px] text-primary" role="status">
+          {est.source === "own" ? "This date" : "The estimate"} is outside {eraText(era)}: check the date or the film
+          stock.
+        </p>
+      )}
+      {dateSug && (
+        <SuggestionRow
+          label={
+            <>
+              <span className="text-muted-foreground">Date </span>
+              {dateSug.value}
+            </>
+          }
+          e={dateSug}
+          why={`from the dated slides around it${era ? `, within ${eraText(era)}` : ""}`}
+          onAccept={() => decide("date", "accept", dateSug.value)}
+          onDismiss={() => decide("date", "dismiss", dateSug.value)}
+        />
+      )}
       <Tip label="Give a run of slides one date, e.g. 12–31: 1978-08">
         <ProButton className="self-start" onClick={onDateRange}>
           <CalendarRange /> Date a range…
         </ProButton>
       </Tip>
+      <StockField
+        key={`${g.id}-stock`}
+        g={g}
+        trayStock={session.stock ?? ""}
+        onChange={(stock) => app.patchGroup({ stock })}
+        onDecide={(action, value) => decide("stock", action, value)}
+        onRange={onStockRange}
+      />
       <TrayField
         key={`${g.id}-caption`}
         label="Caption"
@@ -537,6 +624,26 @@ function UploadArea({
           {sm.ready_upload ? `All ${sm.pending_upload}` : `Upload all ${sm.pending_upload}`}
         </ProButton>
       </Tip>
+    </div>
+  );
+}
+
+/** The tray's film stock: every slide without its own is taken to be on it (learning, dates). */
+function TrayStock({ value, onChange }: { value: string; onChange: (stock: string) => void }) {
+  const id = React.useId();
+  return (
+    <div className="flex flex-col gap-1">
+      <Label htmlFor={id} className="text-[11px] font-normal text-muted-foreground">
+        Film stock
+      </Label>
+      <NativeSelect id={id} value={value} onChange={(e) => onChange(e.target.value)} className="min-w-[150px]">
+        <NativeSelectOption value="">Not set — each slide its own</NativeSelectOption>
+        {STOCKS.filter((s) => s !== "unknown").map((s) => (
+          <NativeSelectOption key={s} value={s}>
+            {STOCK_NAMES[s]}
+          </NativeSelectOption>
+        ))}
+      </NativeSelect>
     </div>
   );
 }

@@ -221,6 +221,21 @@ describe("parity with imaging.py", () => {
       else expect(Math.abs((sugg as Record<string, number>)[k] - v)).toBeLessThan(0.002);
   });
 
+  it("learning per film stock", () => {
+    const m = new Model({ examples: golden.learning_stock.examples }, () => {});
+    const cases = golden.learning_stock.cases as Record<
+      string,
+      { suggestion: Record<string, number | boolean>; neighbours: number }
+    >;
+    for (const [stock, want] of Object.entries(cases)) {
+      const [sugg, n] = m.suggest(golden.learning_query, stock === "none" ? "" : stock);
+      expect(n, stock).toBe(want.neighbours);
+      for (const [k, v] of Object.entries(want.suggestion))
+        if (typeof v === "boolean") expect(sugg![k as "trim"]).toBe(v);
+        else expect(Math.abs((sugg as Record<string, number>)[k] - v), `${stock} ${k}`).toBeLessThan(0.002);
+    }
+  });
+
   it("learned tone curves", () => {
     const m = new Model({ examples: golden.learning_curve_examples }, () => {});
     const [sugg] = m.suggest(golden.learning_query);

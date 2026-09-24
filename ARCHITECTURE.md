@@ -39,6 +39,7 @@ slidestation/
   learning.py             learns colour settings from approved slides (§5)
   stats.py                progress across the library: slides per hour, projected finish (§4)
   insights.py             suggestions per slide: scene tags from CLIP, background analysis (§5a)
+  filmstock.py            film stock per slide: fade-signature guess / k-NN, eras for dating (§5b)
 
   people.py               faces -> people: SFace embeddings, clustering, names (§5a)
   store.py                config + session persistence (JSON on disk)
@@ -722,6 +723,108 @@ Opt-in (`people_enabled`, Settings → "Recognise people"), desktop / server app
   six people (Hugging Face, scratch only) imported as a tray: 52 faces, one clean cluster of 6–8
   faces per person, 6 faces on their own (mostly people in the background) and one two-face cluster
   mixing two of those.
+
+## 5b. Film stock (ROADMAP §1 "Film-stock profiles", "Date estimation")
+
+`filmstock.py`, mirrored function by function in `standalone/filmstock.ts` (no model, so the
+browser version has all of it). Three parts: a stock per slide with a guess, per-stock learning,
+and the stock's era as a dating hint.
+
+**Data.** `g["stock"]` (the slide's own) and `d["stock"]` (the tray's), each one of `kodachrome`,
+`ektachrome`, `agfachrome`, `fujichrome`, `other`, `unknown`; missing / `""` = not set.
+`filmstock.effective(d, g)` = own, else the tray's; `unknown` on a slide means "can't tell" and does
+*not* take the tray's. `PATCH …/groups/{gid} {"stock"}` and `PATCH /api/sessions/{sid} {"stock"}`
+(400 on anything else; `""` clears), split copies it to both halves. Payload: per slide `stock`,
+top level `stock`. Neither is in any key: setting a stock never makes a slide `changed`.
+
+**Labels** (`stocks.json` in the library, `{"version": 1, "examples": [{"key": "tray:slide", "f":
+[14 features], "s": stock, "t"}]}`): every slide whose effective stock is one of the five classes
+and that has `feat` (set at import, like learning). `filmstock.label` keeps a slide's entry in
+step whenever its stock, its tray's stock, or its skip flag changes (and after accept / propagate);
+`remember` doesn't rewrite the file when nothing changed.
+
+**The guess** (`stock_suggestions(d)`, a tray at a time):
+
+- *Heuristic* (`heuristic(f)`, source `fade-heuristic`) on the learning features of the blended,
+  undeveloped scan. The cast against green is measured three ways and averaged: the median
+  log-ratio (`f[11]`, `f[12]`), 3 × the difference of the channels' 1st percentiles and the
+  difference of their 99th (a scene's own colour sits mostly in the midtones; a lost dye shows at
+  the black and white points too). Scores, each a product of logistic ramps: *Ektachrome* = red
+  over green and blue not below green (magenta), stronger with lifted blacks (min 1st percentile);
+  *Agfachrome* = red below green, blue not below green (cyan / blue-green); *Kodachrome* = little
+  cast, 5–95 % luminance range ≥ ~0.45, dense blacks (< 0.04). Fujichrome has no rule. The basis is
+  the usual fading of these dyes (Ektachrome's cyan dye fades first → red / magenta; Agfa's magenta
+  → cyan; Kodachrome is stable in the dark), **not** a fit to real scans: the thresholds were set
+  on synthetic fades (`tests/test_filmstock.py`). Well-kept E-6 Ektachrome or Fujichrome looks like
+  Kodachrome to it. Probabilities = score / (Σ scores + 0.3 "no signature"), × 0.75
+  (`HEURISTIC_TRUST`: it never claims more).
+- *k-NN* (`Labels.predict`, source `knn:<n>`) once ≥ 5 labels (`MIN_PER_STOCK`) of **two or more**
+  stocks exist: features 0–12 (not the stack depth) standardised over those labels, k = 7,
+  weights 1/(d + 0.25), cutoff 3.0 (RMS in standardised space), like `learning.py`; shares ×
+  n/(n + 1). Only stocks with enough labels are known to it; `_guess` gives the heuristic's share
+  for every *other* stock to the heuristic and scales the k-NN's shares into the rest, so a
+  Kodachrome/Agfa-trained k-NN doesn't force a faded Ektachrome into Agfa (the suggestion's source
+  is then `fade-heuristic`).
+- *Tray*: a slide's probabilities are mixed 50/50 with the tray's mean (labelled slides count as
+  one-hot there, skipped ones not at all). The best stock is offered from 0.3 (`SUGGEST_FROM`),
+  confidence = its mixed probability (3 decimals). Only for slides with no effective stock (or
+  `unknown`), not skipped, with features.
+
+**Suggestions through the insights plumbing.** The guesses are computed live for every payload
+(`filmstock.views`: a few hundred numbers, no file) and shown as `insights.stock` / `insights.date`
+entries `{value, confidence, source, state: "suggested"}` next to the models' (a slide with such a
+guess gets an `insights` object even when the tag model is off; `stale` still says whether CLIP
+has looked at it). `insights.KINDS` gained `stock`; `insights.merge` keeps a stored `stock` like
+caption / date / place. A decision is stored only when made: `POST …/insights/decide` with kind
+`stock` or `date` first writes the shown live entry into `g["insights"][kind]`, then decides as
+usual (accept: the slide's `stock` / `date`). A stored accepted / dismissed entry hides the live
+guess while that is the same value; a different value is offered again. A *model's* stored open
+suggestion (e.g. a future mount-OCR date) wins over the live guess. `POST …/insights/propagate`
+takes kind `stock` (value validated, `""` clears) and marks a matching live guess accepted. UI:
+**Details → Film stock** (a select whose first option is the tray's stock, the "Looks like
+Ektachrome · 58 %" row with ✓ / ×, and a range button that opens the propagate dialog), **Tray →
+Film stock**; the Review dialog piles stock and date guesses too ("film: Ektachrome · 36 slides")
+and is now in the browser version (without "Analyse again"); the Insights section lists only the
+models' suggestions (`openSuggestions(g, true)`).
+
+**Per-stock learning** (`learning.py`, `learning.ts`, `Learning.swift`). Examples get `"s"` (the
+effective stock at `_learn` time, only one of the five classes); `_stock_changed` re-learns a
+developed slide when its stock changes. `suggest(feats, stock)`: with a known stock and ≥ 5
+(`MIN_EXAMPLES`) examples of it, only those take part (the others' distance becomes ∞; the
+standardisation stays over all examples); with fewer, examples of *another known* stock weigh
+`OTHER_STOCK_WEIGHT` = 0.3 × (examples without a stock count fully). No stock (or `unknown`, or
+`learning.json` from before) is exactly the old behaviour. Import (tray stock), resuggest and the
+Swift importer / "Use learned" pass the stock. Parity: `golden.json` key `learning_stock` (added at
+the end by the last block of `make_golden.py`; no existing byte changed), checked by
+`parity.test.ts` and `testLearningPerStockMatchesPython` (uncompiled here).
+
+**Eras and dates.** `ERAS` (35 mm, approximate, wide on purpose): Kodachrome 1936–2010 (made to
+2009, processed to the end of 2010; K-II / X from 1961, Kodachrome 25 / 64 from 1974), Ektachrome
+1955– (sheet film 1946, E-6 from 1977, gone 2012–2018, so open-ended), Agfachrome / Agfacolor
+1936–2005, Fujichrome 1948– (Fuji's first colour reversal film). The sub-eras (K64, E-6) can't be
+told apart from colour, so they are documentation only — mount stamps are the route there.
+`store.slide_dates` is unchanged except that every slide whose effective stock has an era gets
+`era: {"stock", "from", "to" (null = open), "fits"}` (`fits`: the shown value's year inside the
+era; null without a value). Keys only use `value`, so no key moved (`store.test.ts` unchanged);
+`store.estimate` is the interpolation factored out. `date_suggestions(d, dates)` (source
+`neighbours+stock`): for an undated, not skipped slide whose stock has an era — the dated slides
+**of the same stock** around it, interpolated like `slide_dates` (between 0.6, near 0.45: a
+Kodachrome roll in a tray of Agfa is its own stretch of time), else its ordinary estimate
+(between 0.45, near 0.35, tray 0.3); nothing when the value falls outside the era (one of the two is
+wrong) or there's no estimate. UI: the Date placeholder adds "· Kodachrome 1936–2010", a line
+warns when the date or estimate is outside the era, and the date guess has its own ✓ / × row.
+
+**Tests.** `tests/test_filmstock.py`: the heuristic on synthetic fades (per slide and per tray),
+no signature → nothing, stock per slide / tray / unknown / split and the labels, accept / dismiss /
+propagate, the k-NN taking over (and not forcing an unknown stock), per-stock learning (restricted,
+weighted, old examples unchanged, `s` remembered and re-learned), era hints leaving `slide_dates`
+values alone, same-stock date suggestions and the era bound, accepting a date guess.
+`frontend/src/standalone/filmstock.test.ts` checks the port against `filmstock.fixture.json`
+(written by `tests/make_filmstock_fixture.py`: heuristic, k-NN, tray suggestions, `slide_dates`
+with hints, date suggestions). `tests/web_flow.py` accepts the Ektachrome guess in the browser
+version and gives it to the whole tray. **Not done:** the Swift app keeps `stock` on slides and
+trays and learns per stock, but has no stock UI, guess or era hint; the heuristic's thresholds and
+confidences are uncalibrated against real scans (the owner's trays are the first real test).
 
 ## 6. Immich integration facts (hard-won)
 

@@ -287,6 +287,19 @@ def main() -> None:
             rng.get_by_role("button", name="Date slides").click()
             expect(pg.get_by_role("dialog")).to_have_count(0)
 
+            # ---- film stock: the fade guess (the synthetic scans are magenta), accepted, given to the tray
+            expect(pg.get_by_text("Looks like")).to_be_visible(timeout=10_000)
+            pg.get_by_text("Looks like").scroll_into_view_if_needed()
+            pg.screenshot(path=str(SHOTS / "02c-film-stock.png"))
+            pg.get_by_role("button", name="Accept ektachrome").click()
+            pg.get_by_role("button", name=re.compile(r"^Apply to \d+–\d+…")).click()
+            prop = pg.get_by_role("dialog", name="Apply Ektachrome to more slides")
+            prop.get_by_label("From slide").fill("1")
+            prop.get_by_role("button", name=re.compile(r"^Apply to \d+ slides")).click()
+            expect(pg.get_by_text(re.compile(r"Film stock Ektachrome: \d+ slides")).first).to_be_visible()
+            expect(pg.get_by_label("Film stock", exact=True).first).to_have_value("ektachrome")
+            print("film stock: Ektachrome suggested, accepted and applied to the tray")
+
             # ---- connect the mock Immich and upload everything
             pg.get_by_role("button", name="Settings", exact=True).click()
             s = pg.get_by_role("dialog")
