@@ -295,6 +295,37 @@ struct MetaFields: View {
     let estimated: SlideDate
     @State private var date = ""
     @State private var caption = ""
+    @State private var ranging = false
+    @State private var rangeFrom = 1
+    @State private var rangeTo = 1
+    @State private var rangeDate = ""
+
+    /// "12–31: Aug 1978": one date for a run of slides (numbers as in the filmstrip, 1-based).
+    private var rangeForm: some View {
+        let n = max(1, model.tray?.groups.count ?? 1)
+        return VStack(alignment: .leading, spacing: 10) {
+            Text("Date a range of slides").font(.system(size: 13, weight: .semibold))
+            Stepper("From slide \(rangeFrom)", value: $rangeFrom, in: 1...n)
+            Stepper("To slide \(rangeTo)", value: $rangeTo, in: 1...n)
+            TextField("1978, 1978-08 or 1978-08-14", text: $rangeDate).keyboardType(.numbersAndPunctuation)
+                .textFieldStyle(.roundedBorder)
+            Text("Every slide in the range gets this date; empty clears theirs. Locked slides keep theirs.")
+                .font(.system(size: 10)).foregroundStyle(ProTheme.dim)
+            HStack {
+                Spacer()
+                Button("Cancel") { ranging = false }
+                Button(rangeDate.trimmingCharacters(in: .whitespaces).isEmpty ? "Clear dates" : "Date slides") {
+                    if model.dateRange(from: rangeFrom - 1, to: rangeTo - 1, date: rangeDate) != nil {
+                        ranging = false
+                        date = model.slide?.date ?? ""
+                    }
+                }
+                .buttonStyle(.borderedProminent)
+            }
+        }
+        .padding(16)
+        .frame(minWidth: 280)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -306,6 +337,12 @@ struct MetaFields: View {
                 Text(estimated.source == .between ? "Estimated between the dated slides around it" : estimated.source == .near ? "From the nearest dated slide" : "The tray's date")
                     .font(.system(size: 10)).foregroundStyle(ProTheme.dim)
             }
+            Button("Date a range…") {
+                rangeFrom = model.selection + 1; rangeTo = model.rangeEnd(from: model.selection) + 1
+                rangeDate = slide.date ?? ""; ranging = true
+            }
+            .font(.system(size: 11))
+            .popover(isPresented: $ranging) { rangeForm }
             field("Caption") {
                 TextField("Immich description", text: $caption, axis: .vertical).lineLimit(1...4)
                     .onChange(of: caption) { _, v in if v != (slide.caption ?? "") { model.setCaption(v) } }

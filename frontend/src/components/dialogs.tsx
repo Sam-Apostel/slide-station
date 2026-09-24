@@ -17,7 +17,7 @@ import { Kbd } from "@/components/ui/kbd";
 import { Label } from "@/components/ui/label";
 import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select";
 import { desktop, isMac } from "@/lib/desktop";
-import { api, sourceLabel, type AppState, type Config, type Source } from "@/lib/api";
+import { api, sourceLabel, type AppState, type Config, type Group, type Source } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
 const primary = "bg-primary text-primary-foreground";
@@ -369,6 +369,117 @@ export function NewTrayDialog({
   );
 }
 
+// ------------------------------------------------------------------ date a range
+
+/** Where a run of slides dated from `sel` naturally ends: before the next slide with its own date. */
+export function rangeEnd(groups: Group[], sel: number) {
+  const next = groups.findIndex((g, i) => i > sel && g.date);
+  return next >= 0 ? next - 1 : groups.length - 1;
+}
+
+/**
+ * Date a run of slides at once ("12–31: Aug 1978"). Slide numbers are 1-based as in the filmstrip;
+ * it opens on this slide through the one before the next dated slide (or the end of the tray).
+ */
+export function DateRangeDialog({
+  open,
+  onOpenChange,
+  groups,
+  sel,
+  onApply,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  groups: Group[];
+  sel: number;
+  onApply: (fromIndex: number, toIndex: number, date: string) => Promise<boolean>;
+}) {
+  const [from, setFrom] = React.useState("");
+  const [to, setTo] = React.useState("");
+  const [date, setDate] = React.useState("");
+  const n = groups.length;
+
+  React.useEffect(() => {
+    if (!open) return;
+    setFrom(String(sel + 1));
+    setTo(String(rangeEnd(groups, sel) + 1));
+    setDate(groups[sel]?.date ?? "");
+    // only when the dialog opens; the groups refresh on every edit
+  }, [open]);
+
+  const a = Number(from);
+  const b = Number(to);
+  const valid = Number.isInteger(a) && Number.isInteger(b) && a >= 1 && b >= 1 && a <= n && b <= n;
+  const count = valid ? Math.abs(b - a) + 1 : 0;
+
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (valid && (await onApply(a - 1, b - 1, date.trim()))) onOpenChange(false);
+  };
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-[400px]">
+        <form onSubmit={submit} className="grid gap-[18px]">
+          <DialogHeader>
+            <DialogTitle>Date a range of slides</DialogTitle>
+            <DialogDescription>
+              Every slide in the range gets this date as its own. Leave the date empty to clear theirs.
+            </DialogDescription>
+          </DialogHeader>
+          <FieldGroup className="gap-4">
+            <div className="grid grid-cols-2 gap-3">
+              <Field>
+                <FieldLabel htmlFor="dr-from">From slide</FieldLabel>
+                <Input
+                  id="dr-from"
+                  inputMode="numeric"
+                  value={from}
+                  onChange={(e) => setFrom(e.target.value.replace(/\D/g, ""))}
+                />
+              </Field>
+              <Field>
+                <FieldLabel htmlFor="dr-to">To slide</FieldLabel>
+                <Input
+                  id="dr-to"
+                  inputMode="numeric"
+                  value={to}
+                  onChange={(e) => setTo(e.target.value.replace(/\D/g, ""))}
+                />
+              </Field>
+            </div>
+            <Field>
+              <FieldLabel htmlFor="dr-date">Date</FieldLabel>
+              <Input
+                id="dr-date"
+                autoFocus
+                value={date}
+                onChange={(e) => setDate(e.target.value)}
+                placeholder="1978, 1978-08 or 1978-08-14"
+              />
+              <FieldDescription>
+                {valid
+                  ? `${count === 1 ? "1 slide" : `${count} slides`} of ${n}. Locked slides keep their date.`
+                  : `Slide numbers go from 1 to ${n}.`}
+              </FieldDescription>
+            </Field>
+          </FieldGroup>
+          <DialogFooter>
+            <DialogClose asChild>
+              <Button type="button" variant="outline">
+                Cancel
+              </Button>
+            </DialogClose>
+            <Button type="submit" className={primary} disabled={!valid}>
+              {date.trim() ? "Date slides" : "Clear dates"}
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 // ------------------------------------------------------------------ keyboard help
 
 export const SHORTCUTS: [React.ReactNode, string][] = [
@@ -396,6 +507,12 @@ export const SHORTCUTS: [React.ReactNode, string][] = [
   [<Kbd>0</Kbd>, "Reset all adjustments"],
   [<Kbd>W</Kbd>, "White balance: click a neutral spot on the photo"],
   [<Kbd>K</Kbd>, "Crop & straighten (Enter applies, Esc cancels)"],
+  [
+    <>
+      <Kbd>←</Kbd> <Kbd>→</Kbd> <Kbd>↑</Kbd> <Kbd>↓</Kbd>
+    </>,
+    `While cropping: move the frame (${isMac ? "⌥" : "Alt"}: resize from the bottom-right, ⇧: bigger steps)`,
+  ],
   [
     <>
       <Kbd>⌘ Z</Kbd> / <Kbd>⇧ ⌘ Z</Kbd>

@@ -14,7 +14,7 @@ import { Inspector } from "@/components/inspector";
 import { EmptyState } from "@/components/empty-state";
 import { SlideMenu } from "@/components/slide-menu";
 import { CommandPalette } from "@/components/command-palette";
-import { HelpDialog, NewTrayDialog, SettingsDialog } from "@/components/dialogs";
+import { DateRangeDialog, HelpDialog, NewTrayDialog, SettingsDialog } from "@/components/dialogs";
 import { PanelToggles, WindowTitlebar } from "@/components/window-titlebar";
 import { useSlideStation, type SlideStation } from "@/hooks/use-slide-station";
 import { useDesktop, useFolderDrop, type DesktopHandlers } from "@/hooks/use-desktop";
@@ -80,6 +80,7 @@ function SlideStationApp() {
   const [settingsOpen, setSettingsOpen] = React.useState(false);
   const [helpOpen, setHelpOpen] = React.useState(false);
   const [paletteOpen, setPaletteOpen] = React.useState(false);
+  const [dateRangeOpen, setDateRangeOpen] = React.useState(false);
   const [newTray, setNewTray] = React.useState<{ open: boolean; source?: Source; folder?: string }>({ open: false });
   const [panels, setPanels] = React.useState(storedPanels);
   // What focus mode hid, so the same shortcut brings exactly that back.
@@ -328,6 +329,7 @@ function SlideStationApp() {
                     cropping={cropping}
                     onCrop={() => app.current?.locked || setCropping((v) => !v)}
                     onReimport={reimport}
+                    onDateRange={() => setDateRangeOpen(true)}
                   />
                 </ResizablePanel>
               </>
@@ -385,8 +387,18 @@ function SlideStationApp() {
         app={app}
         handlers={handlers}
         onClean={clean}
+        onDateRange={() => setDateRangeOpen(true)}
         busy={busy}
       />
+      {session && (
+        <DateRangeDialog
+          open={dateRangeOpen}
+          onOpenChange={setDateRangeOpen}
+          groups={session.groups}
+          sel={app.sel}
+          onApply={app.dateRange}
+        />
+      )}
       {dropping && (
         <div className="ss-drop pointer-events-none fixed inset-0 z-50 flex items-center justify-center">
           <div className="rounded-lg border border-primary/60 bg-(--ss-panel) px-6 py-4 text-center shadow-2xl">

@@ -3,6 +3,7 @@ import { Check, FlipHorizontal2, RotateCcw, X } from "lucide-react";
 import { ProButton } from "@/components/ui/pro-button";
 import { Kbd } from "@/components/ui/kbd";
 import { Tip } from "@/components/tip";
+import { isMac } from "@/lib/desktop";
 import { cn } from "@/lib/utils";
 
 export type Rect = [number, number, number, number]; // l, t, r, b in 0..1
@@ -60,6 +61,55 @@ function maxAspect(ratio: number, frame: number): Rect {
   return fitAspect(FULL, ratio, frame);
 }
 
+/** Shift a rect by dx, dy (0..1 units), stopping at the photo's edges. */
+export function moveRect([l, t, r, b]: Rect, dx: number, dy: number): Rect {
+  const nl = clamp(l + dx, 0, 1 - (r - l));
+  const nt = clamp(t + dy, 0, 1 - (b - t));
+  return [nl, nt, nl + (r - l), nt + (b - t)];
+}
+
+/**
+ * Drag a handle of `start` by dx, dy (0..1 units of the photo). Free: each dragged edge follows
+ * the pointer. With an aspect ratio (width / height in pixels; `frame` is the photo's) the size
+ * follows whichever axis the pointer moved further along, the opposite corner or edge stays put,
+ * and at the photo's border the size stops growing while the rect keeps sliding along it: a side
+ * handle's centred axis shifts to stay inside instead of the whole drag freezing.
+ */
+export function resizeRect(
+  start: Rect,
+  h: Exclude<Handle, "move">,
+  dx: number,
+  dy: number,
+  ratio: number | null,
+  frame: number,
+): Rect {
+  const [l, t, r, b] = start;
+  if (!ratio) {
+    let [nl, nt, nr, nb] = start;
+    if (h.includes("w")) nl = clamp(l + dx, 0, r - MIN);
+    if (h.includes("e")) nr = clamp(r + dx, l + MIN, 1);
+    if (h.includes("n")) nt = clamp(t + dy, 0, b - MIN);
+    if (h.includes("s")) nb = clamp(b + dy, t + MIN, 1);
+    return [nl, nt, nr, nb];
+  }
+  const k = ratio / frame; // width per height, in 0..1 units
+  const sx = h.includes("e") ? 1 : h.includes("w") ? -1 : 0;
+  const sy = h.includes("s") ? 1 : h.includes("n") ? -1 : 0;
+  // how much wider the pointer asks for: from its x, or from its y turned into width
+  const byX = sx * dx;
+  const byY = sy * dy * k;
+  const grow = !sy ? byX : !sx ? byY : Math.abs(byX) >= Math.abs(byY) ? byX : byY;
+  // room for the width: to the border on the dragged side(s); a centred axis may use it all
+  const roomX = sx > 0 ? 1 - l : sx < 0 ? r : 1;
+  const roomY = sy > 0 ? 1 - t : sy < 0 ? b : 1;
+  const w = clamp(r - l + grow, Math.max(MIN, MIN * k), Math.min(roomX, roomY * k));
+  const hh = w / k;
+  // the anchored side stays; an undragged axis stays centred where it was, slid inside the photo
+  const nl = sx > 0 ? l : sx < 0 ? r - w : clamp((l + r) / 2 - w / 2, 0, 1 - w);
+  const nt = sy > 0 ? t : sy < 0 ? b - hh : clamp((t + b) / 2 - hh / 2, 0, 1 - hh);
+  return [nl, nt, nl + w, nt + hh];
+}
+
 /**
  * Crop frame over the photo. Drag inside to move, the handles to resize (locked to the chosen
  * aspect), with a rule-of-thirds grid while you work. The frame is 0..1 of the straightened photo,
@@ -109,39 +159,8 @@ export function CropOverlay({
     if (!d || d.id !== e.pointerId) return;
     const dx = (e.clientX - d.x) / box.width;
     const dy = (e.clientY - d.y) / box.height;
-    let [nl, nt, nr, nb] = d.start;
-    if (d.h === "move") {
-      const w = nr - nl;
-      const h = nb - nt;
-      nl = clamp(nl + dx, 0, 1 - w);
-      nt = clamp(nt + dy, 0, 1 - h);
-      return onChange([nl, nt, nl + w, nt + h]);
-    }
-    if (d.h.includes("w")) nl = clamp(nl + dx, 0, nr - MIN);
-    if (d.h.includes("e")) nr = clamp(nr + dx, nl + MIN, 1);
-    if (d.h.includes("n")) nt = clamp(nt + dy, 0, nb - MIN);
-    if (d.h.includes("s")) nb = clamp(nb + dy, nt + MIN, 1);
-    if (ratio) {
-      // width leads on corners and side handles, height on top / bottom handles
-      if (d.h === "n" || d.h === "s") {
-        const w = ((nb - nt) * ratio) / frame;
-        const cx = (d.start[0] + d.start[2]) / 2;
-        nl = cx - w / 2;
-        nr = cx + w / 2;
-      } else {
-        const h = ((nr - nl) * frame) / ratio;
-        if (d.h.includes("n")) nt = nb - h;
-        else if (d.h.includes("s") || d.h === "e" || d.h === "w") {
-          if (d.h === "e" || d.h === "w") {
-            const cy = (d.start[1] + d.start[3]) / 2;
-            nt = cy - h / 2;
-            nb = cy + h / 2;
-          } else nb = nt + h;
-        }
-      }
-      if (nl < 0 || nt < 0 || nr > 1 || nb > 1) return; // would leave the photo: hold still
-    }
-    onChange([nl, nt, nr, nb]);
+    if (d.h === "move") return onChange(moveRect(d.start, dx, dy));
+    onChange(resizeRect(d.start, d.h, dx, dy, ratio, frame));
   };
   const up = (e: React.PointerEvent) => {
     if (drag.current?.id === e.pointerId) drag.current = null;
@@ -252,6 +271,13 @@ export function CropBar({
         </span>
       </label>
 
+      <span className="flex items-center gap-1 text-[11px] text-muted-foreground">
+        <Kbd>←</Kbd>
+        <Kbd>→</Kbd>
+        <Kbd>↑</Kbd>
+        <Kbd>↓</Kbd> move · <Kbd>{isMac ? "⌥" : "Alt"}</Kbd> resize · <Kbd>⇧</Kbd> bigger steps
+      </span>
+
       <div className="ml-auto flex items-center gap-1.5">
         <Tip label="Whole photo, no straighten">
           <ProButton
@@ -277,3 +303,4 @@ export function CropBar({
 }
 
 export { FULL, maxAspect, fitAspect };
+export type { Handle };

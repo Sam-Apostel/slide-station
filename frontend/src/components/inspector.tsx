@@ -3,6 +3,7 @@ import { toast } from "sonner";
 import {
   Aperture,
   ArrowRight,
+  CalendarRange,
   CheckCheck,
   Copy,
   Crop,
@@ -92,6 +93,7 @@ export function Inspector({
   cropping,
   onCrop,
   onReimport,
+  onDateRange,
 }: {
   app: SlideStation;
   session: SessionPayload;
@@ -106,6 +108,8 @@ export function Inspector({
   onCrop: () => void;
   /** Import the tray's scans again (brings deleted originals back and unlocks their slides). */
   onReimport?: () => void;
+  /** Opens the "date a range of slides" dialog. */
+  onDateRange: () => void;
 }) {
   const { current: g, sel } = app;
   const sm = session.summary;
@@ -203,7 +207,7 @@ export function Inspector({
             </ProDisclosureGroup>
 
             <ProDisclosureGroup title="Details" summary={detailsNote(g)} {...section("details")}>
-              <SlideDetails app={app} />
+              <SlideDetails app={app} onDateRange={onDateRange} />
             </ProDisclosureGroup>
           </div>
         )}
@@ -343,7 +347,7 @@ function detailsNote(g: Group) {
 }
 
 /** The slide's own date (or where its estimate comes from) and its caption. */
-function SlideDetails({ app }: { app: SlideStation }) {
+function SlideDetails({ app, onDateRange }: { app: SlideStation; onDateRange: () => void }) {
   const g = app.current!;
   const est = g.date_est;
   const from = est.from?.map((i) => `#${i + 1}`).join(" & ");
@@ -358,6 +362,11 @@ function SlideDetails({ app }: { app: SlideStation }) {
         }
         onCommit={(v) => app.patchGroup({ date: v })}
       />
+      <Tip label="Give a run of slides one date, e.g. 12–31: 1978-08">
+        <ProButton className="self-start" onClick={onDateRange}>
+          <CalendarRange /> Date a range…
+        </ProButton>
+      </Tip>
       <TrayField
         key={`${g.id}-caption`}
         label="Caption"

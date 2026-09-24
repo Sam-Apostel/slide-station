@@ -9,6 +9,8 @@ final class FeatureTests: XCTestCase {
         var learning_query: [Double]
         var learning_suggestion: [String: AnyNumberOrBool]
         var learning_neighbours: Int
+        var learning_curve_examples: [Learning.Example]
+        var learning_curve_suggestion: [String: [[Double]]]
         var developed_crop_shape: [Int]
         var params_crop: Params
     }
@@ -58,6 +60,37 @@ final class FeatureTests: XCTestCase {
         XCTAssertNotNil(small.suggest(golden.features))
         small.forget(key: "k4")
         XCTAssertEqual(Learning.Model(url: small.url).examples.count, 4)
+    }
+
+    func testLearnedCurvesMatchPython() throws {
+        struct File: Encodable { var version = 1; var examples: [Learning.Example] }
+        // examples from before curves were learned (no "c") leave the slide's curves alone
+        let oldURL = try tmp().appendingPathComponent("old.json")
+        try JSONEncoder().encode(File(examples: golden.learning_examples)).write(to: oldURL)
+        let old = try XCTUnwrap(Learning.Model(url: oldURL).suggest(golden.learning_query))
+        XCTAssertNil(old.curves)
+        var p = Params(); p.curves = ["rgb": [[0, 0.1], [1, 0.9]]]
+        XCTAssertEqual(old.apply(to: p).curves, p.curves)
+        // with curves: red (most of the weight) is averaged, blue (a minority) dropped
+        let url = try tmp().appendingPathComponent("learning.json")
+        try JSONEncoder().encode(File(examples: golden.learning_curve_examples)).write(to: url)
+        let s = try XCTUnwrap(Learning.Model(url: url).suggest(golden.learning_query))
+        let curves = try XCTUnwrap(s.curves)
+        XCTAssertEqual(Set(curves.keys), Set(golden.learning_curve_suggestion.keys))
+        for (ch, pts) in golden.learning_curve_suggestion {
+            let mine = try XCTUnwrap(curves[ch])
+            XCTAssertEqual(mine.count, pts.count, ch)
+            for (a, b) in zip(mine, pts) {
+                XCTAssertEqual(a[0], b[0], accuracy: 1e-4, ch)
+                XCTAssertEqual(a[1], b[1], accuracy: 0.002, ch)
+            }
+        }
+        XCTAssertEqual(s.apply(to: Params()).curves, curves)
+        // remember stores the curves, never the framing
+        var dev = Params(); dev.curves = ["g": [[0.1, 0], [0.8, 1]]]; dev.crop = [0.1, 0.1, 0.9, 0.9]
+        let m = Learning.Model(url: try tmp().appendingPathComponent("r.json"))
+        m.remember(key: "k", features: golden.features, params: dev)
+        XCTAssertEqual(m.examples.first?.c, ["g": [[0.1, 0], [0.8, 1]]])
     }
 
     // MARK: undo

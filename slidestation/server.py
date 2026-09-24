@@ -253,10 +253,7 @@ def patch_group(sid: str, gid: str, body: dict = Body(...)):
             if k in body:
                 g[k] = bool(body[k])
         if "date" in body:
-            v = str(body["date"]).strip().replace("/", "-")
-            if v and not parse_date(v):
-                raise HTTPException(400, "Use a year, year-month or full date: 1978, 1978-06, 1978-06-14")
-            g["date"] = v
+            g["date"] = _clean_date(body["date"])
         if "caption" in body:
             g["caption"] = str(body["caption"]).strip()[:2000]
         _learn(s, g)
@@ -266,6 +263,35 @@ def patch_group(sid: str, gid: str, body: dict = Body(...)):
                 g["excluded"] = g["scans"][1:]
         s.save()
     return _session_payload(s)
+
+
+def _clean_date(v) -> str:
+    """A slide date as typed: 1978, 1978-06 or 1978-06-14 ("/" works too); "" clears it."""
+    v = str(v).strip().replace("/", "-")
+    if v and not parse_date(v):
+        raise HTTPException(400, "Use a year, year-month or full date: 1978, 1978-06, 1978-06-14")
+    return v
+
+
+@app.post("/api/sessions/{sid}/dates")
+def date_range(sid: str, body: dict = Body(...)):
+    """Date a run of slides at once ("12-31: Aug 1978"): `from` .. `to` (group ids, either order,
+    both included, in tray order) all get `date`. Locked slides are left as they are."""
+    v = _clean_date(body.get("date", ""))
+    with lock:
+        s = _session(sid)
+        try:
+            a, b = sorted((s.group_index(body.get("from")), s.group_index(body.get("to"))))
+        except (KeyError, ValueError):
+            raise HTTPException(404, "Slide not found")
+        n = 0
+        for g in s.data["groups"][a : b + 1]:
+            if g.get("locked"):
+                continue
+            g["date"] = v
+            n += 1
+        s.save()
+    return {**_session_payload(s), "dated": n}
 
 
 @app.post("/api/sessions/{sid}/groups/{gid}/split")

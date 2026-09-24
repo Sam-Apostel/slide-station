@@ -376,6 +376,33 @@ export function useSlideStation() {
   const undo = () => step("undo");
   const redo = () => step("redo");
 
+  /** Date slides fromIndex..toIndex (0-based, either order, both included) at once; "" clears. */
+  const dateRange = async (fromIndex: number, toIndex: number, date: string) => {
+    const { sessionId: sid, session: s } = ref.current;
+    const a = s?.groups[fromIndex];
+    const b = s?.groups[toIndex];
+    if (!a || !b) return false;
+    try {
+      const p = await api<SessionPayload & { dated: number }>("POST", `/api/sessions/${sid}/dates`, {
+        from: a.id,
+        to: b.id,
+        date,
+      });
+      applyPayload(p);
+      const lo = Math.min(fromIndex, toIndex) + 1;
+      const hi = Math.max(fromIndex, toIndex) + 1;
+      const skipped = hi - lo + 1 - p.dated;
+      toast(
+        `${date ? `Dated ${plural(p.dated, "slide")} ${date}` : `Cleared the date of ${plural(p.dated, "slide")}`} (${lo}–${hi})` +
+          (skipped ? `, ${skipped} locked left as they were` : ""),
+      );
+      return true;
+    } catch (e) {
+      fail(e);
+      return false;
+    }
+  };
+
   // ---------------------------------------------------------------- tray
 
   const patchSession = async (body: Record<string, string>) => {
@@ -469,6 +496,7 @@ export function useSlideStation() {
     fitCurves,
     pickNeutral,
     patchGroup,
+    dateRange,
     undo,
     redo,
     patchSession,
