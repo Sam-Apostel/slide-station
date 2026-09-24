@@ -91,6 +91,23 @@ async ([path, name]) => {
 }
 """
 
+# Full-resolution JPEGs in the library's export folders (OPFS): what the background renderer made
+EXPORTS = """
+async () => {
+  let n = 0;
+  try {
+    const sessions = await (await navigator.storage.getDirectory()).getDirectoryHandle("sessions");
+    for await (const [, s] of sessions) {
+      if (s.kind !== "directory") continue;
+      try {
+        for await (const [name] of await s.getDirectoryHandle("export")) n += name.endsWith(".jpg");
+      } catch {}
+    }
+  } catch {}
+  return n;
+}
+"""
+
 
 def free_port() -> int:
     with socket.socket() as s:
@@ -118,6 +135,7 @@ def main() -> None:
     subprocess.run(["cp", "-r", str(SITE), str(site)], check=True)
     made = make_scans(site / "card", SLIDES, (1200, 800))
     names = [n for slide in made for n in slide]
+    (site / "start.html").write_text("<!doctype html><title>start</title><link rel=icon href=favicon.svg>")
     port = serve(site)
 
     immich_port = free_port()
@@ -143,7 +161,7 @@ def main() -> None:
             pg = ctx.new_page()
             pg.on("console", lambda m: m.type == "error" and errors.append(m.text))
             pg.on("pageerror", lambda e: errors.append(str(e)))
-            pg.goto(f"http://127.0.0.1:{port}/card/")  # history to go back to (see the crop keys)
+            pg.goto(f"http://127.0.0.1:{port}/start.html")  # history to go back to (see the crop keys)
             pg.goto(f"http://127.0.0.1:{port}/index.html")
             if not NO_FS:
                 pg.evaluate(FILL_CARD, names)
@@ -196,6 +214,14 @@ def main() -> None:
                 pg.keyboard.press(" ")
                 pg.wait_for_timeout(200)
             print(f"develop: {time.time() - t0:.1f}s")
+
+            # ---- the developed slides are rendered at full resolution in the background
+            t0 = time.time()
+            assert pg.evaluate(EXPORTS) < 3
+            while pg.evaluate(EXPORTS) < 3:
+                assert time.time() - t0 < 120, f"{pg.evaluate(EXPORTS)} slides rendered in the background"
+                pg.wait_for_timeout(500)
+            print(f"background render: {pg.evaluate(EXPORTS)} slides, {time.time() - t0:.1f}s")
             pg.screenshot(path=str(SHOTS / "02-developed.png"))
 
             # ---- date a range of slides

@@ -88,6 +88,7 @@ export function setLibrary(l: Library, onChange?: (l: Library) => void) {
   lib = l;
   if (onChange) onLibraryChange = onChange;
   cache.clear();
+  activeSession = null;
   learningModel = null;
   importedIndex = null;
 }
@@ -365,7 +366,7 @@ function startJob(kind: string, session: string | null, fn: (job: Job) => Promis
     started: Date.now() / 1000,
   };
   current = job;
-  fn(job)
+  (background ? ((job.message = "Finishing a background render"), background.then(() => fn(job))) : fn(job))
     .catch((e) => {
       console.error(e);
       job.error = e instanceof Error ? e.message : String(e);
@@ -722,6 +723,51 @@ async function renderExport(sid: string, gid: string, quality: number): Promise<
   return ok ? { name, blob } : null;
 }
 
+// Background renderer (workflow._background_renderer): renders the open tray's developed slides at
+// full resolution in the jobs worker while the user keeps developing, so uploading is mostly
+// network time. One slide at a time and never while a job runs; a job that starts meanwhile waits
+// for the render in flight (full resolution is one at a time). renderExport commits only if the
+// slide's keys still match, so an edit made during the render just leaves it for the next round.
+let activeSession: string | null = null;
+let background: Promise<void> | null = null;
+let backgroundTimer: ReturnType<typeof setInterval> | null = null;
+const jobRunning = () => !!current && !current.finished;
+
+async function exportFresh(d: SessionData, g: GroupData, index: number) {
+  if (!g.export || g.export.ekey !== exportKey(d, g, index)) return false;
+  return lib.exists(`${sessionDir(d.id)}/export/${g.export.file}`);
+}
+
+async function backgroundStep() {
+  const sid = activeSession;
+  if (!lib || !sid || jobRunning()) return;
+  let d: SessionData;
+  try {
+    d = await loadSession(sid);
+  } catch (e) {
+    if (e instanceof HttpError && e.status === 404 && activeSession === sid) activeSession = null; // deleted
+    throw e;
+  }
+  const st = statuses(d);
+  for (const [i, g] of d.groups.entries()) {
+    if (!g.reviewed || g.skip || g.locked || st[i] === "uploaded") continue;
+    if ((await exportFresh(d, g, i)) || (await originalsMissing(d, g))) continue;
+    if (jobRunning() || activeSession !== sid) return; // a job started, or another tray opened
+    await renderExport(sid, g.id, loadConfig().jpeg_quality);
+    return;
+  }
+}
+
+function watchTray(sid: string) {
+  activeSession = sid;
+  backgroundTimer ??= setInterval(() => {
+    if (background) return;
+    background = backgroundStep()
+      .catch((e) => console.warn("background render:", e))
+      .finally(() => (background = null));
+  }, 1500);
+}
+
 type Target = "immich" | "disk";
 
 async function finishSession(
@@ -998,6 +1044,7 @@ export async function handle(method: string, url: string, body: Body = {}): Prom
   }
   if ((m = is("GET", /^\/api\/sessions\/([^/]+)$/))) {
     const d = await loadSession(m[1]);
+    watchTray(m[1]); // the open tray: the background renderer works on it
     if (await syncLocks(structuredClone(d))) return payload((await update(m[1], syncLocks)).d); // originals deleted (or restored)
     return payload(d);
   }
