@@ -24,12 +24,13 @@ export const MATCH = 0.8; // a face found again (after the slide was turned) kee
 
 export type Found = { box: number[]; score: number; emb: Float32Array };
 export type StoredFace = { id: string; box: number[]; score: number; emb: string };
-export type FacesFile = Record<string, { key: string; rot: number; faces: StoredFace[] }>;
+export type FacesFile = Record<string, { key: string; rot: number; mirror?: boolean; faces: StoredFace[] }>;
 export type Person = { name: string; faces: string[] };
 export type PeopleFile = { people: Record<string, Person>; rejected: Record<string, string[]>; next: number };
 
 /** What a slide's faces were found on: its blended scans, turned upright (people.face_key). */
-export const faceKey = (g: GroupData) => sha1Hex(pyDumps([activeScans(g), new PyInt(g.rotation)])).slice(0, 12);
+export const faceKey = (g: GroupData) =>
+  sha1Hex(pyDumps([activeScans(g), new PyInt(g.rotation), ...(g.mirror ? ["mirror"] : [])])).slice(0, 12);
 
 export const stale = (g: GroupData, entry?: { key: string } | null) => !g.skip && (!entry || entry.key !== faceKey(g));
 

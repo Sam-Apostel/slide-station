@@ -17,7 +17,17 @@ import { DEFAULT_TARGET, libraryStats, slideTimes } from "@/lib/stats";
 import { jobs, ui } from "./engine";
 import type { ModelRef, Src } from "./engine.worker";
 import { exifSegment, readExif, withExif, xmpSegment } from "./exif";
-import { cleanParams, groupSequence, MOUNT_AUTO, rotateBox, turnLocal, weakScans, type Quality } from "./imaging";
+import {
+  cleanParams,
+  groupSequence,
+  mirrorBox,
+  mirrorParams,
+  MOUNT_AUTO,
+  rotateBox,
+  turnLocal,
+  weakScans,
+  type Quality,
+} from "./imaging";
 import { Immich, ImmichError, NotIndexed, Unsupported, type Asset } from "./immich";
 import { dot, LABELS_KEY, MODEL_ID, promptBatch, tagSuggestions, TAGS, Tokenizer, type Learned } from "./clip";
 import { cleanStock, effective, label, Labels, views } from "./filmstock";
@@ -449,7 +459,7 @@ async function readText(d: SessionData, g: GroupData) {
   ];
   if (ocrChars?.key !== dict.key) ocrChars = { key: dict.key, chars: alphabet(await dict.blob.text()) };
   const src = await fusedSrc(d, g, jobs);
-  return jobs.call("ocrRead", { det, rec, chars: ocrChars.chars, src, rotation: g.rotation }, -1);
+  return jobs.call("ocrRead", { det, rec, chars: ocrChars.chars, src, rotation: g.rotation, mirror: !!g.mirror }, -1);
 }
 
 let labelCache: { lib: Library; rows: Promise<Float32Array> } | null = null;
@@ -552,7 +562,7 @@ const recordSlide = async (sid: string, d: SessionData, g: GroupData, emb: Float
 async function measureEyes(d: SessionData, g: GroupData): Promise<EyesEntry> {
   try {
     const model = await modelFile(LANDMARKS.files[0][1], EYES_DIR);
-    return await jobs.call("eyes", { model, src: await fusedSrc(d, g, jobs), rotation: g.rotation }, -1);
+    return await jobs.call("eyes", { model, src: await fusedSrc(d, g, jobs), rotation: g.rotation, mirror: !!g.mirror }, -1);
   } catch (e) {
     console.warn("eyes:", e);
     return { model: EYES_MODEL, ear: [], error: (e instanceof Error ? e.message : String(e)) || "error" };
@@ -573,7 +583,7 @@ async function analyseSlide(sid: string, gid: string, models: string[]) {
   const fresh: StoredInsights & { key: string } = { key: insightsKey(g, models) };
   if (models.includes(MODEL_ID)) {
     const model = await modelFile("vision.onnx");
-    const r = await jobs.call("clipImage", { model, src: await fusedSrc(d, g, jobs), rotation: g.rotation }, -1);
+    const r = await jobs.call("clipImage", { model, src: await fusedSrc(d, g, jobs), rotation: g.rotation, mirror: !!g.mirror }, -1);
     fresh.tags = tagSuggestions(await labelEmbeds(), r.emb, await learned());
     await recordSlide(sid, d, g, r.emb, r.quality);
   }
@@ -601,7 +611,7 @@ async function similarStep(d: SessionData): Promise<boolean> {
   if (g) {
     try {
       const model = await modelFile("vision.onnx");
-      const r = await jobs.call("clipImage", { model, src: await fusedSrc(d, g, jobs), rotation: g.rotation }, -1);
+      const r = await jobs.call("clipImage", { model, src: await fusedSrc(d, g, jobs), rotation: g.rotation, mirror: !!g.mirror }, -1);
       await recordSlide(d.id, d, g, r.emb, r.quality);
     } catch (e) {
       console.warn("similar:", e);
@@ -796,6 +806,7 @@ function splitAt(d: SessionData, g: GroupData, scan: string) {
   if (at <= 0) return false;
   const tail = newGroup(d, g.scans.slice(at), g.rotation, g.rot_reason);
   tail.params = { ...g.params };
+  tail.mirror = !!g.mirror;
   tail.excluded = (g.excluded ?? []).filter((x) => tail.scans.includes(x));
   if (g.tags?.length) tail.tags = [...g.tags];
   if (g.stock) tail.stock = g.stock; // one piece of film
@@ -1020,10 +1031,10 @@ async function findFaces(sid: string, gid: string): Promise<boolean> {
   const g = d.groups.find((x) => x.id === gid);
   if (!g || !stale(g, (await loadFaces(sid))[gid])) return false;
   const sface = await modelFile(SFACE_NAME, "models");
-  const found = await jobs.call("faces", { sface, src: await fusedSrc(d, g, jobs), rotation: g.rotation }, -1);
-  const [key, rot] = [faceKey(g), g.rotation];
+  const found = await jobs.call("faces", { sface, src: await fusedSrc(d, g, jobs), rotation: g.rotation, mirror: !!g.mirror }, -1);
+  const [key, rot, mirror] = [faceKey(g), g.rotation, !!g.mirror];
   await updateFaces(sid, (f) => {
-    f[gid] = { key, rot, faces: recordFaces(sid, gid, f[gid]?.faces ?? [], found, unpack, pack) };
+    f[gid] = { key, rot, mirror, faces: recordFaces(sid, gid, f[gid]?.faces ?? [], found, unpack, pack) };
   });
   return true;
 }
@@ -1210,7 +1221,7 @@ const COALESCE_S = 1.5; // edits to the same settings closer together than this 
 
 const snapshot = (g: GroupData): Snapshot => ({
   params: structuredClone(g.params),
-  rotation: g.rotation,
+  rotation: g.rotation, mirror: !!g.mirror,
   rot_reason: g.rot_reason ?? "",
   params_source: g.params_source ?? "",
 });
@@ -1271,7 +1282,7 @@ async function zoomImage(d: SessionData, g: GroupData): Promise<{ key: string; w
       throw new HttpError(409, "The original scans were deleted after upload: no full resolution to zoom into.");
     blobs = originals as Blob[];
   }
-  const size = await jobs.call("zoomImage", { key, exported: ex, blobs, rotation: g.rotation, params: g.params }, 5);
+  const size = await jobs.call("zoomImage", { key, exported: ex, blobs, rotation: g.rotation, mirror: !!g.mirror, params: g.params }, 5);
   zoomKey = key;
   return { key, ...size };
 }
@@ -1313,7 +1324,7 @@ async function payload(d: SessionData): Promise<SessionPayload> {
       id: g.id,
       scans: g.scans,
       excluded: g.excluded ?? [],
-      rotation: g.rotation,
+      rotation: g.rotation, mirror: !!g.mirror,
       rot_reason: g.rot_reason ?? "",
       params: g.params,
       reviewed: g.reviewed,
@@ -1649,7 +1660,11 @@ async function importScans(job: Job, sid: string, sourceId: string) {
         fresh.groups.push(g);
         target = g;
       }
-      if (rot && target.rot_reason !== "manual") [target.rotation, target.rot_reason] = rot;
+      if (rot && target.rot_reason !== "manual") {
+        // guessed on the scans as they came: a mirrored slide turns the other way
+        target.rotation = target.mirror ? (360 - rot[0]) % 360 : rot[0];
+        target.rot_reason = rot[1];
+      }
       target.feat = feats;
       target.mount = mount;
       if (!extend && straightenToMount(target)) target.params = { ...target.params, angle: -mount.angle };
@@ -1734,7 +1749,7 @@ export async function image(url: string, priority = 0): Promise<{ blob: Blob; fr
     const src = await fusedSrc(d, g);
     const blob = await ui.call(
       "render",
-      { src, rotation: g.rotation, params: g.params, size, before, uncropped },
+      { src, rotation: g.rotation, mirror: !!g.mirror, params: g.params, size, before, uncropped },
       priority,
     );
     return { blob, fresh };
@@ -1775,7 +1790,7 @@ export async function image(url: string, priority = 0): Promise<{ blob: Blob; fr
     if (!g || !entry || !face) throw new HttpError(404, "Not found");
     const blob = await ui.call(
       "faceCrop",
-      { src: await fusedSrc(d, g), rotation: entry.rot ?? 0, box: face.box },
+      { src: await fusedSrc(d, g), rotation: entry.rot ?? 0, mirror: !!entry.mirror, box: face.box },
       priority,
     );
     return { blob, fresh: u.searchParams.get("v") === entry.key };
@@ -1828,7 +1843,7 @@ async function renderExport(sid: string, gid: string, quality: number): Promise<
   const scans = activeScans(g);
   const originals = await Promise.all(scans.map((x) => lib.read(originalPath(d, x))));
   if (originals.some((x) => !x)) throw new Error("The original scans for this slide are gone.");
-  const jpeg = await jobs.call("full", { blobs: originals as Blob[], rotation: g.rotation, params: g.params, quality });
+  const jpeg = await jobs.call("full", { blobs: originals as Blob[], rotation: g.rotation, mirror: !!g.mirror, params: g.params, quality });
   const info = readExif(await originals[0]!.slice(0, 128 * 1024).arrayBuffer());
   const when = exifTime(photoDate(d, g, index));
   const ifd0: [number, string][] = [
@@ -2645,6 +2660,7 @@ export async function handle(method: string, url: string, body: Body = {}): Prom
       dst.push({ ...snapshot(g), what: snap.what, t: 0 });
       g.params = snap.params;
       g.rotation = snap.rotation;
+      g.mirror = !!snap.mirror;
       g.rot_reason = snap.rot_reason ?? "";
       g.params_source = snap.params_source ?? "";
       stepped = snap.what ?? null;
@@ -2661,7 +2677,9 @@ export async function handle(method: string, url: string, body: Body = {}): Prom
       const what =
         "rotation" in body
           ? "rotation"
-          : "params" in body
+          : "mirror" in body
+            ? "mirror"
+            : "params" in body
             ? "params:" +
               Object.keys(body.params as object)
                 .sort()
@@ -2673,6 +2691,13 @@ export async function handle(method: string, url: string, body: Body = {}): Prom
         if (g.params.local?.length) g.params.local = turnLocal(g.params.local, rot - g.rotation); // masks turn with the picture
         g.rotation = rot;
         g.rot_reason = "manual";
+      }
+      if ("mirror" in body && !!body.mirror !== !!g.mirror) {
+        // flip what's on screen left-right: the scan is mirrored before it's turned, so the
+        // rotation, straighten, crop and masks all turn the other way to keep the photo in place
+        g.mirror = !!body.mirror;
+        g.rotation = (360 - g.rotation) % 360;
+        g.params = mirrorParams(g.params);
       }
       if ("params" in body) {
         g.params = cleanParams({ ...g.params, ...(body.params as object) });
@@ -3098,7 +3123,7 @@ export async function handle(method: string, url: string, body: Body = {}): Prom
     editable(g0);
     const [warmth, tint] = await ui.call(
       "neutral",
-      { src: await fusedSrc(d0, g0), rotation: g0.rotation, params: g0.params, x: Number(body.x), y: Number(body.y) },
+      { src: await fusedSrc(d0, g0), rotation: g0.rotation, mirror: !!g0.mirror, params: g0.params, x: Number(body.x), y: Number(body.y) },
       5,
     );
     const { d } = await update(sid, async (d) => {
@@ -3120,15 +3145,15 @@ export async function handle(method: string, url: string, body: Body = {}): Prom
     const set: Partial<Params> = {};
     if (body.apply) {
       if (mount.confidence <= 0) throw new HttpError(400, "No slide mount found around this photo");
-      set.angle = -mount.angle || 0;
+      set.angle = (g0.mirror ? mount.angle : -mount.angle) || 0; // measured on the scan as it came
       if (body.trim)
         set.crop = await ui.call(
           "mountCrop",
           {
             src: await fusedSrc(d0, g0),
-            rotation: g0.rotation,
+            rotation: g0.rotation, mirror: !!g0.mirror,
             params: cleanParams({ ...g0.params, ...set }),
-            box: rotateBox(mount.box, g0.rotation),
+            box: rotateBox(g0.mirror ? mirrorBox(mount.box) : mount.box, g0.rotation),
           },
           5,
         );

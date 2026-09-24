@@ -210,7 +210,7 @@ or drop the folder.
    the right year; slides get one-minute steps so they stay in tray order.
 2. Scans of the same slide at different brightness are grouped automatically and exposure-fused.
    Rotation is guessed from faces (and bright skies); anything it isn't sure about is left alone.
-3. Review with the keyboard: **→** next, **Space** looks good/next, **R** / **Shift-R** rotate,
+3. Review with the keyboard: **→** next, **Space** looks good/next, **R** / **Shift-R** rotate, **H** mirror,
    hold **B** for before, **C** copy colour from the previous slide, **X** skip (never uploaded),
    **M** merge with next, **1–9** leave a scan out of the stack, ✂ between stack scans splits a
    slide. Reviewed slides are rendered at full resolution in the background.

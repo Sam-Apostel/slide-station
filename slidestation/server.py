@@ -342,6 +342,7 @@ def _session_payload(s: Session) -> dict:
     for i, g in enumerate(d["groups"]):
         groups.append({
             **{k: g[k] for k in ("id", "scans", "excluded", "rotation", "rot_reason", "params", "reviewed", "skip")},
+            "mirror": bool(g.get("mirror")),
             "params_source": g.get("params_source", ""),
             "auto_excluded": g.get("auto_excluded", {}),  # scan -> "blurry" / "clipped"
             # original scans deleted after upload: read-only, Immich has the final version
@@ -568,7 +569,7 @@ COALESCE_S = 1.5  # edits to the same settings closer together than this are one
 
 
 def _snapshot(g: dict) -> dict:
-    return {"params": json.loads(json.dumps(g["params"])), "rotation": g["rotation"],
+    return {"params": json.loads(json.dumps(g["params"])), "rotation": g["rotation"], "mirror": bool(g.get("mirror")),
             "rot_reason": g.get("rot_reason", ""), "params_source": g.get("params_source", "")}
 
 
@@ -585,7 +586,7 @@ def _remember(g: dict, what: str) -> None:
 
 
 def _restore(g: dict, snap: dict) -> None:
-    g["params"], g["rotation"] = snap["params"], snap["rotation"]
+    g["params"], g["rotation"], g["mirror"] = snap["params"], snap["rotation"], snap.get("mirror", False)
     g["rot_reason"], g["params_source"] = snap.get("rot_reason", ""), snap.get("params_source", "")
 
 
@@ -629,6 +630,8 @@ def _editable(g: dict) -> None:
 def _edit_label(body: dict) -> str | None:
     if "rotation" in body:
         return "rotation"
+    if "mirror" in body:
+        return "mirror"
     if "params" in body:
         return "params:" + ",".join(sorted(body["params"]))
     return None
@@ -650,6 +653,12 @@ def patch_group(sid: str, gid: str, body: dict = Body(...)):
                 g["params"]["local"] = im.turn_local(g["params"]["local"], rot - g["rotation"])
             g["rotation"] = rot
             g["rot_reason"] = "manual"
+        if "mirror" in body and bool(body["mirror"]) != bool(g.get("mirror")):
+            # flip what's on screen left-right: the scan is mirrored before it's rotated, so the
+            # rotation, straighten, crop and masks all turn the other way to keep the photo in place
+            g["mirror"] = bool(body["mirror"])
+            g["rotation"] = -g["rotation"] % 360
+            g["params"] = im.mirror_params(Params.from_dict(g["params"])).to_dict()
         if "params" in body:
             g["params"] = Params.from_dict({**g["params"], **body["params"]}).to_dict()
             g["params_source"] = "manual"
@@ -1146,6 +1155,7 @@ def _split(s: Session, g: dict, scan: str) -> bool:
         return False
     tail = s.new_group(g["scans"][at:], g["rotation"], g["rot_reason"])
     tail["params"] = dict(g["params"])
+    tail["mirror"] = bool(g.get("mirror"))
     tail["excluded"] = [x for x in g.get("excluded", []) if x in tail["scans"]]
     if g.get("tags"):
         tail["tags"] = list(g["tags"])
@@ -1408,7 +1418,7 @@ def people_face(sid: str, gid: str, n: str, v: str = ""):
         face = None
     if not face:
         raise HTTPException(404)
-    a = people.face_crop(im.rotate_arr(wf.fused_proxy(s, g), entry.get("rot", 0)), face["box"])
+    a = people.face_crop(im.orient(wf.fused_proxy(s, g), entry.get("rot", 0), entry.get("mirror", False)), face["box"])
     fresh = v and v == entry.get("key")
     return Response(im.to_jpeg_bytes(a, 85), media_type="image/jpeg",
                     headers={"Cache-Control": "max-age=31536000" if fresh else "no-store"})
@@ -1468,7 +1478,7 @@ def pick_neutral(sid: str, gid: str, body: dict = Body(...)):
     g = s.group(gid)
     _editable(g)
     p = Params.from_dict(g["params"])
-    a = im.rotate_arr(wf.fused_proxy(s, g), g["rotation"])  # the preview's frame
+    a = im.orient(wf.fused_proxy(s, g), g["rotation"], g.get("mirror", False))  # the preview's frame
     warmth, tint = im.neutral_balance(a, p, float(body["x"]), float(body["y"]))
     with lock:
         s = _session(sid)
@@ -1499,11 +1509,13 @@ def straighten_mount(sid: str, gid: str, body: dict = Body(default={})):
     if body.get("apply"):
         if m["confidence"] <= 0:
             raise HTTPException(400, "No slide mount found around this photo")
-        set_params["angle"] = -m["angle"] or 0.0
+        mirror = g.get("mirror", False)  # the mount was measured on the scan as it came
+        set_params["angle"] = (m["angle"] if mirror else -m["angle"]) or 0.0
         if body.get("trim"):
-            a = im.rotate_arr(wf.fused_proxy(s, g), g["rotation"])  # the preview's frame
+            a = im.orient(wf.fused_proxy(s, g), g["rotation"], mirror)  # the preview's frame
             p = Params.from_dict({**g["params"], **set_params})
-            set_params["crop"] = im.mount_crop(a, p, im.rotate_box(m["box"], g["rotation"]))
+            box = im.mirror_box(m["box"]) if mirror else m["box"]
+            set_params["crop"] = im.mount_crop(a, p, im.rotate_box(box, g["rotation"]))
     with lock:
         s = _session(sid)
         g = s.group(gid)

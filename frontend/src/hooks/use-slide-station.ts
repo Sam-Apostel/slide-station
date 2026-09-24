@@ -250,6 +250,13 @@ export function useSlideStation() {
     if (g) patchGroup({ rotation: (g.rotation + d + 360) % 360 });
   };
 
+  /** Flip the slide left-right, for one that went through the scanner the wrong way round. */
+  const mirror = () => {
+    if (!editable()) return;
+    const g = ref.current.session?.groups[ref.current.sel];
+    if (g) patchGroup({ mirror: !g.mirror });
+  };
+
   const review = async () => {
     const g = ref.current.session?.groups[ref.current.sel];
     if (!g) return;
@@ -480,6 +487,7 @@ export function useSlideStation() {
   const STEP_LABEL: Record<string, string> = {
     mount: "straighten to mount",
     rotation: "rotation",
+    mirror: "mirror",
     fit: "curve fit",
     neutral: "white balance pick",
     learned: "learned settings",
@@ -912,6 +920,7 @@ export function useSlideStation() {
     select,
     setParam,
     rotate,
+    mirror,
     review,
     developStep,
     toggleSkip,

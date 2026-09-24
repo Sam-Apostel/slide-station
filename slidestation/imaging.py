@@ -135,6 +135,28 @@ def rotate_arr(a: np.ndarray, rot: int) -> np.ndarray:
     return np.ascontiguousarray(np.rot90(a, k))
 
 
+def orient(a: np.ndarray, rot: int, mirror: bool = False) -> np.ndarray:
+    """A slide's frame: mirrored left-right first (a slide scanned the wrong way round), then rotated."""
+    return rotate_arr(a[:, ::-1] if mirror else a, rot)
+
+
+def mirror_params(p: Params) -> Params:
+    """The same frame mirrored left-right: straighten turns the other way, the crop and masks flip across."""
+    p.angle = -p.angle if p.angle else 0.0
+    if p.crop:
+        l, t, r, b = p.crop
+        p.crop = [round(1 - r, 4), t, round(1 - l, 4), b]
+    if p.local:
+        p.local = mirror_local(p.local)
+    return p
+
+
+def mirror_box(box: list) -> list:
+    """A mount box [l, t, r, b] (0..1, None = not found) of a scan mirrored left-right."""
+    l, t, r, b = box
+    return [None if r is None else round(1 - r, 4), t, None if l is None else round(1 - l, 4), b]
+
+
 def _faces_in(bgr: np.ndarray) -> np.ndarray:
     """YuNet on a uint8 BGR image: rows of (x, y, w, h, 5 landmarks x/y, score)."""
     global _detector
@@ -1132,6 +1154,25 @@ def turn_local(local: list, rot: int) -> list:
         elif a["kind"] == "radial":
             a["center"] = pt(a["center"])
             a["angle"] = round((a["angle"] + 90 * k + 180) % 360 - 180, 4) + 0.0
+        else:
+            for s in a["strokes"]:
+                s["points"] = [pt(p) for p in s["points"]]
+        out.append(a)
+    return out
+
+
+def mirror_local(local: list) -> list:
+    """Local adjustments of a slide mirrored left-right, so they stay on the picture."""
+    def pt(p):
+        return [round(1 - p[0], 4) + 0.0, p[1]]
+
+    out = []
+    for a in json.loads(json.dumps(local)):
+        if a["kind"] == "graduated":
+            a["start"], a["end"] = pt(a["start"]), pt(a["end"])
+        elif a["kind"] == "radial":
+            a["center"] = pt(a["center"])
+            a["angle"] = -a["angle"] + 0.0
         else:
             for s in a["strokes"]:
                 s["points"] = [pt(p) for p in s["points"]]

@@ -481,6 +481,12 @@ export function rotateBox(box: (number | null)[], rot: number): (number | null)[
   return [l, t, r, b];
 }
 
+/** A mount box [l, t, r, b] of a scan mirrored left-right (imaging.mirror_box). */
+export function mirrorBox(box: (number | null)[]): (number | null)[] {
+  const [l, t, r, b] = box;
+  return [r === null ? null : round(1 - r, 4), t, l === null ? null : round(1 - l, 4), b];
+}
+
 /** The crop that trims to the mount's window once straightened by p.angle (imaging.mount_crop). */
 export function mountCrop(a: RGB, p: Params, box: (number | null)[]): [number, number, number, number] | null {
   const { width: w, height: h } = a;
@@ -1249,6 +1255,27 @@ export function turnLocal(local: Local[], rot: number): Local[] {
     }
     return { ...a, strokes: a.strokes.map((s) => ({ ...s, points: s.points.map(pt) })) };
   });
+}
+
+/** imaging.mirror_local: the adjustments of a slide mirrored left-right. */
+export function mirrorLocal(local: Local[]): Local[] {
+  const pt = (p: Pt): Pt => [round(1 - p[0], 4) || 0, p[1]];
+  return local.map((a) => {
+    if (a.kind === "graduated") return { ...a, start: pt(a.start), end: pt(a.end) };
+    if (a.kind === "radial") return { ...a, center: pt(a.center), angle: -a.angle || 0 };
+    return { ...a, strokes: a.strokes.map((s) => ({ ...s, points: s.points.map(pt) })) };
+  });
+}
+
+/** imaging.mirror_params: the same frame mirrored left-right (straighten, crop and masks flip across). */
+export function mirrorParams(p: Params): Params {
+  const out = { ...p, angle: -p.angle || 0 };
+  if (p.crop) {
+    const [l, t, r, b] = p.crop;
+    out.crop = [round(1 - r, 4), t, round(1 - l, 4), b];
+  }
+  if (p.local?.length) out.local = mirrorLocal(p.local);
+  return out;
 }
 
 /**

@@ -285,7 +285,10 @@ def render_key(g: dict) -> str:
     # settings still at their neutral value are left out, so slides uploaded before a setting
     # existed (curves, straighten, crop, dust, mould, Newton rings, local adjustments) don't become "changed"
     params = {k: v for k, v in g["params"].items() if not (k in NEUTRAL_EXTRAS and v == NEUTRAL_EXTRAS[k])}
-    k = json.dumps([active_scans(g), g["rotation"], params], sort_keys=True)
+    k = [active_scans(g), g["rotation"], params]
+    if g.get("mirror"):  # left out when off, like the neutral settings above
+        k.append("mirror")
+    k = json.dumps(k, sort_keys=True)
     return hashlib.sha1(k.encode()).hexdigest()[:12]
 
 
@@ -294,6 +297,8 @@ def tone_key(g: dict) -> str:
     p = g["params"]
     extra = [p["dust"]] if p.get("dust") else []  # only when on, so existing keys stay the same
     extra += [[k, p[k]] for k in ("mould", "newton") if p.get(k)]  # likewise, named: never a dust value
+    if g.get("mirror"):
+        extra.append("mirror")
     k = json.dumps([active_scans(g), g["rotation"], p.get("strength"), p.get("trim"), p.get("angle", 0.0),
                     p.get("crop"), *extra])
     return hashlib.sha1(k.encode()).hexdigest()[:12]

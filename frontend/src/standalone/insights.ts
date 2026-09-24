@@ -23,6 +23,7 @@ export const CAPTIONS_ID = "florence-2-base"; // captions.MODEL_ID (desktop app 
  *  the models that ran; with captions, whether the slide has a caption of its own. */
 export function insightsKey(g: GroupData, models: string[]): string {
   const k: unknown[] = [activeScans(g), new PyInt(g.rotation), ...models];
+  if (g.mirror) k.push("mirror"); // sign OCR reads the right way round
   if (models.includes(CAPTIONS_ID)) k.push(!!g.caption);
   return sha1Hex(pyDumps(k)).slice(0, 12);
 }

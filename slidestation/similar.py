@@ -107,7 +107,8 @@ def update(sid: str, fn) -> dict:
 
 def slide_key(g: dict) -> str:
     """What a slide's embedding was computed from: its blended scans, turned upright."""
-    return hashlib.sha1(json.dumps([active_scans(g), g["rotation"], MODEL_ID]).encode()).hexdigest()[:12]
+    k = [active_scans(g), g["rotation"], MODEL_ID] + (["mirror"] if g.get("mirror") else [])
+    return hashlib.sha1(json.dumps(k).encode()).hexdigest()[:12]
 
 
 def record_slide(sid: str, g: dict, emb: np.ndarray, rgb: np.ndarray) -> None:
@@ -188,7 +189,7 @@ def step(s: Session, b) -> bool:
     g, scan, look = _todo(s, load(s.id))
     if g is not None:
         try:
-            rgb = im.rotate_arr(wf.fused_proxy(s, g), g["rotation"])
+            rgb = im.orient(wf.fused_proxy(s, g), g["rotation"], g.get("mirror", False))
             record_slide(s.id, g, b.image_embed(rgb), rgb)
         except Exception as ex:  # e.g. an unreadable scan
             print("similar:", ex)
@@ -205,7 +206,7 @@ def step(s: Session, b) -> bool:
         return True
     if look is not None:
         try:
-            found = measure_eyes(im.rotate_arr(wf.fused_proxy(s, look), look["rotation"]))
+            found = measure_eyes(im.orient(wf.fused_proxy(s, look), look["rotation"], look.get("mirror", False)))
         except Exception as ex:  # an unreadable scan
             print("eyes:", ex)
             found = {"model": eyes.MODEL_ID, "ear": [], "error": str(ex) or "error"}

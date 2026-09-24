@@ -399,6 +399,8 @@ def insights_key(g: dict, models: list[str] | None = None) -> str:
     has a caption of its own: a slide with one isn't captioned, clearing it asks for a suggestion."""
     models = active_models() if models is None else models
     k = [active_scans(g), g["rotation"], *models]  # tags alone: the same key as before captions
+    if g.get("mirror"):  # sign OCR reads the right way round
+        k.append("mirror")
     if captions.MODEL_ID in models:
         k.append(bool(g.get("caption")))
     return hashlib.sha1(json.dumps(k).encode()).hexdigest()[:12]
@@ -417,7 +419,7 @@ def analyse(s, g: dict, models: list[str]) -> dict:
 def _analyse(s, g: dict, models: list[str]) -> tuple[dict, np.ndarray | None, np.ndarray]:
     """(suggestions, the upright blend's CLIP embedding or None without the tag model, the upright
     blend): the embedding is also what near-duplicates and scenes are found with (similar.py)."""
-    rgb = im.rotate_arr(wf.fused_proxy(s, g), g["rotation"])
+    rgb = im.orient(wf.fused_proxy(s, g), g["rotation"], g.get("mirror", False))
     out: dict = {"key": insights_key(g, models)}
     emb = None
     if MODEL_ID in models:

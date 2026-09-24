@@ -101,7 +101,7 @@ export const emptyEmbeddings = (): Embeddings => ({ slides: {}, scans: {} });
 
 /** What a slide's embedding was computed from: its blended scans, turned upright. */
 export const slideKey = (g: GroupData) =>
-  sha1Hex(pyDumps([activeScans(g), new PyInt(g.rotation), MODEL_ID])).slice(0, 12);
+  sha1Hex(pyDumps([activeScans(g), new PyInt(g.rotation), MODEL_ID, ...(g.mirror ? ["mirror"] : [])])).slice(0, 12);
 
 /** similar.normalise: exposure taken out (luminance 1st..99th percentile to 0.02..0.98). */
 export function normalise(a: RGB): RGB {

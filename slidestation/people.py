@@ -107,7 +107,8 @@ def embed_faces(rgb: np.ndarray) -> list[dict]:
 
 def face_key(g: dict) -> str:
     """What a slide's faces were found on: its blended scans, turned upright."""
-    return hashlib.sha1(json.dumps([active_scans(g), g["rotation"]]).encode()).hexdigest()[:12]
+    k = [active_scans(g), g["rotation"]] + (["mirror"] if g.get("mirror") else [])
+    return hashlib.sha1(json.dumps(k).encode()).hexdigest()[:12]
 
 
 def _pack(e: np.ndarray) -> str:
@@ -168,7 +169,7 @@ def record(sid: str, g: dict, rgb: np.ndarray) -> list[dict]:
                 match = f"{sid}/{gid}/{n}"
             used.add(match)
             faces.append({"id": match, "box": f["box"], "score": f["score"], "emb": _pack(f["emb"])})
-        d[gid] = {"key": key, "rot": g["rotation"], "faces": faces}
+        d[gid] = {"key": key, "rot": g["rotation"], "mirror": bool(g.get("mirror")), "faces": faces}
 
     update_faces(sid, commit)
     return found

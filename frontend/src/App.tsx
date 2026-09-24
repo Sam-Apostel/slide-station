@@ -770,6 +770,7 @@ function useKeyboard(
       else if (k === " " || k === "Enter") a.review();
       else if (k === "r") a.rotate(90);
       else if (k === "R") a.rotate(-90);
+      else if (k === "h" || k === "H") a.mirror();
       else if (k === "x" || k === "X") a.toggleSkip();
       else if (k === "m" || k === "M") a.mergeNext();
       else if (k === "c" || k === "C") a.copyPrev();

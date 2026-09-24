@@ -390,7 +390,9 @@ def import_scans(job: Job, sid: str, source: str, label: str | None = None) -> N
                 fresh.data["groups"].append(g)
                 target = g
             if rot and target.get("rot_reason") != "manual":
-                target["rotation"], target["rot_reason"] = rot
+                # guessed on the scans as they came: a mirrored slide turns the other way
+                target["rotation"] = -rot[0] % 360 if target.get("mirror") else rot[0]
+                target["rot_reason"] = rot[1]
             target["feat"] = feats
             target["mount"] = mount
             if not extend and straighten_to_mount(target):
@@ -503,7 +505,7 @@ def preview(s: Session, gid: str, size: int, before: bool = False, uncropped: bo
         h, w = a.shape[:2]
         f = 480 / max(h, w)
         a = np.asarray(Image.fromarray((a * 255).astype(np.uint8)).resize((int(w * f), int(h * f)), Image.BILINEAR)).astype(np.float32) / 255
-    a = im.rotate_arr(a, g["rotation"])
+    a = im.orient(a, g["rotation"], g.get("mirror", False))
     p = im.Params.from_dict(g["params"])
     # "before" is the untouched scan, but framed like the developed photo so the two line up
     a = im.before_view(a, p, crop=not uncropped) if before else im.develop(a, p, crop=not uncropped)
@@ -603,7 +605,7 @@ def render_export(sid: str, gid: str, quality: int) -> Path | None:
     scans = active_scans(g)
     with _export_lock:  # full-resolution blends take a few GB: FULL_RENDERS at once
         a = im.fuse([im.load_full(str(s.original_path(x))) for x in scans])
-        a = im.rotate_arr(a, g["rotation"])
+        a = im.orient(a, g["rotation"], g.get("mirror", False))
         a = im.develop(a, im.Params.from_dict(g["params"]))
         out = Image.fromarray((a * 255 + 0.5).astype(np.uint8))
         del a
@@ -673,7 +675,7 @@ def full_image(s: Session, gid: str) -> np.ndarray:
         else:
             with _export_lock:
                 f = im.fuse([im.load_full(str(s.original_path(x))) for x in active_scans(g)])
-                f = im.develop(im.rotate_arr(f, g["rotation"]), im.Params.from_dict(g["params"]))
+                f = im.develop(im.orient(f, g["rotation"], g.get("mirror", False)), im.Params.from_dict(g["params"]))
                 a = (f * 255 + 0.5).astype(np.uint8)
                 del f
         _full.update(key=key, img=a)
@@ -803,7 +805,7 @@ def find_faces(sid: str, gid: str) -> bool:
         return False
     if not people.stale(g, people.load_faces(sid).get(gid)):
         return False
-    people.record(sid, g, im.rotate_arr(fused_proxy(s, g), g["rotation"]))
+    people.record(sid, g, im.orient(fused_proxy(s, g), g["rotation"], g.get("mirror", False)))
     return True
 
 

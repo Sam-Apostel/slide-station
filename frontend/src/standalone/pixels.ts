@@ -58,6 +58,24 @@ export function rotated(a: RGB, degrees: number): RGB {
   return out;
 }
 
+/** Mirrored left-right. */
+export function mirrored(a: RGB): RGB {
+  const { width: w, height: h } = a;
+  const out = rgb(w, h);
+  for (let y = 0; y < h; y++)
+    for (let x = 0; x < w; x++) {
+      const si = (y * w + (w - 1 - x)) * 3;
+      const di = (y * w + x) * 3;
+      out.data[di] = a.data[si];
+      out.data[di + 1] = a.data[si + 1];
+      out.data[di + 2] = a.data[si + 2];
+    }
+  return out;
+}
+
+/** A slide's frame (imaging.orient): mirrored first when it was scanned the wrong way round, then turned. */
+export const oriented = (a: RGB, degrees: number, mirror = false) => rotated(mirror ? mirrored(a) : a, degrees);
+
 /** Luma as OpenCV's RGB2GRAY computes it. */
 export function gray(a: RGB): Plane {
   const out = plane(a.width, a.height);

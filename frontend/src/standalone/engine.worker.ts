@@ -7,7 +7,7 @@ import * as im from "./imaging";
 import { readExif } from "./exif";
 import { fuseSources, materialise, rgba8Source, type RowSource } from "./fusion";
 import { features } from "./learning";
-import { cropped, fitting, resized, rgb, rotated, type RGB } from "./pixels";
+import { cropped, fitting, oriented, resized, rgb, type RGB } from "./pixels";
 import { assembleStrips, encodeJpegJS, stripRows, STRIP_AREA } from "./strips";
 import { detect, detectorFrame, faceVotes, freeInputSize, type Run } from "./yunet";
 import * as people from "./people";
@@ -174,11 +174,16 @@ async function encode(a: RGB, quality: number, maxEdge?: number): Promise<Blob> 
   return encodeJpegJS(s.width, s.height, px, quality);
 }
 
-/** Clockwise rotation of RGBA bytes (a quarter of the memory of rotating floats). */
-function rotateRGBA(width: number, height: number, bytes: Uint8ClampedArray, degrees: number) {
+/** Clockwise rotation of RGBA bytes (a quarter of the memory of rotating floats), mirrored
+ *  left-right first when the slide was scanned the wrong way round. */
+function rotateRGBA(width: number, height: number, bytes: Uint8ClampedArray, degrees: number, mirror = false) {
   const rot = ((degrees % 360) + 360) % 360;
-  if (!rot) return { width, height, bytes };
+  if (!rot && !mirror) return { width, height, bytes };
   const src = new Uint32Array(bytes.buffer, bytes.byteOffset, width * height);
+  if (mirror) {
+    for (let y = 0; y < height; y++) src.subarray(y * width, (y + 1) * width).reverse(); // in place: decoded for this
+    if (!rot) return { width, height, bytes };
+  }
   const ow = rot === 180 ? width : height;
   const oh = rot === 180 ? height : width;
   const out = new Uint32Array(ow * oh);
@@ -192,11 +197,11 @@ function rotateRGBA(width: number, height: number, bytes: Uint8ClampedArray, deg
 }
 
 /** Full resolution: blend the originals, turn, develop (what an export and 1:1 zoom show). */
-async function renderFull(blobs: Blob[], rotation: number, params: Params): Promise<RGB> {
+async function renderFull(blobs: Blob[], rotation: number, params: Params, mirror = false): Promise<RGB> {
   const decoded = [];
   for (const b of blobs) {
     const d = await decodeRGBA(b);
-    decoded.push(rotateRGBA(d.width, d.height, d.bytes, rotation)); // turning bytes first is cheaper than floats after
+    decoded.push(rotateRGBA(d.width, d.height, d.bytes, rotation, mirror)); // turning bytes first is cheaper than floats after
   }
   const sources = decoded.map((d) => rgba8Source(d.width, d.height, d.bytes));
   const a = sources.length === 1 ? materialise(sources[0]) : fuseSources(sources);
@@ -322,21 +327,23 @@ const ops = {
   async mountCrop({
     src,
     rotation,
+    mirror,
     params,
     box,
   }: {
     src: Src;
     rotation: number;
+    mirror?: boolean;
     params: Params;
     box: (number | null)[];
   }) {
-    return im.mountCrop(rotated(await load(src), rotation), params, box);
+    return im.mountCrop(oriented(await load(src), rotation, mirror), params, box);
   },
 
-  async render(a: { src: Src; rotation: number; params: Params; size: number; before: boolean; uncropped: boolean }) {
+  async render(a: { src: Src; rotation: number; mirror?: boolean; params: Params; size: number; before: boolean; uncropped: boolean }) {
     let img = await load(a.src);
     if (a.size <= 400) img = fitting(img, 480); // develop on a smaller image for thumbnails
-    img = rotated(img, a.rotation);
+    img = oriented(img, a.rotation, a.mirror);
     const out = a.before ? im.beforeView(img, a.params, !a.uncropped) : im.develop(img, a.params, !a.uncropped);
     return encode(out, 85, a.size);
   },
@@ -354,14 +361,28 @@ const ops = {
     return im.fitCurves(im.toneBase(await load(src), params), params.curves);
   },
 
-  async neutral({ src, rotation, params, x, y }: { src: Src; rotation: number; params: Params; x: number; y: number }) {
-    return im.neutralBalance(rotated(await load(src), rotation), params, x, y);
+  async neutral({
+    src,
+    rotation,
+    mirror,
+    params,
+    x,
+    y,
+  }: {
+    src: Src;
+    rotation: number;
+    mirror?: boolean;
+    params: Params;
+    x: number;
+    y: number;
+  }) {
+    return im.neutralBalance(oriented(await load(src), rotation, mirror), params, x, y);
   },
 
   /** CLIP's embedding of a slide's blend turned upright (the scene tags and look-alikes, insights.py),
    *  with its sharpness / clipping for "keep the best" (similar.record_slide). */
-  async clipImage({ model, src, rotation }: { model: ModelRef; src: Src; rotation: number }) {
-    const a = rotated(await load(src), rotation);
+  async clipImage({ model, src, rotation, mirror }: { model: ModelRef; src: Src; rotation: number; mirror?: boolean }) {
+    const a = oriented(await load(src), rotation, mirror);
     return { emb: await clipEmbed(model, a), quality: im.scanQuality(a) };
   },
 
@@ -406,15 +427,17 @@ const ops = {
     chars,
     src,
     rotation,
+    mirror,
   }: {
     det: ModelRef;
     rec: ModelRef;
     chars: string[];
     src: Src;
     rotation: number;
+    mirror?: boolean;
   }) {
     const ort = await onnx();
-    const a = rotated(await load(src), rotation);
+    const a = oriented(await load(src), rotation, mirror);
     const img = { width: a.width, height: a.height, data: toBytes(a) };
     const [dw, dh] = ocr.detSize(a.width, a.height);
     const d = await session(det);
@@ -435,10 +458,10 @@ const ops = {
 
   /** The clear faces on a slide's blend turned upright, each described by SFace (people.embed_faces):
    *  YuNet as for the rotation vote, faces ≥ 0.7 and ≥ 3 % of the width, alignCrop, the network. */
-  async faces({ sface, src, rotation }: { sface: ModelRef; src: Src; rotation: number }) {
+  async faces({ sface, src, rotation, mirror }: { sface: ModelRef; src: Src; rotation: number; mirror?: boolean }) {
     const run = await faceDetector();
     if (!run) throw new Error("Face detection is unavailable in this browser");
-    const a = rotated(await load(src), rotation);
+    const a = oriented(await load(src), rotation, mirror);
     const frame = detectorFrame(a);
     const [sx, sy] = [Math.fround(a.width / frame.width), Math.fround(a.height / frame.height)]; // numpy: float32
     let bgr: { width: number; height: number; data: Uint8Array } | null = null;
@@ -475,10 +498,10 @@ const ops = {
 
   /** How open the eyes are on a slide's blend turned upright (eyes.measure): YuNet as for people, the
    *  faces that count cut out to 256 px, the face mesh, each face's eye aspect ratio. */
-  async eyes({ model, src, rotation }: { model: ModelRef; src: Src; rotation: number }) {
+  async eyes({ model, src, rotation, mirror }: { model: ModelRef; src: Src; rotation: number; mirror?: boolean }) {
     const run = await faceDetector();
     if (!run) throw new Error("Face detection is unavailable in this browser");
-    const a = rotated(await load(src), rotation);
+    const a = oriented(await load(src), rotation, mirror);
     const frame = detectorFrame(a);
     const [sx, sy] = [Math.fround(a.width / frame.width), Math.fround(a.height / frame.height)]; // numpy: float32
     const found = (await detect(frame, 0, run)).map((f) => ({
@@ -510,8 +533,8 @@ const ops = {
   },
 
   /** A face cut from the picture for the People dialog (people.face_crop): 128 px JPEG. */
-  async faceCrop({ src, rotation, box }: { src: Src; rotation: number; box: number[] }) {
-    const a = rotated(await load(src), rotation);
+  async faceCrop({ src, rotation, mirror, box }: { src: Src; rotation: number; mirror?: boolean; box: number[] }) {
+    const a = oriented(await load(src), rotation, mirror);
     const [x0, y0, x1, y1] = people.cropBox(a.width, a.height, box);
     return encode(resized(cropped(a, y0, y1, x0, x1), 128, 128), 85);
   },
@@ -527,15 +550,17 @@ const ops = {
   async full({
     blobs,
     rotation,
+    mirror,
     params,
     quality,
   }: {
     blobs: Blob[];
     rotation: number;
+    mirror?: boolean;
     params: Params;
     quality: number;
   }) {
-    return encode(await renderFull(blobs, rotation, params), quality);
+    return encode(await renderFull(blobs, rotation, params, mirror), quality);
   },
 
   /**
@@ -547,19 +572,21 @@ const ops = {
     exported,
     blobs,
     rotation,
+    mirror,
     params,
   }: {
     key: string;
     exported: Blob | null;
     blobs: Blob[];
     rotation: number;
+    mirror?: boolean;
     params: Params;
   }) {
     if (zoomed?.key !== key) {
       zoomed = null; // free the previous slide first
       if (exported) zoomed = { key, ...(await decodeRGBA(exported)) };
       else {
-        const a = await renderFull(blobs, rotation, params);
+        const a = await renderFull(blobs, rotation, params, mirror);
         const bytes = new Uint8ClampedArray(a.width * a.height * 4);
         for (let i = 0, n = a.width * a.height; i < n; i++) {
           bytes[i * 4] = a.data[i * 3] * 255;

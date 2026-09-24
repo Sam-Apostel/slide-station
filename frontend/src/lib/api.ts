@@ -165,6 +165,8 @@ export type Group = {
   /** null: not looked for yet (a tray from before mount detection, or the scans changed). */
   mount: Mount | null;
   rotation: number;
+  /** Scanned the wrong way round: shown mirrored left-right. */
+  mirror: boolean;
   rot_reason: string;
   params: Params;
   params_source: string;

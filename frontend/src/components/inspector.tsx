@@ -18,6 +18,7 @@ import {
   FolderOpen,
   HardDriveDownload,
   Lock,
+  FlipHorizontal2,
   Merge,
   RotateCcw,
   RotateCw,
@@ -90,9 +91,10 @@ function useSections() {
   return props;
 }
 
-function frameNote(g: { rotation: number; rot_reason: string; params: { crop: unknown; angle: number } }) {
+function frameNote(g: { rotation: number; rot_reason: string; mirror: boolean; params: { crop: unknown; angle: number } }) {
   return [
     rotationNote(g.rotation, g.rot_reason) || "upright",
+    g.mirror && "mirrored",
     g.params.crop && "cropped",
     g.params.angle && "straightened",
   ]
@@ -245,6 +247,17 @@ export function Inspector({
                   <Tip label="Upside down">
                     <ProButton plain onClick={() => app.rotate(180)}>
                       180°
+                    </ProButton>
+                  </Tip>
+                  <Tip label="Mirror" keys="H">
+                    <ProButton
+                      plain
+                      aria-label="Mirror"
+                      aria-pressed={g.mirror || undefined}
+                      data-on={g.mirror || undefined}
+                      onClick={app.mirror}
+                    >
+                      <FlipHorizontal2 />
                     </ProButton>
                   </Tip>
                 </ProButtonGroup>

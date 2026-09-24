@@ -43,6 +43,7 @@ export type ImmichRecord = {
 export type Snapshot = {
   params: Params;
   rotation: number;
+  mirror?: boolean;
   rot_reason: string;
   params_source: string;
   what?: string;
@@ -54,6 +55,8 @@ export type GroupData = {
   scans: string[];
   excluded: string[];
   rotation: number;
+  /** Scanned the wrong way round: mirrored left-right before it's turned. */
+  mirror?: boolean;
   rot_reason: string;
   params: Params;
   reviewed: boolean;
@@ -250,7 +253,9 @@ export function renderKey(g: GroupData): string {
   // settings still at their neutral value are left out, so slides uploaded before a setting
   // existed (curves, straighten, crop, dust, mould, Newton rings, local adjustments) don't become "changed"
   const params = Object.fromEntries(Object.entries(g.params).filter(([k, v]) => !isNeutral(k, v)));
-  return sha1Hex(pyDumps([activeScans(g), new PyInt(g.rotation), params], true)).slice(0, 12);
+  const k: unknown[] = [activeScans(g), new PyInt(g.rotation), params];
+  if (g.mirror) k.push("mirror"); // left out when off, like the neutral settings above
+  return sha1Hex(pyDumps(k, true)).slice(0, 12);
 }
 
 /** Identifies the tone curve's input (what its histogram shows). */
@@ -266,6 +271,7 @@ export function toneKey(g: GroupData): string {
       p.crop ?? null,
       ...(p.dust ? [p.dust] : []), // only when on, so existing keys stay the same
       ...(["mould", "newton"] as const).filter((k) => p[k]).map((k) => [k, p[k]]), // likewise, named
+      ...(g.mirror ? ["mirror"] : []),
     ]),
   ).slice(0, 12);
 }

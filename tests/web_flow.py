@@ -150,6 +150,19 @@ async () => {
 """
 
 # How light the shown photo is: mean of the top fifth, and of a box around the middle (0..1)
+# the photo as an 8 x 8 grid of mean brightness, rows top to bottom (the mirror check)
+PHOTO_GRID = """
+() => {
+  const img = document.querySelector('img.ss-photo[alt^="Slide"]');
+  const c = document.createElement("canvas");
+  [c.width, c.height] = [8, 8];
+  const x = c.getContext("2d");
+  x.drawImage(img, 0, 0, 8, 8);
+  const d = x.getImageData(0, 0, 8, 8).data;
+  return [...Array(8)].map((_, y) => [...Array(8)].map((_, i) => (d[(y * 8 + i) * 4] + d[(y * 8 + i) * 4 + 1] + d[(y * 8 + i) * 4 + 2]) / 765));
+}
+"""
+
 PHOTO_LIGHT = """
 () => {
   const img = document.querySelector('img.ss-photo[alt^="Slide"]');
@@ -322,6 +335,20 @@ def main() -> None:
             # ---- develop a few with the keyboard: rotate, fit, crop, undo
             t0 = time.time()
             pg.keyboard.press("r")
+            # mirror (scanned the wrong way round): the photo flips left-right, and back
+            photo_src = lambda: pg.locator('img.ss-photo[alt^="Slide"]').get_attribute("src")  # noqa: E731
+            pg.wait_for_timeout(800)
+            src, grid = photo_src(), pg.evaluate(PHOTO_GRID)
+            pg.keyboard.press("h")
+            pg.wait_for_function("s => document.querySelector('img.ss-photo[alt^=\"Slide\"]')?.src !== s", arg=src,
+                                 timeout=15_000)
+            pg.wait_for_timeout(500)
+            flipped = pg.evaluate(PHOTO_GRID)
+            err = max(abs(a - b) for r0, r1 in zip(grid, flipped) for a, b in zip(r0[::-1], r1))
+            assert err < 0.08, f"mirror: {err:.3f} from the flipped photo"
+            expect(pg.get_by_role("button", name="Mirror", exact=True)).to_have_attribute("aria-pressed", "true")
+            pg.keyboard.press("h")
+            expect(pg.get_by_role("button", name="Mirror", exact=True)).not_to_have_attribute("aria-pressed", "true")
             pg.keyboard.press("f")
             pg.wait_for_timeout(500)
             pg.keyboard.press("k")
