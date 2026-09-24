@@ -387,6 +387,97 @@ def ocr_cases() -> dict:
     return out
 
 
+def people_cases() -> dict:
+    """Faces -> people (people.py): clustering, the people.json edits, and alignCrop's warp."""
+    import cv2
+
+    from slidestation import people
+
+    def person(n, noise, seed):
+        r = np.random.default_rng(seed)
+        c = unit(r.normal(size=128))
+        return [unit(c + noise * r.normal(size=128) / np.sqrt(128)) for _ in range(n)]
+
+    def packed(vs):
+        return [similar._pack(v) for v in vs]
+
+    def vecs(ps):
+        return np.stack([similar.unpack(p) for p in ps])
+
+    out: dict = {"agglomerate": []}
+    rng = np.random.default_rng(11)
+    ab = person(5, 0.5, 1) + person(3, 0.5, 2) + person(1, 0.5, 3)
+    ab = [ab[i] for i in rng.permutation(len(ab))]
+    many = [v for k in range(6) for v in person(4 + k, 0.9 + 0.1 * k, 20 + k)]
+    many = [many[i] for i in rng.permutation(len(many))]
+    x = unit(rng.normal(size=128))
+    for emb, clusters, rejected in [(packed(ab), [], {}), (packed(person(4, 0.5, 1)), [[0], [1]], {}),
+                                     (packed(person(4, 0.5, 1)), [[], [0, 1]], {}),
+                                     (packed(person(4, 0.5, 1)), [[0, 1, 2]], {3: [0]}),
+                                     (packed(person(4, 0.5, 1) + person(1, 0.5, 1)[:1]), [[0, 1, 2]], {3: [0]}),
+                                     (packed([x, unit(x + unit(rng.normal(size=128)) * 1.6), unit(rng.normal(size=128))]), [], {}),
+                                     (packed(many), [[0, 5], [9]], {3: [0], 7: [1]}), ([], [], {})]:
+        e = vecs(emb) if emb else np.zeros((0, 128), np.float32)
+        out["agglomerate"].append({"emb": emb, "clusters": clusters, "rejected": rejected,
+                                   "out": people.agglomerate(e, clusters, {k: set(v) for k, v in rejected.items()})})
+
+    # people.json through refresh and the dialog's edits, the faces and the file kept in memory
+    ann, bob, cat = person(4, 0.4, 31), person(3, 0.4, 32), person(2, 0.4, 33)
+    faces = {}
+    for k, v in enumerate(ann + bob + cat):
+        sid, gid = ("t1", f"g{k}") if k < 6 else ("t2", f"h{k}")
+        faces[f"{sid}/{gid}/{k % 2}"] = {"sid": sid, "gid": gid, "emb": similar._pack(v), "box": [0.1, 0.1, 0.2, 0.2],
+                                         "key": "k"}
+    state = {"file": {}}
+    orig = (people.all_faces, people.load_people, people.save_people)
+    shown = {}
+    people.all_faces = lambda: {f: {**v, "emb": similar.unpack(v["emb"])} for f, v in shown.items()}
+    people.load_people = lambda: {"people": json.loads(json.dumps(state["file"].get("people", {}))),
+                                  "rejected": json.loads(json.dumps(state["file"].get("rejected", {}))),
+                                  "next": state["file"].get("next", 1)}
+    people.save_people = lambda d: state.__setitem__("file", json.loads(json.dumps(d)))
+    steps = []
+    try:
+        ids = list(faces)
+        shown.update({f: faces[f] for f in ids[:7]})
+        steps.append({"op": "refresh", "faces": dict(shown), "out": people.refresh()})
+        p1 = next(p for p, v in state["file"]["people"].items() if ids[0] in v["faces"])
+        steps.append({"op": "rename", "args": [p1, "  Ann  Smith "], "out": people.rename(p1, "  Ann  Smith ")})
+        steps.append({"op": "remove", "args": [p1, [ids[1]]], "out": people.remove_faces(p1, [ids[1]])})
+        other = next(p for p in state["file"]["people"] if p != p1)
+        steps.append({"op": "rename", "args": [other, "ann smith"], "out": people.rename(other, "ann smith")})
+        shown.update({f: faces[f] for f in ids[7:]})
+        steps.append({"op": "refresh", "faces": dict(shown), "out": people.refresh()})
+        ps = list(state["file"]["people"])
+        steps.append({"op": "merge", "args": [ps[-1], ps[:1]], "out": people.merge(ps[-1], ps[:1])})
+        for f in ids[:3]:
+            shown.pop(f)
+        steps.append({"op": "refresh", "faces": dict(shown), "out": people.refresh()})
+    finally:
+        people.all_faces, people.load_people, people.save_people = orig
+    out["steps"] = steps
+    out["names"] = {"/".join(k): v for k, v in people.slide_names(state["file"]).items()}
+    out["tag"] = [people.tag_name(n) for n in ("Ann", "A/B", " C ")]
+
+    # alignCrop: the similarity transform to SFace's template and the 112 x 112 warp (the network
+    # itself isn't needed for it: any ONNX file loads)
+    rec = cv2.FaceRecognizerSF.create(str(ROOT / "tests" / "fake_clip" / "vision.onnx"), "")
+    img = pattern(200, 160)
+    out["align"] = []
+    for row in ([60, 40, 70, 80, 78.3, 70.1, 112.6, 69.4, 95.2, 88.8, 82.0, 104.5, 109.7, 103.9, 0.93],
+                [20, 30, 40, 50, 30.5, 45.2, 49.8, 49.9, 39.1, 58.3, 31.7, 66.2, 47.5, 69.0, 0.8],
+                [100, 20, 90, 120, 180.2, 60.0, 190.3, 100.4, 170.8, 90.7, 150.0, 70.1, 160.9, 120.3, 0.75]):
+        a = rec.alignCrop(img, np.array([row], np.float32))
+        out["align"].append({"face": row, "sha1": hashlib.sha1(a.tobytes()).hexdigest(), "sum": int(a.astype(np.int64).sum())})
+    # the face crop for the People dialog: INTER_AREA to 128
+    rgb = pattern(300, 200).astype(np.float32) / 255
+    out["crop"] = []
+    for box in ([0.2, 0.3, 0.1, 0.15], [0.9, 0.85, 0.2, 0.3], [0.0, 0.0, 0.05, 0.05]):
+        c = people.face_crop(rgb, box)
+        out["crop"].append({"box": box, "sum": float(c.astype(np.float64).sum()), "shape": list(c.shape)})
+    return out
+
+
 def main() -> None:
     rng = np.random.default_rng(7)
     with tempfile.TemporaryDirectory() as tmp:
@@ -404,6 +495,7 @@ def main() -> None:
             "images": image_cases(),
             "places": places_cases(),
             "ocr": ocr_cases(),
+            "people": people_cases(),
         }
     if len(sys.argv) > 1:
         d = Path(sys.argv[1])

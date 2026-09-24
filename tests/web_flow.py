@@ -240,10 +240,18 @@ def main() -> None:
             data = (OCR_DIR / name).read_bytes()
             (site / "ppocr" / name).write_bytes(data)
             ocr_files.append([name, name, len(data), "sha256:" + hashlib.sha256(data).hexdigest()])
+    # the face model: any ONNX file stands in (the synthetic slides have no faces for it to describe)
+    (site / "sface").mkdir()
+    sface = (ROOT / "tests" / "fake_clip" / "vision.onnx").read_bytes()
+    (site / "sface" / "face_recognition_sface_2021dec.onnx").write_bytes(sface)
     port = serve(site)
     models = {"clip-vit-b32": {"repo": f"http://127.0.0.1:{port}/clip/", "files": clip_files},
+              "sface": {"repo": f"http://127.0.0.1:{port}/sface/", "files": [
+                  ["face_recognition_sface_2021dec.onnx", "face_recognition_sface_2021dec.onnx", len(sface),
+                   "sha256:" + hashlib.sha256(sface).hexdigest()]]},
               "geonames": {"repo": f"http://127.0.0.1:{port}/geonames/", "files": geo_files},
-              "ppocr-v5-latin": {"repo": f"http://127.0.0.1:{port}/ppocr/", "files": ocr_files}}
+              **({"ppocr-v5-latin": {"repo": f"http://127.0.0.1:{port}/ppocr/", "files": ocr_files}}
+                 if OCR_DIR else {})}
 
     immich_port = free_port()
     immich = subprocess.Popen(
@@ -521,6 +529,18 @@ def main() -> None:
                 expect(same).to_have_count(alike - 1)
             pg.screenshot(path=str(SHOTS / "02e-review.png"))
             pg.keyboard.press("Escape")
+            # people: turned on, the face model downloads and every slide is looked at (the synthetic
+            # scans have no faces)
+            pg.get_by_role("button", name="Settings", exact=True).click()
+            s = pg.get_by_role("dialog")
+            s.get_by_label("Recognise people across my slides").check()
+            s.get_by_role("button", name="Save").click()
+            expect(pg.get_by_text(re.compile(r"Looked for faces on \d+ slides: 0 people")).first).to_be_visible(
+                timeout=120_000)
+            pg.get_by_role("button", name="People", exact=True).click()
+            expect(pg.get_by_role("dialog", name="People").get_by_text("No faces found yet.")).to_be_visible()
+            pg.keyboard.press("Escape")
+            print("people: face model downloaded, every slide looked at")
             if OCR_DIR:  # the text reader: the sign on the last slide names a place
                 t1 = time.time()
                 pg.locator("div", has_text=re.compile(r"^Suggest places from signs")).get_by_role(

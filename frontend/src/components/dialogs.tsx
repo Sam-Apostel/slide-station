@@ -139,7 +139,7 @@ export function SettingsDialog({
         insights_enabled: suggestTags,
         lookalike_enabled: lookalikes,
         ...(standalone ? {} : { captions_enabled: suggestCaptions }), // captions: the desktop app only
-        ...(standalone ? {} : { people_enabled: people }),
+        people_enabled: people,
       });
       // turning tags / captions on fetches their models (one job in the activity pill); while another
       // job runs, the Insights section offers the download instead
@@ -217,9 +217,7 @@ export function SettingsDialog({
                 album.create, albumAsset.create. For the round trip also asset.read, asset.update (dates and captions in
                 place), asset.view and asset.download (pulling photos back in), albumAsset.delete and stack.read /
                 create / delete.
-                {standalone
-                  ? " To send tags: tag.create and tag.asset."
-                  : " To send the names of the people on the slides: tag.create and tag.asset."}
+                {" To send tags and the names of the people on the slides: tag.create and tag.asset."}
                 {standalone && (
                   <>
                     {" "}
@@ -356,17 +354,16 @@ export function SettingsDialog({
                 </FieldDescription>
               </Field>
             )}
-            {!standalone && (
-              <Field>
-                <CheckRow id="cfg-people" checked={people} onChange={setPeople}>
-                  Recognise people across my slides
-                </CheckRow>
-                <FieldDescription>
-                  Groups the faces on your slides by person, so you can name each person once; Immich gets the names as
-                  tags. Downloads a 39 MB face model once. Everything stays on this computer.
-                </FieldDescription>
-              </Field>
-            )}
+            <Field>
+              <CheckRow id="cfg-people" checked={people} onChange={setPeople}>
+                Recognise people across my slides
+              </CheckRow>
+              <FieldDescription>
+                Groups the faces on your slides by person, so you can name each person once; Immich gets the names as
+                tags. Downloads a 39 MB face model once. Everything stays{" "}
+                {standalone ? "in this browser" : "on this computer"}.
+              </FieldDescription>
+            </Field>
           </FieldGroup>
           <DialogFooter>
             <DialogClose asChild>

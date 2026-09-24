@@ -17,6 +17,7 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Tip } from "@/components/tip";
+import { PreviewImg } from "@/components/filmstrip";
 import { api, plural, type Job, type PeoplePayload, type Person } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
@@ -212,7 +213,7 @@ function PersonRow({
       <div className="flex flex-wrap gap-1.5">
         {faces.map((f) => (
           <div key={f.id} className="group relative">
-            <img src={f.url} alt="" loading="lazy" className="size-[52px] rounded-sm object-cover" />
+            <PreviewImg url={f.url} alt="" className="size-[52px] rounded-sm object-cover" />
             {p.faces.length > 1 && (
               <Tip label="Not this person">
                 <button

@@ -7,9 +7,10 @@ import * as im from "./imaging";
 import { readExif } from "./exif";
 import { fuseSources, materialise, rgba8Source, type RowSource } from "./fusion";
 import { features } from "./learning";
-import { fitting, rgb, rotated, type RGB } from "./pixels";
+import { cropped, fitting, resized, rgb, rotated, type RGB } from "./pixels";
 import { assembleStrips, encodeJpegJS, stripRows, STRIP_AREA } from "./strips";
-import { faceVotes, freeInputSize, type Run } from "./yunet";
+import { detect, detectorFrame, faceVotes, freeInputSize, type Run } from "./yunet";
+import * as people from "./people";
 import { preprocess, toBytes, unit } from "./clip";
 import * as ocr from "./ocr";
 import { levels, normalise } from "./similar";
@@ -256,8 +257,9 @@ const sessions = new Map<string, Promise<Session>>();
 function session(m: ModelRef): Promise<Session> {
   let s = sessions.get(m.key);
   if (!s) {
+    // log errors only: the graph optimiser's warnings (SFace's initializers) would be console errors
     s = Promise.all([onnx(), m.blob.arrayBuffer()]).then(([ort, b]) =>
-      ort.InferenceSession.create(new Uint8Array(b), { executionProviders: ["wasm"] }),
+      ort.InferenceSession.create(new Uint8Array(b), { executionProviders: ["wasm"], logSeverityLevel: 3 }),
     );
     sessions.set(m.key, s);
     s.catch(() => sessions.delete(m.key)); // try again next time
@@ -380,6 +382,7 @@ const ops = {
     const ort = await onnx();
     const session = await ort.InferenceSession.create(new Uint8Array(await model.blob.arrayBuffer()), {
       executionProviders: ["wasm"],
+      logSeverityLevel: 3,
     });
     const input = new ort.Tensor(
       "int64",
@@ -427,6 +430,53 @@ const ops = {
       if (t.text) lines.push({ text: t.text, confidence: Math.round(t.confidence * 1000) / 1000 });
     }
     return lines;
+  },
+
+  /** The clear faces on a slide's blend turned upright, each described by SFace (people.embed_faces):
+   *  YuNet as for the rotation vote, faces ≥ 0.7 and ≥ 3 % of the width, alignCrop, the network. */
+  async faces({ sface, src, rotation }: { sface: ModelRef; src: Src; rotation: number }) {
+    const run = await faceDetector();
+    if (!run) throw new Error("Face detection is unavailable in this browser");
+    const a = rotated(await load(src), rotation);
+    const frame = detectorFrame(a);
+    const [sx, sy] = [Math.fround(a.width / frame.width), Math.fround(a.height / frame.height)]; // numpy: float32
+    let bgr: { width: number; height: number; data: Uint8Array } | null = null;
+    const out: { box: number[]; score: number; emb: Float32Array }[] = [];
+    for (const f of await detect(frame, 0, run)) {
+      // the detector's row in the picture's own pixels, float32 like the numpy array it is in Python
+      const [x, y, w, h] = [f.box[0] * sx, f.box[1] * sy, f.box[2] * sx, f.box[3] * sy].map(Math.fround);
+      if (f.score < people.MIN_SCORE || w < people.MIN_SIZE * a.width) continue;
+      if (!bgr) {
+        const data = new Uint8Array(a.width * a.height * 3);
+        for (let i = 0; i < a.width * a.height; i++)
+          for (let c = 0; c < 3; c++)
+            data[i * 3 + c] = Math.trunc(Math.fround(Math.min(1, Math.max(0, a.data[i * 3 + 2 - c])) * 255));
+        bgr = { width: a.width, height: a.height, data };
+      }
+      const marks = [0, 1, 2, 3, 4].map((k) => [
+        Math.fround(f.landmarks[k * 2] * sx),
+        Math.fround(f.landmarks[k * 2 + 1] * sy),
+      ]);
+      const aligned = people.warpAffine(bgr, people.similarityTransform(marks));
+      const [ort, s] = [await onnx(), await session(sface)]; // loaded once there is a face
+      const res = await s.run({
+        [s.inputNames[0]]: new ort.Tensor("float32", people.sfaceInput(aligned), [1, 3, 112, 112]),
+      });
+      const r4 = (v: number) => Math.round(v * 1e4) / 1e4;
+      out.push({
+        box: [r4(x / a.width), r4(y / a.height), r4(w / a.width), r4(h / a.height)],
+        score: Math.round(f.score * 1000) / 1000,
+        emb: unit(res[s.outputNames[0]].data as Float32Array),
+      });
+    }
+    return out;
+  },
+
+  /** A face cut from the picture for the People dialog (people.face_crop): 128 px JPEG. */
+  async faceCrop({ src, rotation, box }: { src: Src; rotation: number; box: number[] }) {
+    const a = rotated(await load(src), rotation);
+    const [x0, y0, x1, y1] = people.cropBox(a.width, a.height, box);
+    return encode(resized(cropped(a, y0, y1, x0, x1), 128, 128), 85);
   },
 
   /** Let go of the suggestion models (turned off, or another library). */

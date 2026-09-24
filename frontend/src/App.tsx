@@ -287,8 +287,7 @@ function SlideStationApp() {
     if (ok) app.startCleanup();
   };
 
-  // faces → people runs in the Python app only (the browser version has no face embeddings yet)
-  const onPeople = !standalone && state?.config.people_enabled ? () => setPeopleOpen(true) : undefined;
+  const onPeople = state?.config.people_enabled ? () => setPeopleOpen(true) : undefined;
 
   const handlers: DesktopHandlers = {
     settings: () => setSettingsOpen(true),
@@ -595,14 +594,12 @@ function SlideStationApp() {
         onFromImmich={openImmich}
       />
       <HelpDialog open={helpOpen} onOpenChange={setHelpOpen} />
-      {!standalone && (
-        <PeopleDialog
-          open={peopleOpen}
-          onOpenChange={setPeopleOpen}
-          job={state?.job ?? null}
-          onSettings={() => (setPeopleOpen(false), setSettingsOpen(true))}
-        />
-      )}
+      <PeopleDialog
+        open={peopleOpen}
+        onOpenChange={setPeopleOpen}
+        job={state?.job ?? null}
+        onSettings={() => (setPeopleOpen(false), setSettingsOpen(true))}
+      />
       <CommandPalette
         open={paletteOpen}
         onOpenChange={setPaletteOpen}

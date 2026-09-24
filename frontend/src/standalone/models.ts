@@ -47,6 +47,7 @@ export const megabytes = (s: ModelSource) => Math.round(s.files.reduce((n, f) =>
 
 /** Every file there at its exact size. */
 export async function filesReady(lib: Library, dir: string, s: ModelSource): Promise<boolean> {
+  if (!s.files.length) return false;
   for (const [, name, size] of s.files) if ((await lib.read(`${dir}/${name}`))?.size !== size) return false;
   return true;
 }

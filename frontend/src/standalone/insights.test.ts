@@ -29,7 +29,21 @@ import {
   threshold as dupThreshold,
   unpack,
 } from "./similar";
-import { rgb } from "./pixels";
+import { cropped, resized, rgb } from "./pixels";
+import {
+  agglomerate,
+  cropBox,
+  emptyPeople,
+  merge as mergePeople,
+  refresh,
+  removeFaces,
+  rename,
+  similarityTransform,
+  slideNames,
+  tagName,
+  warpAffine,
+  type PeopleFile,
+} from "./people";
 import { fold, Gazetteer, placeFromText, search as searchPlaces, unzipEntry } from "./places";
 import { boxes, crop, crops, ctc, detSize, recInput, REC_H, resizeLinear, type Point } from "./ocr";
 import { inflateSync } from "node:zlib";
@@ -215,6 +229,71 @@ describe("reading signs, as places.Ocr (networks planted)", () => {
       return { text: r.text, confidence: Math.round(r.confidence * 1000) / 1000 };
     });
     expect(lines).toEqual(d.lines);
+  });
+});
+
+describe("people, as people.py", () => {
+  const f = fixture.people;
+
+  it("average-linkage clustering", () => {
+    for (const c of f.agglomerate) {
+      const rejected = new Map(Object.entries(c.rejected).map(([k, v]) => [Number(k), new Set(v as number[])]));
+      expect(agglomerate(c.emb.map(unpack), c.clusters as number[][], rejected)).toEqual(c.out);
+    }
+  });
+
+  it("people.json through refresh, naming, merging and taking faces out", () => {
+    let d: PeopleFile = emptyPeople();
+    for (const s of f.steps) {
+      if (s.op === "refresh") {
+        const faces = new Map(
+          Object.entries(s.faces as Record<string, { emb: string }>).map(([k, v]) => [k, unpack(v.emb)]),
+        );
+        d = refresh(d, faces).d;
+      } else {
+        const [a, b] = s.args as [string, unknown];
+        const next =
+          s.op === "rename"
+            ? rename(d, a, b as string)
+            : s.op === "merge"
+              ? mergePeople(d, a, b as string[])
+              : removeFaces(d, a, b as string[]);
+        // the desktop app refreshes after every edit, with the faces as they were
+        const faces = new Map(
+          Object.entries(
+            (f.steps.filter((x) => x.op === "refresh" && f.steps.indexOf(x) < f.steps.indexOf(s)).pop()!.faces ??
+              {}) as Record<string, { emb: string }>,
+          ).map(([k, v]) => [k, unpack(v.emb)]),
+        );
+        d = refresh(next!, faces).d;
+      }
+      expect(d).toEqual(s.out);
+    }
+    expect(Object.fromEntries(slideNames(d))).toEqual(f.names);
+    expect(["Ann", "A/B", " C "].map(tagName)).toEqual(f.tag);
+  });
+
+  it("alignCrop: the similarity transform and the warp to 112 × 112", () => {
+    const img = { width: 200, height: 160, data: pattern(200, 160) };
+    for (const c of f.align) {
+      const pts = [0, 1, 2, 3, 4].map((i) => [c.face[4 + i * 2], c.face[5 + i * 2]]);
+      const out = warpAffine(img, similarityTransform(pts));
+      const sum = out.data.reduce((a, b) => a + b, 0);
+      if (sha1(out.data) !== c.sha1) expect(Math.abs(sum - c.sum)).toBeLessThanOrEqual(out.data.length / 1000);
+    }
+  });
+
+  it("the face crop for the People dialog", () => {
+    const a = rgb(
+      300,
+      200,
+      Float32Array.from(pattern(300, 200), (v) => v / 255),
+    );
+    for (const c of f.crop) {
+      const [x0, y0, x1, y1] = cropBox(a.width, a.height, c.box);
+      const crop = resized(cropped(a, y0, y1, x0, x1), 128, 128);
+      expect(crop.data.reduce((s, v) => s + v, 0)).toBeCloseTo(c.sum, 0);
+    }
   });
 });
 

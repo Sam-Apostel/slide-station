@@ -37,6 +37,23 @@ import { Model } from "./learning";
 import { canPickFolders, kvGet, kvSet, permission, pickDirectory, type Library } from "./library";
 import { CLIP, fetchFiles, filesReady, megabytes, source } from "./models";
 import { npy, readNpy } from "./npy";
+import {
+  emptyPeople,
+  faceKey,
+  merge as mergePeople,
+  MODEL_MB as PEOPLE_MB,
+  MODEL_NAME as SFACE_NAME,
+  recordFaces,
+  refresh as refreshPeopleData,
+  removeFaces,
+  rename as renamePerson,
+  SFACE,
+  slideNames,
+  stale,
+  tagName,
+  type FacesFile,
+  type PeopleFile,
+} from "./people";
 import { alphabet, OCR, OCR_DIR, OCR_ID } from "./ocr";
 import {
   GAZETTEER,
@@ -62,6 +79,7 @@ import {
   suggest as suggestSimilar,
   threshold as dupThreshold,
   todo as todoEmbeddings,
+  unpack,
   type Embeddings,
 } from "./similar";
 import {
@@ -114,6 +132,8 @@ type StoredConfig = {
   /** Scene tags and look-alikes from CLIP (downloads the model), and the look-alike check in Immich. */
   insights_enabled: boolean;
   lookalike_enabled: boolean;
+  /** Faces -> people (downloads SFace), names to Immich as tags. */
+  people_enabled: boolean;
 };
 
 const CONFIG_KEY = "slide-station-config";
@@ -128,6 +148,7 @@ const DEFAULT_CONFIG: StoredConfig = {
   stats_target: DEFAULT_TARGET,
   insights_enabled: false,
   lookalike_enabled: false,
+  people_enabled: false,
 };
 
 function loadConfig(): StoredConfig {
@@ -914,6 +935,214 @@ async function lookalikesQuietly(c: Immich, sid: string, gids: string[], job: Jo
   }
 }
 
+// ------------------------------------------------------------------ people (faces -> names, people.ts)
+
+// SFace in models/ (like the desktop app), faces per tray in faces.json next to session.json (never
+// in it), the people in the library's people.json. Their own queue for reload-apply-save.
+const SFACE_PATH = `models/${SFACE_NAME}`;
+const sfaceSource = () => source("sface", SFACE);
+const facesPath = (sid: string) => `${sessionDir(sid)}/faces.json`;
+let peopleQueue: Promise<unknown> = Promise.resolve();
+
+function queued<T>(fn: () => Promise<T>): Promise<T> {
+  const run = peopleQueue.then(fn);
+  peopleQueue = run.catch(() => undefined);
+  return run;
+}
+
+/** Recognising people is opt-in (Settings), and needs the face model downloaded. */
+const peopleOn = async () => !!loadConfig().people_enabled && (await lib.exists(SFACE_PATH));
+
+async function loadFaces(sid: string): Promise<FacesFile> {
+  try {
+    return JSON.parse((await lib.readText(facesPath(sid))) ?? "{}");
+  } catch {
+    return {};
+  }
+}
+
+const updateFaces = (sid: string, fn: (d: FacesFile) => void) =>
+  queued(async () => {
+    const d = await loadFaces(sid);
+    fn(d);
+    await lib.write(facesPath(sid), JSON.stringify(d, null, 1));
+  });
+
+/** Record one slide's faces if they aren't up to date (workflow.find_faces). Only faces.json is written. */
+async function findFaces(sid: string, gid: string): Promise<boolean> {
+  const d = await loadSession(sid);
+  const g = d.groups.find((x) => x.id === gid);
+  if (!g || !stale(g, (await loadFaces(sid))[gid])) return false;
+  const sface = await modelFile(SFACE_NAME, "models");
+  const found = await jobs.call("faces", { sface, src: await fusedSrc(d, g, jobs), rotation: g.rotation }, -1);
+  const [key, rot] = [faceKey(g), g.rotation];
+  await updateFaces(sid, (f) => {
+    f[gid] = { key, rot, faces: recordFaces(sid, gid, f[gid]?.faces ?? [], found, unpack, pack) };
+  });
+  return true;
+}
+
+async function facesQuietly(sid: string, gid: string) {
+  try {
+    await findFaces(sid, gid);
+  } catch (e) {
+    console.warn("faces:", e); // faces are extra: never let them fail an import
+  }
+}
+
+/** Slides whose faces are missing or stale (workflow.faces_pending); forgets slides that are gone. */
+async function facesPending(sids?: string[]): Promise<[string, string][]> {
+  const todo: [string, string][] = [];
+  for (const sid of sids ?? (await listSessions()).map((t) => t.id)) {
+    let d: SessionData;
+    try {
+      d = await loadSession(sid);
+    } catch {
+      continue;
+    }
+    const faces = await loadFaces(sid);
+    const gids = new Set(d.groups.map((g) => g.id));
+    if (Object.keys(faces).some((k) => !gids.has(k)))
+      await updateFaces(sid, (f) => Object.keys(f).forEach((k) => gids.has(k) || delete f[k]));
+    for (const g of d.groups) if (stale(g, faces[g.id])) todo.push([sid, g.id]);
+  }
+  return todo;
+}
+
+const faceCache = new Map<
+  string,
+  { t: number; faces: Map<string, { sid: string; gid: string; emb: Float32Array; key: string }> }
+>();
+
+/** Every face in the library, trays in name order (people.all_faces), re-read only when changed. */
+async function allFaces() {
+  const out = new Map<string, { sid: string; gid: string; emb: Float32Array; key: string }>();
+  const trays = (await lib.list("sessions")).filter((e) => e.kind === "directory").map((e) => e.name);
+  for (const sid of trays.sort()) {
+    const file = await lib.read(facesPath(sid));
+    if (!file) continue;
+    let hit = faceCache.get(`${lib.name}/${sid}`);
+    if (!hit || hit.t !== file.lastModified) {
+      const faces = new Map<string, { sid: string; gid: string; emb: Float32Array; key: string }>();
+      try {
+        for (const [gid, e] of Object.entries(JSON.parse(await file.text()) as FacesFile))
+          for (const x of e.faces ?? []) faces.set(x.id, { sid, gid, emb: unpack(x.emb), key: e.key ?? "" });
+      } catch {
+        continue;
+      }
+      hit = { t: file.lastModified, faces };
+      faceCache.set(`${lib.name}/${sid}`, hit);
+    }
+    for (const [k, v] of hit.faces) out.set(k, v);
+  }
+  return out;
+}
+
+async function loadPeople(): Promise<PeopleFile> {
+  try {
+    const d = JSON.parse((await lib.readText("people.json")) ?? "{}");
+    return { people: d.people ?? {}, rejected: d.rejected ?? {}, next: d.next ?? 1 };
+  } catch {
+    return emptyPeople();
+  }
+}
+
+/** people.json brought up to date with the faces (people.refresh); `edit` first changes it (null: no such person). */
+const refreshPeople = (edit?: (d: PeopleFile) => PeopleFile | null) =>
+  queued(async () => {
+    let d = await loadPeople();
+    if (edit) {
+      const e = edit(d);
+      if (!e) throw new HttpError(404, "No such person (the list changed meanwhile?)");
+      [d] = [e];
+      await lib.write("people.json", JSON.stringify(d, null, 1));
+    }
+    const faces = await allFaces();
+    const r = refreshPeopleData(d, new Map([...faces].map(([k, v]) => [k, v.emb])));
+    if (r.changed) await lib.write("people.json", JSON.stringify(r.d, null, 1));
+    return { d: r.d, faces };
+  });
+
+/** What the People dialog shows (server._people_payload). */
+async function peoplePayload(r: Awaited<ReturnType<typeof refreshPeople>>) {
+  const { d, faces } = r;
+  const out = Object.entries(d.people).map(([pid, p]) => {
+    const fs = p.faces.filter((f) => faces.has(f));
+    return {
+      id: pid,
+      name: p.name ?? "",
+      slides: new Set(fs.map((f) => `${faces.get(f)!.sid}/${faces.get(f)!.gid}`)).size,
+      faces: fs.map((f) => ({ id: f, url: `/api/people/faces/${f}.jpg?v=${faces.get(f)!.key}` })),
+    };
+  });
+  // named people first (by name), then the ones seen most
+  out.sort(
+    (a, b) =>
+      +!a.name - +!b.name ||
+      (a.name.toLowerCase() < b.name.toLowerCase() ? -1 : a.name.toLowerCase() > b.name.toLowerCase() ? 1 : 0) ||
+      b.faces.length - a.faces.length,
+  );
+  const cfg = loadConfig();
+  return {
+    enabled: !!cfg.people_enabled,
+    model: await lib.exists(SFACE_PATH),
+    model_mb: PEOPLE_MB,
+    pending: cfg.people_enabled ? (await facesPending()).length : 0,
+    people: out,
+  };
+}
+
+/** The job: the face model if needed, then the faces on every slide of the library (workflow.scan_people). */
+async function scanPeople(job: Job) {
+  if (!(await lib.exists(SFACE_PATH))) await fetchFiles(lib, job, sfaceSource(), "models", "face model");
+  const todo = await facesPending();
+  [job.done, job.total] = [0, todo.length];
+  for (const [sid, gid] of todo) {
+    job.message = `Finding faces: slide ${job.done + 1} of ${todo.length}`;
+    await facesQuietly(sid, gid);
+    job.done++;
+  }
+  const { d } = await refreshPeople();
+  const named = Object.values(d.people).filter((p) => p.name).length;
+  job.message = `Looked for faces on ${todo.length} slides: ${Object.keys(d.people).length} people (${named} named)`;
+}
+
+/** Named people as Immich tags (People/<name>) on uploaded slides {gid: asset} of one tray. */
+async function tagPeople(c: Immich, sid: string, slides: Map<string, string>, names: Map<string, string[]>) {
+  const byName = new Map<string, string[]>();
+  for (const [gid, asset] of slides)
+    for (const name of names.get(`${sid}/${gid}`) ?? []) byName.set(name, [...(byName.get(name) ?? []), asset]);
+  const done = new Set<string>();
+  for (const [name, assets] of [...byName].sort((a, b) => (a[0] < b[0] ? -1 : 1)))
+    if (await c.tagAssets([tagName(name)], assets)) assets.forEach((a) => done.add(a));
+  return done.size;
+}
+
+/** The job: the names of the people on every slide already in Immich, as tags (workflow.tag_people). */
+async function tagPeopleJob(job: Job) {
+  const names = slideNames((await refreshPeople()).d);
+  const c = immichClient();
+  job.message = `Connecting to Immich ${await c.version()}`;
+  const sids = [...new Set([...names.keys()].map((k) => k.split("/")[0]))].sort();
+  [job.total, job.done] = [sids.length, 0];
+  let tagged = 0;
+  for (const sid of sids) {
+    let d: SessionData;
+    try {
+      d = await loadSession(sid);
+    } catch {
+      continue;
+    }
+    const slides = new Map(d.groups.filter((g) => g.immich && !g.skip).map((g) => [g.id, g.immich!.asset_id]));
+    tagged += await tagPeople(c, sid, slides, names);
+    job.done++;
+  }
+  job.message =
+    c.tagsSupported === false
+      ? "This Immich server has no tags API: names were not sent"
+      : `Tagged ${tagged} slides in Immich with the people on them`;
+}
+
 /** A job: the tray's uploaded slides not checked yet or not indexed at the last check (all: every one). */
 async function checkLookalikesJob(job: Job, sid: string, everything: boolean) {
   const d = await loadSession(sid);
@@ -1369,6 +1598,7 @@ async function importScans(job: Job, sid: string, sourceId: string) {
         target.params_source = `learned:${neighbours}`;
       }
     }); // slides appear in the UI one by one
+    if (await peopleOn()) await facesQuietly(sid, extend ? last.id : g.id);
     d = await loadSession(sid);
     job.done++;
   }
@@ -1473,6 +1703,22 @@ export async function image(url: string, priority = 0): Promise<{ blob: Blob; fr
     if (hit) return { blob: hit, fresh: true };
     await ensureProxies(d, scan);
     return { blob: await readCache(d.id, `${scan}.thumb.jpg`), fresh: true };
+  }
+  m = u.pathname.match(/\/api\/people\/faces\/([^/]+)\/([^/]+)\/([^/]+)\.jpg$/);
+  if (m) {
+    // a face cut from the slide it is on, as it was turned when the face was found
+    const [, sid, gid, n] = m;
+    const d = await loadSession(sid);
+    const g = d.groups.find((x) => x.id === gid);
+    const entry = (await loadFaces(sid))[gid];
+    const face = entry?.faces.find((f) => f.id === `${sid}/${gid}/${n}`);
+    if (!g || !entry || !face) throw new HttpError(404, "Not found");
+    const blob = await ui.call(
+      "faceCrop",
+      { src: await fusedSrc(d, g), rotation: entry.rot ?? 0, box: face.box },
+      priority,
+    );
+    return { blob, fresh: u.searchParams.get("v") === entry.key };
   }
   m = u.pathname.match(/\/api\/immich\/assets\/([^/]+)\/thumb\.jpg$/);
   if (m) return { blob: await immichClient().thumbnail(m[1]), fresh: true };
@@ -1589,6 +1835,11 @@ async function backgroundStep() {
     if (jobRunning() || activeSession !== sid) return; // a job started, or another tray opened
     await renderExport(sid, g.id, loadConfig().jpeg_quality);
     return;
+  }
+  // nothing to render: catch up on faces (slides turned since, trays from before)
+  if (await peopleOn()) {
+    const [todo] = await facesPending([sid]);
+    if (todo && !jobRunning() && activeSession === sid) await facesQuietly(...todo);
   }
 }
 
@@ -1918,6 +2169,21 @@ async function finishSession(
       tagNote = `; tags not sent (${e instanceof Error ? e.message : e})`;
     }
   }
+  let peopleTagged = 0;
+  let peopleProblem = "";
+  if (cfg.people_enabled && sent.length) {
+    // named people go along as tags (People/<name>)
+    try {
+      const g2a = new Map(
+        (await loadSession(sid)).groups
+          .filter((g) => sent.includes(g.id) && g.immich)
+          .map((g) => [g.id, g.immich!.asset_id]),
+      );
+      peopleTagged = await tagPeople(client!, sid, g2a, slideNames((await refreshPeople()).d));
+    } catch (e) {
+      peopleProblem = e instanceof Error ? e.message : String(e);
+    }
+  }
   // photos in Immich that look like what just went up
   const lookNote = cfg.lookalike_enabled && sent.length ? await lookalikesQuietly(client!, sid, sent, job) : "";
   if (!cfg.keep_originals) await dropLocalOriginals(sid);
@@ -1933,6 +2199,8 @@ async function finishSession(
       : "") +
     (lost.length ? `; ${lost.length} skipped: their original scans were deleted after the last upload` : "") +
     tagNote +
+    (peopleTagged ? `; ${peopleTagged} tagged with the people on them` : "") +
+    (peopleProblem ? `; names not sent: ${peopleProblem}` : "") +
     lookNote;
 }
 
@@ -2227,6 +2495,7 @@ export async function handle(method: string, url: string, body: Body = {}): Prom
       stats_target: cfg.stats_target,
       insights_enabled: cfg.insights_enabled,
       lookalike_enabled: cfg.lookalike_enabled,
+      people_enabled: cfg.people_enabled,
     };
     return { config, sources: await sourceList(), sessions: await listSessions(), job: current } satisfies AppState;
   }
@@ -2242,6 +2511,7 @@ export async function handle(method: string, url: string, body: Body = {}): Prom
       "upload_originals_stacked",
       "insights_enabled",
       "lookalike_enabled",
+      "people_enabled",
     ] as const)
       if (k in body && !(k === "immich_key" && body[k] === "")) (cfg as Record<string, unknown>)[k] = body[k];
     if ("stats_target" in body) {
@@ -2524,6 +2794,34 @@ export async function handle(method: string, url: string, body: Body = {}): Prom
       throw new HttpError(400, "Download the tag model first (Settings → Suggest tags): it compares the photos.");
     startJob("lookalike", sid, (job) => checkLookalikesJob(job, sid, !!body.all));
     return { ok: true };
+  }
+  if (is("GET", /^\/api\/people$/)) return peoplePayload(await refreshPeople());
+  if (is("POST", /^\/api\/people\/scan$/)) {
+    // the face model if needed, then the faces on every slide not done yet
+    if (!loadConfig().people_enabled) throw new HttpError(400, "Turn on recognising people in Settings first.");
+    startJob("faces", null, scanPeople);
+    return { ok: true };
+  }
+  if (is("POST", /^\/api\/people\/tag$/)) {
+    const cfg = loadConfig();
+    if (!cfg.immich_url || !cfg.immich_key)
+      throw new HttpError(400, "Set your Immich URL and API key in Settings first.");
+    startJob("tag", null, tagPeopleJob);
+    return { ok: true };
+  }
+  if ((m = is("PATCH", /^\/api\/people\/([^/]+)$/))) {
+    const pid = m[1];
+    return peoplePayload(await refreshPeople((d) => renamePerson(d, pid, String(body.name ?? ""))));
+  }
+  if ((m = is("POST", /^\/api\/people\/([^/]+)\/merge$/))) {
+    const pid = m[1];
+    const others = ((body.people as unknown[]) ?? []).map(String);
+    return peoplePayload(await refreshPeople((d) => mergePeople(d, pid, others)));
+  }
+  if ((m = is("POST", /^\/api\/people\/([^/]+)\/remove$/))) {
+    const pid = m[1];
+    const faces = ((body.faces as unknown[]) ?? []).map(String);
+    return peoplePayload(await refreshPeople((d) => removeFaces(d, pid, faces)));
   }
   if (is("GET", /^\/api\/places$/)) {
     // GeoNames' cities, from the snapshot the page can download (places.ts); typed coordinates always

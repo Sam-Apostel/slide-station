@@ -275,6 +275,35 @@ export class Immich {
     }
   }
 
+  /** Undefined until tried; false on a server without the tags API. */
+  tagsSupported: boolean | undefined;
+
+  /**
+   * Tag assets with each of `names`, full tag values ("People/Ann" is Ann under People), creating
+   * the tags that don't exist yet (immich.tag_assets). Returns how many assets were tagged; a server
+   * without the tags API is skipped (0), a key without the tag permissions is an error.
+   */
+  async tagAssets(names: string[], assets: string[]): Promise<number> {
+    if (!names.length || !assets.length || this.tagsSupported === false) return 0;
+    const noPermission = "The API key can't tag photos (403): give it tag.create and tag.asset to send names.";
+    const r = await this.raw("PUT", "/tags", { tags: names });
+    if (r.status === 404 || r.status === 405) {
+      this.tagsSupported = false;
+      return 0;
+    }
+    if (r.status === 403) throw new ImmichError(noPermission);
+    this.tagsSupported = true;
+    const tags: { id: string; value?: string }[] = await (await this.check(r, "PUT", "/tags")).json();
+    const ids = tags.filter((t) => names.includes(t.value ?? "")).map((t) => t.id);
+    const tagIds = ids.length ? ids : tags.map((t) => t.id);
+    for (let i = 0; i < assets.length; i += 200) {
+      const q = await this.raw("PUT", "/tags/assets", { tagIds, assetIds: assets.slice(i, i + 200) });
+      if (q.status === 403) throw new ImmichError(noPermission);
+      await this.check(q, "PUT", "/tags/assets");
+    }
+    return assets.length;
+  }
+
   // ---------------------------------------------------------------- stacks
 
   /** Whether this server has stacks and the key may use them (404 before stacks, 403 without stack.read). */
