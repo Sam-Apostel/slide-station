@@ -1,5 +1,5 @@
 import * as React from "react";
-import { Lock, RotateCw } from "lucide-react";
+import { Lock } from "lucide-react";
 import { ProScope, ProScopebar } from "@/components/ui/pro-toolbar";
 import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select";
 import {
@@ -177,7 +177,6 @@ export function Filmstrip({
       <div className="grid min-h-0 flex-1 auto-rows-min grid-cols-[repeat(auto-fill,minmax(104px,1fr))] gap-3 overflow-y-auto p-3 scrollbar-thin">
         {groups.map((g, k) => {
           const isSel = g.index === sel;
-          const autoRot = g.rot_reason && g.rot_reason !== "manual" && g.rotation;
           const scene = sceneOf(g.index);
           const newScene = scene >= 0 && (k === 0 || sceneOf(groups[k - 1].index) !== scene);
           const tile = slideMenu(
@@ -208,6 +207,7 @@ export function Filmstrip({
                   className={cn("size-full object-cover", g.skip && "opacity-25 grayscale")}
                 />
               </span>
+              {g.active.length > 1 && <HdrMark n={g.active.length} />}
               {/* along the bottom edge, or down the side when the slide is turned; always upright */}
               <span className="ss-mount-foot">
                 {!FINISH[g.status] && (
@@ -231,12 +231,6 @@ export function Filmstrip({
                     <Lock className="size-2.5" aria-label="Locked" />
                   </TileBadge>
                 )}
-                {g.active.length > 1 && <TileBadge>HDR ×{g.active.length}</TileBadge>}
-                {autoRot ? (
-                  <TileBadge title={`Auto-rotated (${g.rot_reason})`} className="text-primary">
-                    <RotateCw className="size-2.5" aria-label="Auto-rotated" />
-                  </TileBadge>
-                ) : null}
               </span>
             </button>,
           );
@@ -295,6 +289,37 @@ function TrayGauge({ session, sel, onSelect }: { session: SessionPayload; sel: n
         />
       ))}
     </div>
+  );
+}
+
+/** HDR, pressed into the top margin of the mount: one frame per merged exposure, fanned out.
+ *  Unlike the printing below it, it turns with the slide. */
+function HdrMark({ n }: { n: number }) {
+  const k = Math.min(n, 4);
+  const w = 11 + (k - 1) * 2.5;
+  const h = 7 + (k - 1) * 2;
+  return (
+    <span className="ss-mount-hdr" title={`HDR: ${n} exposures merged`}>
+      <svg
+        viewBox={`-1 -1 ${w + 2} ${h + 2}`}
+        width={w + 2}
+        height={h + 2}
+        fill="none"
+        stroke="currentColor"
+        strokeWidth={1.2}
+        strokeLinejoin="round"
+        role="img"
+        aria-label={`HDR ×${n}`}
+      >
+        {/* the exposures behind show only the edge the front one doesn't cover */}
+        {Array.from({ length: k - 1 }, (_, i) => {
+          const x = i * 2.5;
+          const y = (k - 1 - i) * 2;
+          return <path key={i} d={`M${x + 2.5} ${y}H${x}V${y + 7}H${x + 11}V${y + 5}`} />;
+        })}
+        <rect x={(k - 1) * 2.5} y={0} width={11} height={7} rx={1} fill="currentColor" />
+      </svg>
+    </span>
   );
 }
 
