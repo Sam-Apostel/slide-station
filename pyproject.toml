@@ -14,3 +14,11 @@ dependencies = [
 
 [tool.uv]
 package = false
+
+[dependency-groups]
+# tests: uv run --python 3.12 pytest tests  (python-multipart: the mock Immich reads uploads)
+dev = ["pytest>=8", "python-multipart>=0.0.9"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
