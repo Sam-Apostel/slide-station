@@ -318,7 +318,8 @@ export function SettingsDialog({
                       >
                         {test ? (
                           <>
-                            {test.ok === undefined && <Spinner className="size-3" />}
+                            {/* the message says "Testing…": not a second status inside this one */}
+                            {test.ok === undefined && <Spinner className="size-3" role={undefined} aria-hidden />}
                             {test.ok && <Check className="size-3.5 shrink-0" />}
                             <span className="min-w-0 break-words">{test.message}</span>
                           </>

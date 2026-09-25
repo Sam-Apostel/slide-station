@@ -1358,13 +1358,32 @@ const snapshot = (g: GroupData): Snapshot => ({
   params_source: g.params_source ?? "",
 });
 
-function remember(g: GroupData, what: string) {
+/** Push the slide's look before an edit onto its undo stack. Edits with the same `key` (default:
+ *  `what`) in quick succession are one step (a slider drag); a null key is always its own step. */
+function remember(g: GroupData, what: string, key: string | null = what) {
   const h = (g.history ??= { undo: [], redo: [] });
   const now = Date.now() / 1000;
   const last = h.undo[h.undo.length - 1];
-  if (last && last.what === what && now - (last.t ?? 0) < COALESCE_S) last.t = now;
-  else h.undo = [...h.undo, { ...snapshot(g), what, t: now }].slice(-HISTORY_MAX);
+  if (key !== null && last && (last.key ?? last.what) === key && now - (last.t ?? 0) < COALESCE_S) last.t = now;
+  else h.undo = [...h.undo, { ...snapshot(g), what, key: key ?? undefined, t: now }].slice(-HISTORY_MAX);
   h.redo = [];
+}
+
+/** What a PATCH of the local adjustments changes, for undo: which adjustment and which of its
+ *  settings (dragging one handle is one step, the next slider another), or null when one is
+ *  added or deleted — never merged with the edits around it. */
+function localStep(prev: unknown[], next: unknown[]): string | null {
+  if (prev.length !== next.length) return null;
+  const changed: string[] = [];
+  next.forEach((a, i) => {
+    const b = (prev[i] ?? {}) as Record<string, unknown>;
+    const n = a as Record<string, unknown>;
+    const keys = [...new Set([...Object.keys(b), ...Object.keys(n)])].filter(
+      (k) => JSON.stringify(b[k]) !== JSON.stringify(n[k]),
+    );
+    if (keys.length) changed.push(`${i}:${keys.sort().join(",")}`);
+  });
+  return "local " + changed.join(" ");
 }
 
 const LOCKED =
@@ -2893,7 +2912,10 @@ export async function handle(method: string, url: string, body: Body = {}): Prom
                 .sort()
                 .join(",")
             : null;
-      if (what) remember(g, what);
+      const local = (body.params as Params | undefined)?.local;
+      if (what && Array.isArray(local))
+        remember(g, what, ((k) => k && `${what} ${k}`)(localStep(g.params.local ?? [], local)));
+      else if (what) remember(g, what);
       if ("rotation" in body) {
         const rot = ((Math.trunc(Number(body.rotation)) % 360) + 360) % 360;
         if (g.params.local?.length) g.params.local = turnLocal(g.params.local, rot - g.rotation); // masks turn with the picture

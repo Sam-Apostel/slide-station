@@ -289,7 +289,11 @@ def main() -> None:
         except OSError:
             time.sleep(0.2)
 
-    exe = os.environ.get("SS_BROWSER_PATH") or ("/opt/pw-browsers/chromium" if Path("/opt/pw-browsers/chromium").exists() else None)
+    # On macOS, the installed Chrome over Playwright's headless shell: the shell (Chromium 153)
+    # crashes reading a private-storage folder handle back from IndexedDB (cleaning the card)
+    mac_chrome = Path("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome")
+    exe = os.environ.get("SS_BROWSER_PATH") or next(
+        (str(p) for p in (Path("/opt/pw-browsers/chromium"), mac_chrome) if p.exists()), None)
     errors: list[str] = []
     try:
         with sync_playwright() as p:
@@ -363,8 +367,8 @@ def main() -> None:
             expect(pg.locator(".ss-crop")).to_be_visible()
             pg.keyboard.press("Enter")
             expect(pg.locator(".ss-crop")).to_have_count(0)
-            pg.keyboard.press("Control+z")
-            pg.keyboard.press("Control+Shift+z")
+            pg.keyboard.press("ControlOrMeta+z")
+            pg.keyboard.press("ControlOrMeta+Shift+z")
             for _ in range(3):
                 pg.keyboard.press(" ")
                 pg.wait_for_timeout(200)
@@ -483,8 +487,8 @@ def main() -> None:
             pg.screenshot(path=str(SHOTS / "02c-local.png"))
             pg.keyboard.press("Escape")
             expect(pg.locator(".ss-local")).to_have_count(0)
-            pg.keyboard.press("Control+z")  # the graduated filter's exposure
-            pg.keyboard.press("Control+z")  # adding it
+            pg.keyboard.press("ControlOrMeta+z")  # the graduated filter's exposure
+            pg.keyboard.press("ControlOrMeta+z")  # adding it
             expect(pg.get_by_role("button", name="Graduated 2", exact=True)).to_have_count(0)
             expect(pg.get_by_role("button", name="Radial 1", exact=True)).to_be_visible()
             # a brush stroke across the photo, then deleted with ⌫
@@ -596,9 +600,11 @@ def main() -> None:
             pg.get_by_role("button", name="People and places", exact=True).click()
             view = pg.locator("[data-ss-atlas]")
             expect(view.get_by_text("No faces found yet.")).to_be_visible()
-            # the places: the map view, no places yet
+            # the places: the map view, with Venice from the range placed above
             view.get_by_role("tab", name="Places").click()
-            expect(view.get_by_text(re.compile(r"^No places yet"))).to_be_visible()
+            expect(view.get_by_role("list", name="Places").get_by_role(
+                "button", name=re.compile(r"^Venice Veneto, Italy \d+$"))).to_be_visible()
+            expect(view.get_by_role("application", name="Map of the places on your slides")).to_be_visible()
             pg.keyboard.press("Escape")
             expect(view).to_have_count(0)
             print("people: face model downloaded, every slide looked at")

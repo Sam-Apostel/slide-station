@@ -150,7 +150,9 @@ function ValueField({
       value={draft ?? fmt(value, bipolar)}
       onFocus={(e) => {
         setDraft(fmt(value, bipolar));
-        requestAnimationFrame(() => e.target.select());
+        // select() focuses the input again, so not if Enter / Tab already left it before this frame
+        const el = e.target;
+        requestAnimationFrame(() => document.activeElement === el && el.select());
       }}
       onChange={(e) => setDraft(e.target.value)}
       onBlur={(e) => draft !== null && commit(e.target.value)}

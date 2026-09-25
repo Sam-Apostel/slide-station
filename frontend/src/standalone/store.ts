@@ -47,6 +47,7 @@ export type Snapshot = {
   rot_reason: string;
   params_source: string;
   what?: string;
+  key?: string; // what edits merge into this step, when not `what` (see remember)
   t?: number;
 };
 

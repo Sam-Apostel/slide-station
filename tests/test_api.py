@@ -224,6 +224,34 @@ def test_undo_coalesces_a_drag(api, tray, clock):
     assert g["params"]["warmth"] == 0 and g["params"]["tint"] == 0  # the whole drag in one step
 
 
+def test_undo_steps_of_local_adjustments(api, tray, clock):
+    """All local adjustments are one setting ("local"), but adding one, and editing a different
+    adjustment or slider, are each their own step, however quickly they follow each other."""
+    sid, d = tray
+    gid = d["groups"][2]["id"]
+    radial = {"kind": "radial", "exposure": 0.0, "center": [0.5, 0.5], "rx": 0.2, "ry": 0.2}
+    grad = {"kind": "graduated", "exposure": 0.0, "start": [0.5, 0.0], "end": [0.5, 0.4]}
+    local = lambda *a: patch(api, sid, gid, {"params": {"local": list(a)}})["groups"][2]["params"]["local"]  # noqa: E731
+    [r] = local(radial)  # added
+    clock.now += 0.5
+    [r] = local({**r, "exposure": 0.8})
+    clock.now += 0.5
+    [r] = local({**r, "exposure": 0.9})  # the same slider: one step with the above
+    clock.now += 0.5
+    [r] = local({**r, "center": [0.5, 0.3]})  # the handle
+    clock.now += 0.5
+    r, g = local(r, grad)  # added
+    clock.now += 0.5
+    local(r, {**g, "exposure": -0.9})
+    assert len(history(sid, gid)["undo"]) == 5
+    undo = lambda: api.post(f"/api/sessions/{sid}/groups/{gid}/undo").json()["groups"][2]["params"]["local"]  # noqa: E731
+    assert undo()[1]["exposure"] == 0  # the graduated filter's exposure
+    assert len(undo()) == 1  # adding it
+    assert undo()[0]["center"] == [0.5, 0.5]  # the drag
+    assert undo()[0]["exposure"] == 0  # the exposure slider
+    assert undo() == []  # adding the radial
+
+
 def test_undo_history_is_capped(api, tray, clock):
     sid, d = tray
     gid = d["groups"][3]["id"]

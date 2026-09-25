@@ -584,16 +584,38 @@ def _snapshot(g: dict) -> dict:
             "rot_reason": g.get("rot_reason", ""), "params_source": g.get("params_source", "")}
 
 
-def _remember(g: dict, what: str) -> None:
-    """Push the slide's look before an edit onto its undo stack (a slider drag is one step)."""
+_SAME = object()
+
+
+def _remember(g: dict, what: str, key: "str | None | object" = _SAME) -> None:
+    """Push the slide's look before an edit onto its undo stack. Edits with the same `key` (default:
+    `what`) in quick succession are one step (a slider drag); a None key is always its own step."""
+    key = what if key is _SAME else key
     h = g.setdefault("history", {"undo": [], "redo": []})
     now = time.time()
     last = h["undo"][-1] if h["undo"] else None
-    if last and last.get("what") == what and now - last.get("t", 0) < COALESCE_S:
+    if key is not None and last and last.get("key", last.get("what")) == key and now - last.get("t", 0) < COALESCE_S:
         last["t"] = now  # same drag: keep the state from before it started
     else:
-        h["undo"] = (h["undo"] + [{**_snapshot(g), "what": what, "t": now}])[-HISTORY_MAX:]
+        snap = {**_snapshot(g), "what": what, "t": now}
+        if key is not None and key != what:
+            snap["key"] = key
+        h["undo"] = (h["undo"] + [snap])[-HISTORY_MAX:]
     h["redo"] = []
+
+
+def _local_step(prev: list, nxt: list) -> "str | None":
+    """What a PATCH of the local adjustments changes, for undo: which adjustment and which of its
+    settings (dragging one handle is one step, the next slider another), or None when one is
+    added or deleted — never merged with the edits around it."""
+    if len(prev) != len(nxt):
+        return None
+    changed = []
+    for i, (b, n) in enumerate(zip(prev, nxt)):
+        keys = sorted(k for k in set(b) | set(n) if json.dumps(b.get(k), sort_keys=True) != json.dumps(n.get(k), sort_keys=True))
+        if keys:
+            changed.append(f"{i}:{','.join(keys)}")
+    return "local " + " ".join(changed)
 
 
 def _restore(g: dict, snap: dict) -> None:
@@ -656,7 +678,11 @@ def patch_group(sid: str, gid: str, body: dict = Body(...)):
         if set(body) - {"reviewed", "skip"}:  # developed / left out are fine; changing the photo is not
             _editable(g)
         what = _edit_label(body)
-        if what:
+        local = body.get("params", {}).get("local") if isinstance(body.get("params"), dict) else None
+        if what and isinstance(local, list):
+            step = _local_step(g["params"].get("local") or [], local)
+            _remember(g, what, step and f"{what} {step}")
+        elif what:
             _remember(g, what)
         if "rotation" in body:
             rot = int(body["rotation"]) % 360
