@@ -335,3 +335,57 @@ def atlas() -> dict:
                                 "date": s["date"], "key": s["key"], "people": who.get((sid, gid), [])})
     out = sorted(places.values(), key=lambda p: -len(p["slides"]))
     return {"places": out, "slides": sum(len(p["slides"]) for p in out)}
+
+
+def person(pid: str, pdata: dict | None = None) -> dict:
+    """One person's page in People & Places: every slide they're on (their clearest face there),
+    the date it goes with, the age they look on it (corrected) and the age they were then (from
+    their birthday), its place, and who they're seen with. KeyError: no such person."""
+    from .store import Session, slide_dates
+
+    pdata = pdata or people.load_people()
+    p = pdata["people"][pid]
+    faces = people.all_faces()
+    cal = calibration(pdata, faces)
+    born = _span(p.get("birthday", ""))
+    best: dict[tuple[str, str], tuple[str, dict]] = {}
+    for f in p["faces"]:
+        x = faces.get(f)
+        if x and ((x["sid"], x["gid"]) not in best or x.get("score", 0) > best[(x["sid"], x["gid"])][1].get("score", 0)):
+            best[(x["sid"], x["gid"])] = (f, x)
+    owner = {f: q for q, v in pdata["people"].items() for f in v["faces"]}
+    on_slide: dict[tuple[str, str], set[str]] = {}
+    for f, y in faces.items():
+        if owner.get(f) not in (None, pid):
+            on_slide.setdefault((y["sid"], y["gid"]), set()).add(owner[f])
+    together: dict[str, int] = {}
+    slides = []
+    for sid in sorted({s for s, _ in best}):
+        try:
+            d = Session(sid).data
+        except (FileNotFoundError, ValueError):
+            continue
+        dates = slide_dates(d)
+        at = {g["id"]: i for i, g in enumerate(d["groups"])}
+        for (s, gid), (f, x) in best.items():
+            if s != sid or gid not in at:
+                continue
+            i = at[gid]
+            g = d["groups"][i]
+            est = dates[i]
+            when = _span(est["value"])
+            for q in on_slide.get((sid, gid), ()):
+                together[q] = together.get(q, 0) + 1
+            slides.append({
+                "sid": sid, "gid": gid, "tray": d.get("name", ""), "index": i, "key": render_key(g),
+                "face": {"id": f, "url": f"/api/people/faces/{f}.jpg?v={x['key']}"},
+                "looks": round(corrected(x["age"], pid, cal)[0]) if "age" in x else None,
+                "age": round(when[0] - born[0], 1) if when and born else None,  # from the birthday
+                "date": est["value"], "date_source": est["source"], "place": g.get("place"),
+                "skip": bool(g.get("skip")), "locked": bool(g.get("locked")),
+            })
+    slides.sort(key=lambda s: (not s["date"], s["date"], s["tray"], s["index"]))
+    with_ = sorted(({"id": q, "name": pdata["people"][q].get("name", ""), "slides": n} for q, n in together.items()
+                    if q in pdata["people"]), key=lambda w: -w["slides"])
+    return {"id": pid, "name": p.get("name", ""), "birthday": p.get("birthday", ""), "slides": slides,
+            "with": with_[:12]}

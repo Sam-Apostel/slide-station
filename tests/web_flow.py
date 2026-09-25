@@ -593,9 +593,14 @@ def main() -> None:
             s.get_by_role("button", name="Save").click()
             expect(pg.get_by_text(re.compile(r"Looked for faces on \d+ slides: 0 people")).first).to_be_visible(
                 timeout=120_000)
-            pg.get_by_role("button", name="People", exact=True).click()
-            expect(pg.get_by_role("dialog", name="People").get_by_text("No faces found yet.")).to_be_visible()
+            pg.get_by_role("button", name="People and places", exact=True).click()
+            view = pg.locator("[data-ss-atlas]")
+            expect(view.get_by_text("No faces found yet.")).to_be_visible()
+            # the places: the map view, no places yet
+            view.get_by_role("tab", name="Places").click()
+            expect(view.get_by_text(re.compile(r"^No places yet"))).to_be_visible()
             pg.keyboard.press("Escape")
+            expect(view).to_have_count(0)
             print("people: face model downloaded, every slide looked at")
             if OCR_DIR:  # the text reader: the sign on the last slide names a place
                 t1 = time.time()

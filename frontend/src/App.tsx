@@ -21,7 +21,7 @@ import { ReviewGrid } from "@/components/review-grid";
 import { DevelopLikeDialog, PresetsDialog } from "@/components/looks";
 import { PanelToggles, WindowTitlebar } from "@/components/window-titlebar";
 import { PropagateDialog, ReviewDialog, propagationOffer, type Offer } from "@/components/insights";
-import { PeopleDialog } from "@/components/people";
+import { PeoplePlaces } from "@/components/people";
 import { LOCAL_CLOSED, LocalOverlay, useLocalKeys, type LocalTool } from "@/components/local";
 import { useSlideStation, type SlideStation } from "@/hooks/use-slide-station";
 import { useDesktop, useFolderDrop, type DesktopHandlers } from "@/hooks/use-desktop";
@@ -291,8 +291,8 @@ function SlideStationApp() {
     if (ok) app.startCleanup();
   };
 
-  // People & Places: the places need no model, so it's always there
-  const onPeople = state ? () => setPeopleOpen(true) : undefined;
+  // People & Places (a view in place of the tray): the places need no model, so it's always there
+  const onPeople = state ? () => setPeopleOpen((v) => !v) : undefined;
 
   const handlers: DesktopHandlers = {
     settings: () => openSettings(),
@@ -412,7 +412,18 @@ function SlideStationApp() {
       )}
 
       <main className="flex min-h-0 flex-1">
-        {!state ? null : !hasTrays ? (
+        {state && peopleOpen ? (
+          <PeoplePlaces
+            job={state.job ?? null}
+            onClose={() => setPeopleOpen(false)}
+            onSettings={() => openSettings("smart")}
+            onOpenSlide={(sid, gid) => {
+              setGrid(false);
+              app.openSlide(sid, gid);
+            }}
+            onPlaced={(sids) => sessionId && sids.includes(sessionId) && app.loadSession(sessionId, true)}
+          />
+        ) : !state ? null : !hasTrays ? (
           <EmptyState source={source} onImport={openImport} onImportFolder={() => importFolder()} hosted={hosted} />
         ) : session ? (
           <ResizablePanelGroup
@@ -604,16 +615,6 @@ function SlideStationApp() {
         onFromImmich={openImmich}
       />
       <HelpDialog open={helpOpen} onOpenChange={setHelpOpen} />
-      <PeopleDialog
-        open={peopleOpen}
-        onOpenChange={setPeopleOpen}
-        job={state?.job ?? null}
-        onSettings={() => (setPeopleOpen(false), openSettings("smart"))}
-        onOpenSlide={(sid, gid) => {
-          setGrid(false);
-          app.openSlide(sid, gid);
-        }}
-      />
       <CommandPalette
         open={paletteOpen}
         onOpenChange={setPaletteOpen}
@@ -711,7 +712,8 @@ function useKeyboard(
       (t.isContentEditable ||
         t.matches("textarea, select, input:not([type=range]):not([type=checkbox]), [role=spinbutton]"));
     // Open menus count too: their arrow keys and typeahead must not move between slides.
-    const modalOpen = () => !!document.querySelector("[role=dialog], [role=alertdialog], [role=menu]");
+    // People & Places covers the tray: the slide keys have nothing to act on
+    const modalOpen = () => !!document.querySelector("[role=dialog], [role=alertdialog], [role=menu], [data-ss-atlas]");
 
     const down = (e: KeyboardEvent) => {
       // ⌘K / Ctrl+K opens the command palette, from anywhere (in the desktop app the View menu

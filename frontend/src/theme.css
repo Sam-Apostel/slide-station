@@ -1839,3 +1839,29 @@ body {
 .leaflet-tooltip-top::before {
   border-top-color: var(--ss-panel);
 }
+.ss-map-picking .leaflet-container,
+.ss-map-picking .leaflet-interactive {
+  cursor: crosshair;
+}
+.ss-map-pin span {
+  display: block;
+  width: 18px;
+  height: 18px;
+  border-radius: 50% 50% 50% 0;
+  transform: rotate(-45deg);
+  background: #f2b34b;
+  border: 2px solid #fff;
+  box-shadow: 0 1px 4px rgb(0 0 0 / 0.6);
+}
+.ss-map-pin {
+  cursor: grab;
+}
+.ss-place-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 24px;
+  border-bottom: 1px solid var(--ss-line-soft);
+  background: var(--ss-panel);
+  font-size: 12px;
+}

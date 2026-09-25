@@ -218,3 +218,31 @@ def test_people_who_disagree_arent_averaged(api, tmp_path, aged, monkeypatch):
     # Ann's slide agrees with its dated neighbour: 1974, as it goes already - nothing to suggest
     assert 1973 <= g3["people_year"][0] <= 1976 and g3["date_est"]["value"] == "1974"
     assert (g3["insights"] or {}).get("date") is None
+
+
+def test_person_page(api, tmp_path, aged, monkeypatch):
+    faces, ages = aged
+    # Ann alone, Ann with Bob, Bob alone; slide 2 dated 1980 and placed in Venice
+    faces += [[face(ANN)], [face(ANN), face(BOB, 0.6)], [face(BOB)]]
+    ages += [[29.0], [31.0, 5.0], [6.0]]
+    sid, d = new_tray(api, tmp_path / "scans", slides=3, name="Summer")
+    monkeypatch.setattr(wf, "active_session", None)
+    gids = [g["id"] for g in d["groups"]]
+    out = api.get("/api/people").json()
+    ann, bob = _who(out, sid, gids[0]), _who(out, sid, gids[2])
+    assert ann["cover"] and ann["cover"].startswith(f"/api/people/faces/{sid}/")
+    api.patch(f"/api/people/{ann['id']}", json={"name": "Ann", "birthday": "1950"})
+    api.patch(f"/api/people/{bob['id']}", json={"name": "Bob"})
+    venice = {"name": "Venice", "lat": 45.43713, "lon": 12.33265, "country": "IT"}
+    api.patch(f"/api/sessions/{sid}/groups/{gids[1]}", json={"date": "1980", "place": venice})
+
+    p = api.get(f"/api/people/{ann['id']}").json()
+    assert p["name"] == "Ann" and p["birthday"] == "1950"
+    # dated slides first (by date; the undated one borrows "1980" from its neighbour), tray order after
+    assert [s["gid"] for s in p["slides"]] == [gids[0], gids[1]]
+    s1 = next(s for s in p["slides"] if s["gid"] == gids[1])
+    assert s1["date"] == "1980" and s1["date_source"] == "own" and s1["age"] == 30.0 and s1["looks"] == 31
+    assert s1["place"]["name"] == "Venice" and s1["tray"] == "Summer" and s1["index"] == 1 and s1["key"]
+    assert s1["face"]["url"].startswith(f"/api/people/faces/{sid}/{gids[1]}/")
+    assert p["with"] == [{"id": bob["id"], "name": "Bob", "slides": 1}]
+    assert api.get("/api/people/nobody").status_code == 404

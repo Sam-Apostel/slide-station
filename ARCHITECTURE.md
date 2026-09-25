@@ -1804,14 +1804,46 @@ slide 2 got the tray suggestion.
 
 ## 5g. People & Places, dates from people (`dating.py`)
 
-One dialog (top bar / ⌘K "People & Places…", `components/people.tsx`), always there: the places
-need no model. Two tabs.
+A full-window view (top bar people icon, ⌘K "People & Places…"; `components/people.tsx`) that takes
+the place of filmstrip, stage and inspector while it's open. Always there: the places need no
+model. It carries `data-ss-atlas`, which `useKeyboard` treats like an open dialog (no slide keys);
+Esc steps back: out of placing, then the picked slides, then the page, then the view.
 
-**People** is the old People dialog plus a birthday per person and the ages their faces look.
-`PATCH /api/people/{pid} {"birthday": "1952" | "1952-03" | "1952-03-14" | ""}` (400 on junk, via
-`people.clean_birthday`; can come with `name`) stores `people.json` `people[pid].birthday`; a
-birthday alone keeps an otherwise empty person (like a name), a merge keeps the first birthday.
-Clicking a face opens its slide (`app.openSlide(sid, gid)`: loads the tray if needed).
+- **Sidebar:** People or Places, a search, a sort (A–Z / most slides / people without a birthday),
+  200 rows then "Show all" (one cover face per person — `cover`, their clearest face — so a long
+  list stays light), faces seen once hidden behind a link, and a checkbox per person (on hover) to
+  merge the ones picked ("These N are one person").
+- **Overviews:** People = a face grid (named, then "Who are they?"), the face search / Immich tag
+  actions and the ages note; Places = the map of every place, a click opens the place.
+- **A person's page** (`GET /api/people/{pid}` → `dating.person`): name and birthday editable in
+  the header, slides / places / "looks 21–23", "Often with" (the people on the same slides, most
+  first; a click goes to them). Their slides grouped by year (the date each goes to Immich with,
+  estimates marked ≈), each card with their face in the corner, "age 21 · looks 23" (the age from
+  the birthday and the slide's date, and the age the face looks), the place and the tray; × on a
+  card = "not this person". Beside it a map of their places and the list of those (a click keeps
+  only that place's slides; → opens the place's page).
+- **A place's page:** its region / country / coordinates, who is there (chips with counts), its
+  slides, and the map of every place with this one picked.
+- **Placing slides:** ⌘ / ⇧-click cards (or the checkbox) to pick them, or "Pick them" for a
+  person's slides without a place; "Place on the map", then a click on the map — or on an existing
+  place, which reuses it exactly — gives every picked slide that place (`PATCH …/groups/{gid}`
+  each; locked ones are counted and left). A point is named like typed coordinates in the Place
+  field (`placeAt` → `GET /api/places?q=lat, lon`: the nearest city within 25 km when the place
+  names are downloaded, else the coordinates). The open tray reloads if any of its slides moved.
+- **The inspector's Place field** has a map button: a 160 px map (`PlaceMiniMap`, shown or not
+  remembered in localStorage `place-map`) with the slide's place as a pin; click the map or drag
+  the pin to set it (same naming).
+- Maps are Leaflet on OpenStreetMap's tiles (no key; CARTO's basemaps now need one), darkened with a
+  CSS filter in `theme.css`, which also undoes Tailwind's `img { max-width: 100% }` (it squashes
+  Leaflet's tiles to nothing). **Trap:** Leaflet adds its own classes to the map's div, so React
+  must never render a changing `className` on it (that wiped them when placing mode toggled and
+  the map went blank); `useLeaflet` maps sit on an inner div inside a React-styled wrapper.
+  Offline the dots and pins still show on a blank map.
+
+**Birthdays:** `PATCH /api/people/{pid} {"birthday": "1952" | "1952-03" | "1952-03-14" | ""}` (400
+on junk, via `people.clean_birthday`; can come with `name`) stores `people.json`
+`people[pid].birthday`; a birthday alone keeps an otherwise empty person (like a name), a merge
+keeps the first birthday.
 
 **Ages** (desktop / server app, opt-in `ages_enabled`, Settings under "Recognise people"): a ViT-B/16
 age regressor trained on UTKFace (0–116, so children, who date a slide best), ONNX from
@@ -1852,16 +1884,12 @@ photo) 22–24, Messi (~23) 27–29 — it guesses adults older, which the calib
   treats source `people` as a live guess like the stock ones; decide / review / "accept all" work
   unchanged. Nothing moves a slide's date or `meta_key` until accepted.
 
-**Places** tab: `GET /api/atlas` → every slide with `g["place"]` (not skipped) grouped by name +
-coordinates (3 decimals), with tray, index, own date, render key and the people on it. The map is
-Leaflet (`components/atlas-map.tsx`) on OpenStreetMap's tiles (no key; CARTO's basemaps now need
-one), darkened with a CSS filter in `theme.css`, which also undoes Tailwind's `img { max-width:
-100% }` — it squashes Leaflet's tiles to nothing. One circle per place, area ∝ slides; pick a person
-to see only their places (also "N places" on their row); click a place for its slides, a slide to
-open it. Offline the dots still show on a blank map.
+**The places:** `GET /api/atlas` → every slide with `g["place"]` (not skipped) grouped by name +
+coordinates (3 decimals), with tray, index, own date, render key and the people on it; one circle
+per place, area ∝ slides.
 
 **Browser version:** birthdays (`standalone/people.ts` `cleanBirthday` / `setBirthday`, the same
-people.json) and the atlas route are ported; ages are not (329 MB in every browser's storage, like
+people.json), the atlas and the person's page (`personPage`, no `looks`) are ported; ages are not (329 MB in every browser's storage, like
 captions), so the payload has no `people` / `people_year` there and nothing is dated by people.
 **Swift app:** not ported.
 
@@ -1869,8 +1897,10 @@ captions), so the payload has no `people` / `people_year` there and nothing is d
 the floor on SD), dates from people through the API with `embed_faces` / `estimate_ages` replaced
 (birthdays validated, calibration counts, the suggestion and its text, accepting it not feeding the
 calibration, a neighbour without people getting a vaguer year), the birth-year floor, ages added to
-faces found before (ids kept), birthdays surviving merges, conflicting people not averaged, and the
-atlas (grouping, people, skipped slides).
+faces found before (ids kept), birthdays surviving merges, conflicting people not averaged, the
+atlas (grouping, people, skipped slides) and a person's page (order, ages, place, who they're with,
+404). `tests/web_flow.py` opens the view in the browser version (no faces, no places yet) and
+leaves it with Esc.
 
 ## 6. Immich integration facts (hard-won)
 

@@ -1,228 +1,579 @@
-// People & Places: the faces found on the slides of every tray, grouped by likeness (people.py), and
-// the places the slides were taken on a map (dating.atlas). Name someone once (named people go to
-// Immich as tags, People/<name>) and give their birthday: with the age model (desktop app) the ages
-// their faces look then date the slides they're on (dating.py). In both versions (the browser
-// version runs the face model in the page; ages are the desktop app's).
+// People & Places: a full-window view (in place of filmstrip, stage and inspector) of everyone on
+// the slides of every tray (people.py) and every place they were taken (dating.atlas). A sidebar
+// lists people or places with search and sort; the main pane is an overview (people's faces, or
+// the map), a person's page (their slides by year with the age they were and look, their places,
+// who they're with) or a place's page. Slides picked on a page can be placed by clicking the map.
+// Birthdays date the slides people are on (dating.py; ages are the desktop app's). In both versions.
 import * as React from "react";
 import { toast } from "sonner";
-import { MapPin, X } from "lucide-react";
+import { ArrowLeft, MapPin, MapPinOff, Search, Users, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
-import {
-  Dialog,
-  DialogClose,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select";
 import { Tip } from "@/components/tip";
 import { PreviewImg } from "@/components/filmstrip";
-import { AtlasMap } from "@/components/atlas-map";
+import { AtlasMap, placeAt, type MapPlace } from "@/components/atlas-map";
 import {
   api,
   placeLabel,
   plural,
+  slidePreview,
   type AtlasPayload,
+  type AtlasSlide,
   type Job,
   type PeoplePayload,
   type Person,
+  type PersonPage,
+  type Place,
 } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
-const primary = "bg-primary text-primary-foreground";
-const SHOWN = 14; // faces per person before "show all"
 type Tab = "people" | "places";
+type Nav = { tab: Tab; person?: string; place?: string };
+type Sort = "name" | "slides" | "birthday";
+const LIST = 200; // sidebar rows before "show more"
+const slideId = (s: { sid: string; gid: string }) => `${s.sid}/${s.gid}`;
+const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
+const placeKey = (p: Place) => `${p.name ?? ""}@${p.lat.toFixed(3)},${p.lon.toFixed(3)}`;
 
-export function PeopleDialog({
-  open,
-  onOpenChange,
+export function PeoplePlaces({
   job,
+  initialTab = "people",
+  onClose,
   onSettings,
   onOpenSlide,
+  onPlaced,
 }: {
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
-  /** The running job: the list reloads when a face search finishes. */
+  /** The running job: people reload when a face search finishes. */
   job: Job | null;
+  initialTab?: Tab;
+  onClose: () => void;
   onSettings: () => void;
-  /** Go to a slide (closes the dialog). */
+  /** Go to a slide (closes the view). */
   onOpenSlide: (sid: string, gid: string) => void;
+  /** Slides of these trays got a place here: the open tray reloads. */
+  onPlaced: (sids: string[]) => void;
 }) {
   const [data, setData] = React.useState<PeoplePayload | null>(null);
   const [atlas, setAtlas] = React.useState<AtlasPayload | null>(null);
-  const [selected, setSelected] = React.useState<string[]>([]);
-  const [showOnce, setShowOnce] = React.useState(false);
-  const [tab, setTab] = React.useState<Tab>("people");
-  const [who, setWho] = React.useState(""); // the map shows this person's places ("" = everyone's)
+  const [nav, setNav] = React.useState<Nav>({ tab: initialTab });
+  const [page, setPage] = React.useState<PersonPage | null>(null);
+  const [picked, setPicked] = React.useState<Set<string>>(new Set()); // slides, "sid/gid"
+  const [placing, setPlacing] = React.useState(false);
 
   const run = React.useCallback(async (p: Promise<PeoplePayload>) => {
     try {
       setData(await p);
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : String(e));
+      toast.error(message(e));
     }
   }, []);
-  const load = React.useCallback(() => run(api<PeoplePayload>("GET", "/api/people")), [run]);
+  const loadAtlas = React.useCallback(
+    () => api<AtlasPayload>("GET", "/api/atlas").then(setAtlas, () => setAtlas({ places: [], slides: 0 })),
+    [],
+  );
+  const loadPage = React.useCallback(async (pid: string) => {
+    try {
+      setPage(await api<PersonPage>("GET", `/api/people/${pid}`));
+    } catch {
+      setPage(null);
+      setNav((n) => ({ tab: n.tab }));
+    }
+  }, []);
 
   const searching = !!job && !job.finished && job.kind === "faces";
   React.useEffect(() => {
-    if (open) {
-      load();
-      api<AtlasPayload>("GET", "/api/atlas").then(setAtlas, () => setAtlas(null));
-    } else setSelected([]);
-  }, [open, searching, load]);
+    run(api<PeoplePayload>("GET", "/api/people"));
+    loadAtlas();
+  }, [searching, run, loadAtlas]);
+  React.useEffect(() => {
+    setPicked(new Set());
+    setPlacing(false);
+    if (nav.person) loadPage(nav.person);
+    else setPage(null);
+  }, [nav.person, nav.place, loadPage]);
 
-  const start = async (path: string, what: string) => {
-    try {
-      await api("POST", path);
-      toast(what);
-    } catch (e) {
-      toast.error(e instanceof Error ? e.message : String(e));
-    }
+  // Esc steps back: out of placing, then the selection, then the page, then the view
+  React.useEffect(() => {
+    const down = (e: KeyboardEvent) => {
+      if (e.key !== "Escape" || e.defaultPrevented) return;
+      if (document.querySelector("[role=dialog], [role=alertdialog], [role=menu], [role=listbox]")) return;
+      const t = e.target as HTMLElement;
+      if (t?.matches?.("input, textarea, select")) return t.blur();
+      if (placing) setPlacing(false);
+      else if (picked.size) setPicked(new Set());
+      else if (nav.person || nav.place) setNav({ tab: nav.tab });
+      else onClose();
+    };
+    window.addEventListener("keydown", down);
+    return () => window.removeEventListener("keydown", down);
+  }, [placing, picked, nav, onClose]);
+
+  const editPerson = async (pid: string, body: Record<string, string>) => {
+    await run(api("PATCH", `/api/people/${pid}`, body));
+    if (nav.person === pid) loadPage(pid);
   };
-
-  const rename = (p: Person, name: string) =>
-    name.trim() !== p.name && run(api("PATCH", `/api/people/${p.id}`, { name }));
-  const setBirthday = (p: Person, birthday: string) =>
-    birthday.trim() !== (p.birthday ?? "") && run(api("PATCH", `/api/people/${p.id}`, { birthday }));
-  const remove = (p: Person, face: string) => run(api("POST", `/api/people/${p.id}/remove`, { faces: [face] }));
-  const merge = async () => {
-    const [into, ...rest] = [...selected].sort((a, b) => {
+  const removeFace = async (pid: string, face: string) => {
+    await run(api("POST", `/api/people/${pid}/remove`, { faces: [face] }));
+    loadPage(pid);
+    loadAtlas();
+  };
+  const merge = async (ids: string[]) => {
+    const [into, ...rest] = [...ids].sort((a, b) => {
       // into the named one if there is one, else the biggest
       const pa = data!.people.find((p) => p.id === a)!;
       const pb = data!.people.find((p) => p.id === b)!;
       return +!pa.name - +!pb.name || pb.faces.length - pa.faces.length;
     });
     await run(api("POST", `/api/people/${into}/merge`, { people: rest }));
-    setSelected([]);
+    loadAtlas();
+    setNav({ tab: "people", person: into });
   };
-  const go = (sid: string, gid: string) => {
-    onOpenChange(false);
+  const start = async (path: string, what: string) => {
+    try {
+      await api("POST", path);
+      toast(what);
+    } catch (e) {
+      toast.error(message(e));
+    }
+  };
+
+  /** Give the picked slides a place (null: take theirs away). Locked slides are left as they are. */
+  const place = async (p: Place | null) => {
+    const ids = [...picked];
+    setPlacing(false);
+    let done = 0;
+    let locked = 0;
+    for (const id of ids) {
+      const [sid, gid] = id.split("/");
+      try {
+        await api("PATCH", `/api/sessions/${sid}/groups/${gid}`, { place: p });
+        done++;
+      } catch {
+        locked++;
+      }
+    }
+    toast(
+      (p ? `Placed ${plural(done, "slide")} in ${p.name}` : `Took the place off ${plural(done, "slide")}`) +
+        (locked ? ` (${locked} locked or gone, left as they were)` : ""),
+    );
+    setPicked(new Set());
+    onPlaced([...new Set(ids.map((i) => i.split("/")[0]))]);
+    await loadAtlas();
+    if (nav.person) loadPage(nav.person);
+    if (nav.place && p && ids.length) setNav({ tab: nav.tab, place: placeKey(p) });
+  };
+  const pick = async (lat: number, lon: number, at?: MapPlace) =>
+    place(at ? { name: at.name, lat: at.lat, lon: at.lon, country: at.country, admin: at.admin } : await placeAt(lat, lon));
+
+  const people = data?.people ?? [];
+  const byId = React.useMemo(() => new Map(people.map((p) => [p.id, p])), [people]);
+  const allPlaces = React.useMemo<MapPlace[]>(
+    () => (atlas?.places ?? []).map((p) => ({ ...p, count: p.slides.length })),
+    [atlas],
+  );
+  const open = (sid: string, gid: string) => {
+    onClose();
     onOpenSlide(sid, gid);
   };
+  const selection = {
+    picked,
+    toggle: (id: string) =>
+      setPicked((s) => {
+        const n = new Set(s);
+        if (n.has(id)) n.delete(id);
+        else n.add(id);
+        return n;
+      }),
+    set: setPicked,
+  };
 
-  const all = data?.people ?? [];
-  const once = all.filter((p) => !p.name && p.faces.length === 1);
-  const shown = showOnce ? all : all.filter((p) => !once.includes(p));
-  // how many places each person is seen at, for the rows' map button
-  const placesOf = React.useMemo(() => {
-    const m = new Map<string, number>();
-    for (const pl of atlas?.places ?? [])
-      for (const pid of new Set(pl.slides.flatMap((s) => s.people))) m.set(pid, (m.get(pid) ?? 0) + 1);
-    return m;
-  }, [atlas]);
+  let main: React.ReactNode;
+  if (nav.person) {
+    main = page ? (
+      <PersonView
+        page={page}
+        person={byId.get(page.id)}
+        ages={!!data?.ages?.enabled}
+        places={allPlaces}
+        selection={selection}
+        placing={placing}
+        onPlacing={setPlacing}
+        onPick={pick}
+        onUnplace={() => place(null)}
+        onEdit={(body) => editPerson(page.id, body)}
+        onRemoveFace={(face) => removeFace(page.id, face)}
+        onPerson={(pid) => setNav({ tab: "people", person: pid })}
+        onPlace={(id) => setNav({ tab: "places", place: id })}
+        onOpen={open}
+      />
+    ) : (
+      <Loading />
+    );
+  } else if (nav.place) {
+    const pl = allPlaces.find((p) => p.id === nav.place);
+    main = pl ? (
+      <PlaceView
+        place={pl}
+        places={allPlaces}
+        byId={byId}
+        selection={selection}
+        placing={placing}
+        onPlacing={setPlacing}
+        onPick={pick}
+        onUnplace={() => place(null)}
+        onPerson={(pid) => setNav({ tab: "people", person: pid })}
+        onPlace={(id) => setNav({ tab: "places", place: id ?? undefined })}
+        onOpen={open}
+      />
+    ) : (
+      <Loading />
+    );
+  } else if (nav.tab === "places") {
+    main = (
+      <PlacesOverview atlas={atlas} places={allPlaces} onPlace={(id) => setNav({ tab: "places", place: id })} />
+    );
+  } else {
+    main = (
+      <PeopleOverview
+        data={data}
+        searching={searching}
+        job={job}
+        onPerson={(pid) => setNav({ tab: "people", person: pid })}
+        onSettings={onSettings}
+        onFind={() => start("/api/people/scan", "Looking for faces on every slide")}
+        onTag={() => start("/api/people/tag", "Sending the names to Immich")}
+      />
+    );
+  }
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="flex h-[85vh] flex-col sm:max-w-[900px]">
-        <DialogHeader>
-          <DialogTitle>People &amp; Places</DialogTitle>
-          <DialogDescription>
-            {tab === "people"
-              ? "Faces on your slides, grouped by likeness across every tray. Name someone once — Immich gets the names as tags (People/<name>). A birthday lets the ages on their faces date the slides they're on."
-              : "Where your slides were taken. Pick someone to see where they've been; click a place for its slides."}
-          </DialogDescription>
-        </DialogHeader>
+    <div data-ss-atlas className="flex min-h-0 flex-1 bg-background">
+      <Sidebar
+        nav={nav}
+        onNav={setNav}
+        people={people}
+        places={allPlaces}
+        onClose={onClose}
+        onMerge={merge}
+      />
+      <section className="flex min-w-0 flex-1 flex-col">{main}</section>
+    </div>
+  );
+}
 
-        <div role="tablist" aria-label="View" className="flex gap-1 self-start rounded-md bg-(--ss-panel-2) p-0.5">
+function Loading() {
+  return <p className="p-6 text-[12px] text-muted-foreground">Loading…</p>;
+}
+
+// ---------------------------------------------------------------------------------- sidebar
+
+function Sidebar({
+  nav,
+  onNav,
+  people,
+  places,
+  onClose,
+  onMerge,
+}: {
+  nav: Nav;
+  onNav: (n: Nav) => void;
+  people: Person[];
+  places: MapPlace[];
+  onClose: () => void;
+  onMerge: (ids: string[]) => void;
+}) {
+  const [q, setQ] = React.useState("");
+  const [sort, setSort] = React.useState<Sort>("name");
+  const [more, setMore] = React.useState(false);
+  const [once, setOnce] = React.useState(false);
+  const [merging, setMerging] = React.useState<string[]>([]);
+  React.useEffect(() => (setQ(""), setMore(false)), [nav.tab]);
+
+  const needle = q.trim().toLowerCase();
+  const seenOnce = people.filter((p) => !p.name && p.faces.length === 1).length;
+  const shownPeople = React.useMemo(() => {
+    let list = people.filter((p) => once || p.name || p.faces.length > 1);
+    if (needle) list = list.filter((p) => (p.name || "unnamed").toLowerCase().includes(needle));
+    if (sort === "birthday") list = list.filter((p) => !p.birthday);
+    const byName = (a: Person, b: Person) =>
+      +!a.name - +!b.name || a.name.localeCompare(b.name) || b.slides - a.slides;
+    return [...list].sort(sort === "slides" ? (a, b) => b.slides - a.slides || byName(a, b) : byName);
+  }, [people, needle, sort, once]);
+  const shownPlaces = React.useMemo(() => {
+    const list = needle
+      ? places.filter((p) => placeLabel({ ...p, id: undefined }, true).toLowerCase().includes(needle))
+      : places;
+    return sort === "name" ? [...list].sort((a, b) => a.name.localeCompare(b.name)) : list;
+  }, [places, needle, sort]);
+  const rows = nav.tab === "people" ? shownPeople.length : shownPlaces.length;
+
+  return (
+    <aside className="flex w-[280px] shrink-0 flex-col border-r border-(--ss-line-soft) bg-(--ss-panel)">
+      <div className="flex items-center gap-2 px-3 pt-3">
+        <Tip label="Back to the tray" keys="Esc">
+          <Button variant="ghost" size="sm" className="h-7 px-1.5" onClick={onClose} aria-label="Back to the tray">
+            <ArrowLeft className="size-4" />
+          </Button>
+        </Tip>
+        <div role="tablist" aria-label="View" className="flex flex-1 gap-1 rounded-md bg-(--ss-panel-2) p-0.5">
           {(["people", "places"] as const).map((t) => (
             <button
               key={t}
               type="button"
               role="tab"
-              aria-selected={tab === t}
-              onClick={() => setTab(t)}
+              aria-selected={nav.tab === t && !nav.person && !nav.place}
+              onClick={() => onNav({ tab: t })}
               className={cn(
-                "rounded-[5px] px-3 py-1 text-[12px] text-muted-foreground",
-                tab === t && "bg-(--ss-panel) text-foreground shadow-sm",
+                "flex-1 rounded-[5px] px-2 py-1 text-[12px] text-muted-foreground",
+                nav.tab === t && "bg-(--ss-panel) text-foreground shadow-sm",
               )}
             >
-              {t === "people" ? `People${all.length ? ` · ${all.length - once.length}` : ""}` : `Places${atlas?.places.length ? ` · ${atlas.places.length}` : ""}`}
+              {t === "people" ? "People" : "Places"}
             </button>
           ))}
         </div>
-
-        {tab === "places" ? (
-          <PlacesView atlas={atlas} people={all} who={who} onWho={setWho} onOpenSlide={go} />
-        ) : data && !data.enabled ? (
-          <p className="text-[12px] text-foreground/75">
-            Recognising people is off.{" "}
-            <Button variant="link" className="h-auto p-0 text-[12px]" onClick={onSettings}>
-              Turn it on in Settings
-            </Button>{" "}
-            (it downloads a {data.model_mb} MB face model once).
-          </p>
-        ) : (
-          data && (
-            <>
-              {(data.pending > 0 || searching) && (
-                <div className="flex items-center gap-3 text-[12px]">
-                  <span className="flex-1 text-foreground/75">
-                    {searching
-                      ? job!.message || "Looking for faces…"
-                      : `${plural(data.pending, "slide")} not looked at yet${data.model ? "" : " (the face model is downloaded first)"}.`}
-                  </span>
-                  {!searching && (
-                    <Button size="sm" onClick={() => start("/api/people/scan", "Looking for faces on every slide")}>
-                      Find faces
-                    </Button>
+      </div>
+      <div className="flex gap-1.5 px-3 pt-2 pb-2">
+        <div className="relative flex-1">
+          <Search className="pointer-events-none absolute top-1/2 left-2 size-3.5 -translate-y-1/2 text-muted-foreground" />
+          <Input
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+            placeholder={nav.tab === "people" ? "Find someone" : "Find a place"}
+            aria-label="Search"
+            className="h-7 pl-7 text-[12px]"
+          />
+        </div>
+        <NativeSelect
+          value={sort}
+          onChange={(e) => setSort(e.target.value as Sort)}
+          aria-label="Sort"
+          className="h-7 w-[92px] text-[12px]"
+        >
+          <NativeSelectOption value="name">A–Z</NativeSelectOption>
+          <NativeSelectOption value="slides">Most</NativeSelectOption>
+          {nav.tab === "people" && <NativeSelectOption value="birthday">No birthday</NativeSelectOption>}
+        </NativeSelect>
+      </div>
+      <ul className="min-h-0 flex-1 overflow-y-auto px-1.5 pb-2" aria-label={nav.tab === "people" ? "People" : "Places"}>
+        {nav.tab === "people"
+          ? shownPeople.slice(0, more ? undefined : LIST).map((p) => (
+              <li key={p.id} className="group relative">
+                <button
+                  type="button"
+                  onClick={() => onNav({ tab: "people", person: p.id })}
+                  aria-current={nav.person === p.id || undefined}
+                  className={cn(
+                    "flex w-full items-center gap-2.5 rounded-md py-1 pr-8 pl-1.5 text-left hover:bg-(--ss-panel-2)",
+                    nav.person === p.id && "bg-(--ss-panel-2)",
                   )}
-                </div>
-              )}
-              <AgesNote data={data} onSettings={onSettings} />
-              <div className="-mx-1 min-h-0 flex-1 overflow-y-auto px-1">
-                {!all.length && (
-                  <p className="py-6 text-center text-[12px] text-muted-foreground">No faces found yet.</p>
-                )}
-                <ul className="grid gap-2">
-                  {shown.map((p) => (
-                    <PersonRow
-                      key={p.id}
-                      person={p}
-                      places={placesOf.get(p.id) ?? 0}
-                      selected={selected.includes(p.id)}
-                      onSelect={(on) => setSelected((s) => (on ? [...s, p.id] : s.filter((x) => x !== p.id)))}
-                      onRename={(name) => rename(p, name)}
-                      onBirthday={(b) => setBirthday(p, b)}
-                      onRemove={(face) => remove(p, face)}
-                      onOpenSlide={go}
-                      onMap={() => (setWho(p.id), setTab("places"))}
-                    />
-                  ))}
-                </ul>
-                {once.length > 0 && (
-                  <Button variant="link" className="mt-2 h-auto p-0 text-[12px]" onClick={() => setShowOnce((v) => !v)}>
-                    {showOnce ? "Hide" : "Show"} {plural(once.length, "face")} seen only once
-                  </Button>
-                )}
-              </div>
-            </>
-          )
+                >
+                  <Avatar url={p.cover ?? p.faces[0]?.url} className="size-8" />
+                  <span className="min-w-0 flex-1">
+                    <span className={cn("block truncate text-[12px]", !p.name && "text-muted-foreground italic")}>
+                      {p.name || "Unnamed"}
+                    </span>
+                    <span className="block truncate text-[11px] text-muted-foreground">
+                      {plural(p.slides, "slide")}
+                      {p.birthday && ` · b. ${p.birthday.slice(0, 4)}`}
+                    </span>
+                  </span>
+                </button>
+                <Checkbox
+                  checked={merging.includes(p.id)}
+                  onCheckedChange={(v) => setMerging((m) => (v === true ? [...m, p.id] : m.filter((x) => x !== p.id)))}
+                  aria-label={`Select ${p.name || "this person"} to merge`}
+                  className={cn(
+                    "absolute top-1/2 right-2 -translate-y-1/2 opacity-0 group-hover:opacity-100 focus-visible:opacity-100",
+                    merging.includes(p.id) && "opacity-100",
+                  )}
+                />
+              </li>
+            ))
+          : shownPlaces.slice(0, more ? undefined : LIST).map((p) => (
+              <li key={p.id}>
+                <button
+                  type="button"
+                  onClick={() => onNav({ tab: "places", place: p.id })}
+                  aria-current={nav.place === p.id || undefined}
+                  className={cn(
+                    "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left hover:bg-(--ss-panel-2)",
+                    nav.place === p.id && "bg-(--ss-panel-2)",
+                  )}
+                >
+                  <MapPin className="size-3.5 shrink-0 text-primary" />
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate text-[12px]">{p.name}</span>
+                    <span className="block truncate text-[11px] text-muted-foreground">
+                      {[p.admin, p.country].filter((x) => x && x !== p.name).join(", ") || " "}
+                    </span>
+                  </span>
+                  <span className="text-[11px] text-muted-foreground tabular-nums">{p.count}</span>
+                </button>
+              </li>
+            ))}
+        {!rows && (
+          <li className="px-2 py-4 text-center text-[12px] text-muted-foreground">
+            {needle ? "Nothing matches." : nav.tab === "people" ? "No people yet." : "No places yet."}
+          </li>
         )}
-
-        <DialogFooter className="items-center">
-          {tab === "people" && selected.length >= 2 && (
-            <Button onClick={merge} className="mr-auto">
-              These {selected.length} are the same person
+        {rows > LIST && !more && (
+          <li>
+            <Button variant="link" className="h-auto p-2 text-[12px]" onClick={() => setMore(true)}>
+              Show all {rows}
             </Button>
+          </li>
+        )}
+        {nav.tab === "people" && seenOnce > 0 && (
+          <li>
+            <Button variant="link" className="h-auto p-2 text-[12px]" onClick={() => setOnce((v) => !v)}>
+              {once ? "Hide" : "Show"} {plural(seenOnce, "face")} seen only once
+            </Button>
+          </li>
+        )}
+      </ul>
+      {nav.tab === "people" && merging.length >= 2 && (
+        <div className="flex items-center gap-2 border-t border-(--ss-line-soft) p-2">
+          <Button
+            size="sm"
+            className="flex-1 bg-primary text-primary-foreground"
+            onClick={() => {
+              onMerge(merging);
+              setMerging([]);
+            }}
+          >
+            <Users className="size-3.5" /> These {merging.length} are one person
+          </Button>
+          <Tip label="Clear">
+            <Button size="sm" variant="ghost" onClick={() => setMerging([])} aria-label="Clear the selection">
+              <X className="size-3.5" />
+            </Button>
+          </Tip>
+        </div>
+      )}
+    </aside>
+  );
+}
+
+function Avatar({ url, className }: { url?: string | null; className?: string }) {
+  return url ? (
+    <PreviewImg url={url} alt="" className={cn("shrink-0 rounded-full object-cover", className)} />
+  ) : (
+    <span className={cn("shrink-0 rounded-full bg-(--ss-panel-2)", className)} />
+  );
+}
+
+// ---------------------------------------------------------------------------------- overviews
+
+function PeopleOverview({
+  data,
+  searching,
+  job,
+  onPerson,
+  onSettings,
+  onFind,
+  onTag,
+}: {
+  data: PeoplePayload | null;
+  searching: boolean;
+  job: Job | null;
+  onPerson: (pid: string) => void;
+  onSettings: () => void;
+  onFind: () => void;
+  onTag: () => void;
+}) {
+  if (!data) return <Loading />;
+  const named = data.people.filter((p) => p.name);
+  const unnamed = data.people.filter((p) => !p.name && p.faces.length > 1);
+  return (
+    <div className="min-h-0 flex-1 overflow-y-auto px-6 py-5">
+      <header className="mb-4 flex flex-wrap items-start gap-3">
+        <div className="min-w-0 flex-1">
+          <h1 className="text-[15px] font-medium">People</h1>
+          <p className="mt-0.5 max-w-[640px] text-[12px] text-muted-foreground">
+            Faces on your slides, grouped by likeness across every tray. Name someone once — Immich gets the names as
+            tags (People/&lt;name&gt;). A birthday lets the ages on their faces date the slides they're on.
+          </p>
+        </div>
+        {data.enabled && named.length > 0 && (
+          <Tip label="Tags the slides already in Immich with the names on them">
+            <Button variant="outline" size="sm" onClick={onTag}>
+              Send names to Immich
+            </Button>
+          </Tip>
+        )}
+      </header>
+      {!data.enabled ? (
+        <p className="text-[12px] text-foreground/75">
+          Recognising people is off.{" "}
+          <Button variant="link" className="h-auto p-0 text-[12px]" onClick={onSettings}>
+            Turn it on in Settings
+          </Button>{" "}
+          (it downloads a {data.model_mb} MB face model once). The places work without it.
+        </p>
+      ) : (
+        <>
+          {(data.pending > 0 || searching) && (
+            <div className="mb-3 flex items-center gap-3 rounded-md border border-(--ss-line-soft) px-3 py-2 text-[12px]">
+              <span className="flex-1 text-foreground/75">
+                {searching
+                  ? job!.message || "Looking for faces…"
+                  : `${plural(data.pending, "slide")} not looked at yet${data.model ? "" : " (the face model is downloaded first)"}.`}
+              </span>
+              {!searching && (
+                <Button size="sm" onClick={onFind}>
+                  Find faces
+                </Button>
+              )}
+            </div>
           )}
-          {tab === "people" && data?.enabled && all.some((p) => p.name) && (
-            <Tip label="Tags the slides already in Immich with the names on them">
-              <Button variant="outline" onClick={() => start("/api/people/tag", "Sending the names to Immich")}>
-                Send names to Immich
-              </Button>
-            </Tip>
-          )}
-          <DialogClose asChild>
-            <Button className={primary}>Done</Button>
-          </DialogClose>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+          <AgesNote data={data} onSettings={onSettings} />
+          {!data.people.length && <p className="py-6 text-[12px] text-muted-foreground">No faces found yet.</p>}
+          <FaceGrid title="Named" people={named} onPerson={onPerson} />
+          <FaceGrid title="Who are they?" people={unnamed} onPerson={onPerson} />
+        </>
+      )}
+    </div>
+  );
+}
+
+function FaceGrid({ title, people, onPerson }: { title: string; people: Person[]; onPerson: (pid: string) => void }) {
+  const [all, setAll] = React.useState(false);
+  if (!people.length) return null;
+  const shown = all ? people : people.slice(0, 60);
+  return (
+    <section className="mt-4">
+      <h2 className="mb-2 text-[11px] font-medium tracking-wide text-muted-foreground uppercase">
+        {title} · {people.length}
+      </h2>
+      <ul className="grid grid-cols-[repeat(auto-fill,minmax(104px,1fr))] gap-3">
+        {shown.map((p) => (
+          <li key={p.id}>
+            <button
+              type="button"
+              onClick={() => onPerson(p.id)}
+              className="group flex w-full flex-col items-center gap-1.5 rounded-md p-1.5 text-center hover:bg-(--ss-panel)"
+            >
+              <Avatar url={p.cover ?? p.faces[0]?.url} className="size-[72px] ring-1 ring-(--ss-line-soft) group-hover:ring-primary/60" />
+              <span className={cn("w-full truncate text-[12px]", !p.name && "text-muted-foreground italic")}>
+                {p.name || "Unnamed"}
+              </span>
+              <span className="-mt-1 text-[11px] text-muted-foreground">
+                {plural(p.slides, "slide")}
+                {p.birthday ? ` · ${p.birthday.slice(0, 4)}` : ""}
+              </span>
+            </button>
+          </li>
+        ))}
+      </ul>
+      {people.length > shown.length && (
+        <Button variant="link" className="mt-1 h-auto p-0 text-[12px]" onClick={() => setAll(true)}>
+          Show all {people.length}
+        </Button>
+      )}
+    </section>
   );
 }
 
@@ -248,229 +599,472 @@ function AgesNote({ data, onSettings }: { data: PeoplePayload; onSettings: () =>
     text = `${plural(birthdays, "birthday")}. Date a few slides with them on it yourself and the ages get checked against those.`;
   else
     text = `${plural(birthdays, "birthday")}. Ages checked against ${plural(a.calibrated, "face")} on slides you dated: within about ±${Math.round(a.sigma * 100)} %${
-      Math.abs(a.bias) >= 0.02 ? `, the model guessing ${a.bias < 0 ? "older" : "younger"} than people are by ~${Math.round(Math.abs(Math.expm1(a.bias)) * 100)} %` : ""
+      Math.abs(a.bias) >= 0.02
+        ? `, the model guessing ${a.bias < 0 ? "older" : "younger"} than people are by ~${Math.round(Math.abs(Math.expm1(a.bias)) * 100)} %`
+        : ""
     }.`;
   return <p className="text-[12px] text-foreground/75">{text}</p>;
 }
 
-function PersonRow({
-  person: p,
+function PlacesOverview({
+  atlas,
   places,
-  selected,
-  onSelect,
-  onRename,
-  onBirthday,
-  onRemove,
-  onOpenSlide,
-  onMap,
+  onPlace,
 }: {
-  person: Person;
-  places: number;
-  selected: boolean;
-  onSelect: (on: boolean) => void;
-  onRename: (name: string) => void;
-  onBirthday: (birthday: string) => void;
-  onRemove: (face: string) => void;
-  onOpenSlide: (sid: string, gid: string) => void;
-  onMap: () => void;
+  atlas: AtlasPayload | null;
+  places: MapPlace[];
+  onPlace: (id: string) => void;
 }) {
-  const [name, setName] = React.useState(p.name);
-  const [born, setBorn] = React.useState(p.birthday ?? "");
-  const [all, setAll] = React.useState(false);
-  React.useEffect(() => setName(p.name), [p.name]);
-  React.useEffect(() => setBorn(p.birthday ?? ""), [p.birthday]);
-  const faces = all ? p.faces : p.faces.slice(0, SHOWN);
-  const commit = (e: React.KeyboardEvent) => e.key === "Enter" && (e.currentTarget as HTMLInputElement).blur();
+  if (!atlas) return <Loading />;
   return (
-    <li
-      className={cn(
-        "grid gap-2 rounded-md border border-(--ss-line-soft) p-2",
-        selected && "border-primary/60 bg-primary/5",
-      )}
-    >
-      <div className="flex flex-wrap items-center gap-2">
-        <Checkbox
-          checked={selected}
-          onCheckedChange={(v) => onSelect(v === true)}
-          aria-label={`Select ${p.name || "this person"} to merge`}
-        />
-        <Input
-          value={name}
-          onChange={(e) => setName(e.target.value)}
-          onBlur={() => onRename(name)}
-          onKeyDown={commit}
-          placeholder="Who is this?"
-          aria-label="Name"
-          className="h-[25px] max-w-[220px] text-[12px]"
-        />
-        <Tip label="A year, year-month or full date — dates the slides they're on by the age they look">
-          <Input
-            value={born}
-            onChange={(e) => setBorn(e.target.value)}
-            onBlur={() => onBirthday(born)}
-            onKeyDown={commit}
-            placeholder="Born, e.g. 1952-03-14"
-            aria-label="Birthday"
-            className="h-[25px] w-[150px] text-[12px]"
-          />
-        </Tip>
-        <span className="text-[11px] text-muted-foreground">
-          {plural(p.slides, "slide")}
-          {p.faces.length > p.slides && ` · ${p.faces.length} faces`}
-          {p.ages && ` · looks ${p.ages[0] === p.ages[1] ? `≈ ${p.ages[0]}` : `${p.ages[0]}–${p.ages[1]}`}`}
+    <div className="flex min-h-0 flex-1 flex-col gap-3 px-6 py-5">
+      <header>
+        <h1 className="text-[15px] font-medium">Places</h1>
+        <p className="mt-0.5 text-[12px] text-muted-foreground">
+          {places.length
+            ? `${plural(places.length, "place")} · ${plural(atlas.slides, "slide")} with a place. Click a place for its slides; pick slides on a person's or a place's page to place them on the map.`
+            : "No places yet. Give a slide a place under Details → Place (type it, or click the little map there), or pick slides on someone's page and click the map."}
+        </p>
+      </header>
+      <AtlasMap
+        places={places}
+        selected={null}
+        onSelect={(id) => id && onPlace(id)}
+        className="min-h-[300px] flex-1 overflow-hidden rounded-md border border-(--ss-line-soft)"
+      />
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------------- pages
+
+type Selection = {
+  picked: Set<string>;
+  toggle: (id: string) => void;
+  set: (s: Set<string>) => void;
+};
+
+type Placing = {
+  selection: Selection;
+  placing: boolean;
+  onPlacing: (on: boolean) => void;
+  onPick: (lat: number, lon: number, at?: MapPlace) => void;
+  onUnplace: () => void;
+};
+
+/** Above a page's slides: how many are picked, and placing them on the map. */
+function PlaceBar({
+  selection,
+  placing,
+  onPlacing,
+  onUnplace,
+  unplaced,
+}: Omit<Placing, "onPick"> & { unplaced: string[] }) {
+  const n = selection.picked.size;
+  if (placing)
+    return (
+      <div className="ss-place-bar" role="status">
+        <MapPin className="size-3.5 text-primary" />
+        <span className="flex-1">
+          Click the map where {n === 1 ? "this slide was" : `these ${n} slides were`} taken — or an existing place.
         </span>
-        {places > 0 && (
-          <Tip label="Where they've been">
-            <Button variant="ghost" size="sm" className="ml-auto h-[25px] gap-1 text-[11px]" onClick={onMap}>
-              <MapPin className="size-3.5" /> {plural(places, "place")}
-            </Button>
-          </Tip>
-        )}
+        <Button size="sm" variant="ghost" onClick={() => onPlacing(false)}>
+          Cancel
+        </Button>
       </div>
-      <div className="flex flex-wrap gap-1.5">
-        {faces.map((f) => (
-          <div key={f.id} className="group relative">
-            <button
-              type="button"
-              className="block rounded-sm focus-visible:ring-2 focus-visible:ring-primary"
-              aria-label="Open this slide"
-              onClick={() => f.sid && f.gid && onOpenSlide(f.sid, f.gid)}
-            >
-              <PreviewImg url={f.url} alt="" className="size-[52px] rounded-sm object-cover" />
-            </button>
-            {f.age != null && (
-              <span className="pointer-events-none absolute bottom-0.5 left-0.5 rounded-sm bg-black/70 px-1 text-[10px] leading-[14px] text-white tabular-nums">
-                {f.age}
-              </span>
-            )}
-            {p.faces.length > 1 && (
-              <Tip label="Not this person">
-                <button
-                  type="button"
-                  aria-label="Not this person"
-                  onClick={() => onRemove(f.id)}
-                  className="absolute top-0.5 right-0.5 hidden rounded-full bg-black/70 p-0.5 text-white group-hover:block focus-visible:block"
-                >
-                  <X className="size-3" />
-                </button>
-              </Tip>
-            )}
-          </div>
-        ))}
-        {p.faces.length > SHOWN && (
-          <Button variant="ghost" size="sm" className="self-center" onClick={() => setAll((v) => !v)}>
-            {all ? "Fewer" : `+${p.faces.length - SHOWN} more`}
-          </Button>
-        )}
+    );
+  if (!n)
+    return unplaced.length ? (
+      <div className="ss-place-bar">
+        <span className="flex-1 text-muted-foreground">{plural(unplaced.length, "slide")} without a place.</span>
+        <Button size="sm" variant="ghost" onClick={() => selection.set(new Set(unplaced))}>
+          Pick them
+        </Button>
       </div>
+    ) : null;
+  return (
+    <div className="ss-place-bar">
+      <span className="flex-1">{plural(n, "slide")} picked</span>
+      <Button size="sm" className="bg-primary text-primary-foreground" onClick={() => onPlacing(true)}>
+        <MapPin className="size-3.5" /> Place on the map
+      </Button>
+      <Tip label="Take their place away">
+        <Button size="sm" variant="ghost" onClick={onUnplace} aria-label="Remove their place">
+          <MapPinOff className="size-3.5" />
+        </Button>
+      </Tip>
+      <Tip label="Clear" keys="Esc">
+        <Button size="sm" variant="ghost" onClick={() => selection.set(new Set())} aria-label="Clear the selection">
+          <X className="size-3.5" />
+        </Button>
+      </Tip>
+    </div>
+  );
+}
+
+function SlideCard({
+  slide,
+  picked,
+  onPick,
+  onOpen,
+  face,
+  lines,
+  onNotThem,
+  dim,
+}: {
+  slide: AtlasSlide;
+  picked: boolean;
+  onPick: () => void;
+  onOpen: () => void;
+  /** Their face on it, in the corner. */
+  face?: string;
+  lines: React.ReactNode[];
+  /** "Not this person" (a person's page). */
+  onNotThem?: () => void;
+  dim?: boolean;
+}) {
+  return (
+    <li className={cn("group relative", dim && "opacity-50")}>
+      <button
+        type="button"
+        onClick={(e) => (e.metaKey || e.ctrlKey || e.shiftKey ? onPick() : onOpen())}
+        className={cn(
+          "block w-full overflow-hidden rounded-md border border-(--ss-line-soft) bg-(--ss-panel) text-left",
+          "hover:border-primary/50 focus-visible:ring-2 focus-visible:ring-primary",
+          picked && "border-primary ring-1 ring-primary",
+        )}
+        aria-label={`Open slide ${slide.index + 1} of ${slide.tray}`}
+      >
+        <span className="relative block aspect-[3/2] bg-black">
+          <PreviewImg url={slidePreview(slide)} alt="" className="size-full object-cover" />
+          {face && (
+            <PreviewImg
+              url={face}
+              alt=""
+              className="absolute right-1.5 bottom-1.5 size-9 rounded-full object-cover ring-2 ring-black/70"
+            />
+          )}
+        </span>
+        <span className="block px-2 py-1.5 text-[11px] leading-[15px]">
+          {lines.map((l, i) => (
+            <span key={i} className={cn("block truncate", i ? "text-muted-foreground" : "text-foreground")}>
+              {l}
+            </span>
+          ))}
+        </span>
+      </button>
+      <Checkbox
+        checked={picked}
+        onCheckedChange={onPick}
+        aria-label="Pick this slide"
+        className={cn(
+          "absolute top-1.5 left-1.5 bg-black/60 opacity-0 group-hover:opacity-100 focus-visible:opacity-100",
+          picked && "opacity-100",
+        )}
+      />
+      {onNotThem && (
+        <Tip label="Not this person">
+          <button
+            type="button"
+            aria-label="Not this person"
+            onClick={onNotThem}
+            className="absolute top-1.5 right-1.5 hidden rounded-full bg-black/70 p-0.5 text-white group-hover:block focus-visible:block"
+          >
+            <X className="size-3" />
+          </button>
+        </Tip>
+      )}
     </li>
   );
 }
 
-function PlacesView({
-  atlas,
-  people,
-  who,
-  onWho,
-  onOpenSlide,
-}: {
-  atlas: AtlasPayload | null;
-  people: Person[];
-  who: string;
-  onWho: (pid: string) => void;
-  onOpenSlide: (sid: string, gid: string) => void;
-}) {
-  const [place, setPlace] = React.useState<string | null>(null);
-  const places = React.useMemo(
-    () =>
-      (atlas?.places ?? [])
-        .map((p) => {
-          const slides = who ? p.slides.filter((s) => s.people.includes(who)) : p.slides;
-          return { ...p, slides, count: slides.length };
-        })
-        .filter((p) => p.count > 0),
-    [atlas, who],
-  );
-  React.useEffect(() => setPlace(null), [who]);
-  const named = people.filter((p) => p.name);
-  const open = places.find((p) => p.id === place) ?? null;
-  const person = people.find((p) => p.id === who);
+const dateText = (date: string, source: string) =>
+  !date ? "No date" : source === "own" ? date : `≈ ${date}`;
 
-  if (!atlas) return <p className="py-6 text-center text-[12px] text-muted-foreground">Loading places…</p>;
-  if (!atlas.places.length)
-    return (
-      <p className="py-6 text-center text-[12px] text-muted-foreground">
-        No places yet. Give a slide a place under Details → Place (or accept a suggested one) and it shows up here.
-      </p>
-    );
+function PersonView({
+  page,
+  person,
+  ages,
+  places,
+  selection,
+  placing,
+  onPlacing,
+  onPick,
+  onUnplace,
+  onEdit,
+  onRemoveFace,
+  onPerson,
+  onPlace,
+  onOpen,
+}: Placing & {
+  page: PersonPage;
+  person?: Person;
+  ages: boolean;
+  places: MapPlace[];
+  onEdit: (body: Record<string, string>) => void;
+  onRemoveFace: (face: string) => void;
+  onPerson: (pid: string) => void;
+  onPlace: (id: string) => void;
+  onOpen: (sid: string, gid: string) => void;
+}) {
+  const [name, setName] = React.useState(page.name);
+  const [born, setBorn] = React.useState(page.birthday);
+  const [at, setAt] = React.useState<string | null>(null); // only the slides at this place
+  React.useEffect(() => (setName(page.name), setBorn(page.birthday), setAt(null)), [page.id, page.name, page.birthday]);
+  const commit = (e: React.KeyboardEvent) => e.key === "Enter" && (e.currentTarget as HTMLInputElement).blur();
+
+  const mine = React.useMemo(() => {
+    const ids = new Set(page.slides.map(slideId));
+    return places
+      .map((p) => {
+        const slides = p.slides.filter((s) => ids.has(slideId(s)));
+        return { ...p, slides, count: slides.length };
+      })
+      .filter((p) => p.count);
+  }, [places, page.slides]);
+  const slides = at ? page.slides.filter((s) => s.place && placeKey(s.place) === at) : page.slides;
+  const years = React.useMemo(() => {
+    const out: [string, typeof slides][] = [];
+    for (const s of slides) {
+      const y = s.date ? s.date.slice(0, 4) : "";
+      if (out.at(-1)?.[0] !== y) out.push([y, []]);
+      out.at(-1)![1].push(s);
+    }
+    return out;
+  }, [slides]);
+  const born0 = page.birthday ? +page.birthday.slice(0, 4) : null;
+  const looks = person?.ages;
+  const unplaced = page.slides.filter((s) => !s.place && !s.locked).map(slideId);
+
   return (
-    <div className="flex min-h-0 flex-1 flex-col gap-2">
-      <div className="flex items-center gap-2 text-[12px]">
-        <NativeSelect
-          value={who}
-          onChange={(e) => onWho(e.target.value)}
-          aria-label="Whose places"
-          className="h-[25px] w-[220px] text-[12px]"
-        >
-          <NativeSelectOption value="">Everyone</NativeSelectOption>
-          {(person && !person.name ? [person, ...named] : named).map((p) => (
-            <NativeSelectOption key={p.id} value={p.id}>
-              {p.name || "This person (unnamed)"}
-            </NativeSelectOption>
-          ))}
-        </NativeSelect>
-        <span className="text-muted-foreground">
-          {plural(places.length, "place")} · {plural(places.reduce((n, p) => n + p.count, 0), "slide")}
-          {who && !places.length && " — nobody's given a place on their slides yet"}
-        </span>
-      </div>
-      <AtlasMap
-        places={places}
-        selected={place}
-        onSelect={setPlace}
-        className="min-h-[240px] flex-1 overflow-hidden rounded-md border border-(--ss-line-soft) bg-[#0e0e11]"
-      />
-      <div className="h-[132px] shrink-0 overflow-hidden">
-        {open ? (
-          <div className="flex h-full flex-col gap-1.5">
-            <p className="text-[12px]">
-              <span className="text-foreground">{placeLabel({ ...open, id: undefined }, true)}</span>
-              <span className="text-muted-foreground"> · {plural(open.count, "slide")}</span>
-            </p>
-            <ul className="flex min-h-0 flex-1 gap-1.5 overflow-x-auto pb-1">
-              {open.slides.map((s) => (
-                <li key={`${s.sid}/${s.gid}`} className="shrink-0">
-                  <Tip label={`${s.tray} · slide ${s.index + 1}${s.date ? ` · ${s.date}` : ""}`}>
-                    <button
-                      type="button"
-                      onClick={() => onOpenSlide(s.sid, s.gid)}
-                      className="block rounded-sm focus-visible:ring-2 focus-visible:ring-primary"
-                      aria-label={`Open slide ${s.index + 1} of ${s.tray}`}
-                    >
-                      <PreviewImg
-                        url={`/api/sessions/${s.sid}/groups/${s.gid}/preview.jpg?size=320&v=${s.key}`}
-                        alt=""
-                        className="h-[96px] w-auto max-w-[150px] rounded-sm object-cover"
-                      />
-                    </button>
-                  </Tip>
-                </li>
-              ))}
-            </ul>
+    <div className="flex min-h-0 flex-1">
+      <div className="flex min-w-0 flex-1 flex-col">
+        <header className="flex items-start gap-4 border-b border-(--ss-line-soft) px-6 py-4">
+          <Avatar url={person?.cover ?? page.slides[0]?.face.url} className="size-16 ring-1 ring-(--ss-line-soft)" />
+          <div className="min-w-0 flex-1">
+            <Input
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              onBlur={() => name.trim() !== page.name && onEdit({ name })}
+              onKeyDown={commit}
+              placeholder="Who is this?"
+              aria-label="Name"
+              className="h-8 max-w-[360px] border-transparent bg-transparent px-1 text-[16px] font-medium hover:border-(--ss-line-soft) focus-visible:border-(--ss-line)"
+            />
+            <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 px-1 text-[12px] text-muted-foreground">
+              <label className="flex items-center gap-1.5">
+                Born
+                <Input
+                  value={born}
+                  onChange={(e) => setBorn(e.target.value)}
+                  onBlur={() => born.trim() !== page.birthday && onEdit({ birthday: born })}
+                  onKeyDown={commit}
+                  placeholder="e.g. 1952-03-14"
+                  aria-label="Birthday"
+                  className="h-6 w-[120px] text-[12px]"
+                />
+              </label>
+              <span>
+                {plural(page.slides.length, "slide")} · {plural(mine.length, "place")}
+                {looks && ` · looks ${looks[0] === looks[1] ? `≈ ${looks[0]}` : `${looks[0]}–${looks[1]}`}`}
+              </span>
+              {!page.birthday && ages && <span className="text-foreground/75">A birthday dates their slides.</span>}
+            </div>
+            {page.with.length > 0 && (
+              <div className="mt-2 flex flex-wrap items-center gap-1.5 px-1 text-[11px]">
+                <span className="text-muted-foreground">Often with</span>
+                {page.with.map((w) => (
+                  <button
+                    key={w.id}
+                    type="button"
+                    onClick={() => onPerson(w.id)}
+                    className="rounded-full border border-(--ss-line-soft) px-2 py-0.5 hover:border-primary/50"
+                  >
+                    {w.name || "someone unnamed"} <span className="text-muted-foreground tabular-nums">{w.slides}</span>
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
-        ) : (
-          <ul className="flex flex-wrap gap-x-3 gap-y-1 text-[12px] text-muted-foreground">
-            {places.slice(0, 24).map((p) => (
-              <li key={p.id}>
-                <button type="button" className="hover:text-foreground" onClick={() => setPlace(p.id)}>
-                  {p.name} <span className="tabular-nums">({p.count})</span>
+        </header>
+        <PlaceBar
+          selection={selection}
+          placing={placing}
+          onPlacing={onPlacing}
+          onUnplace={onUnplace}
+          unplaced={unplaced}
+        />
+        <div className="min-h-0 flex-1 overflow-y-auto px-6 pb-6">
+          {at && (
+            <p className="pt-3 text-[12px] text-muted-foreground">
+              At {mine.find((p) => p.id === at)?.name}{" "}
+              <Button variant="link" className="h-auto p-0 text-[12px]" onClick={() => setAt(null)}>
+                show everywhere
+              </Button>
+            </p>
+          )}
+          {years.map(([y, list]) => (
+            <section key={y || "undated"} className="pt-4">
+              <h2 className="sticky top-0 z-10 -mx-6 mb-2 bg-background/95 px-6 py-1 text-[12px] font-medium backdrop-blur">
+                {y || "Undated"}
+                {y && born0 != null && (
+                  <span className="ml-2 font-normal text-muted-foreground">age {Math.max(0, +y - born0)}</span>
+                )}
+                <span className="ml-2 font-normal text-muted-foreground">{plural(list.length, "slide")}</span>
+              </h2>
+              <ul className="grid grid-cols-[repeat(auto-fill,minmax(168px,1fr))] gap-3">
+                {list.map((s) => (
+                  <SlideCard
+                    key={slideId(s)}
+                    slide={s}
+                    face={s.face.url}
+                    picked={selection.picked.has(slideId(s))}
+                    onPick={() => selection.toggle(slideId(s))}
+                    onOpen={() => (selection.picked.size ? selection.toggle(slideId(s)) : onOpen(s.sid, s.gid))}
+                    onNotThem={() => onRemoveFace(s.face.id)}
+                    dim={s.skip}
+                    lines={[
+                      <>
+                        {dateText(s.date, s.date_source)}
+                        {s.age != null && <span className="text-muted-foreground"> · age {Math.floor(s.age)}</span>}
+                        {s.looks != null && <span className="text-muted-foreground"> · looks {s.looks}</span>}
+                      </>,
+                      s.place ? s.place.name : "No place",
+                      `${s.tray} · ${s.index + 1}`,
+                    ]}
+                  />
+                ))}
+              </ul>
+            </section>
+          ))}
+        </div>
+      </div>
+      <aside className="flex w-[34%] max-w-[480px] min-w-[280px] flex-col border-l border-(--ss-line-soft)">
+        <AtlasMap
+          places={mine.length || !placing ? mine : places}
+          selected={at}
+          onSelect={(id) => setAt(id)}
+          picking={placing}
+          onPick={onPick}
+          className="min-h-0 flex-1"
+        />
+        {mine.length > 0 && (
+          <ul className="max-h-[35%] overflow-y-auto border-t border-(--ss-line-soft) p-1.5 text-[12px]">
+            {mine.map((p) => (
+              <li key={p.id} className="flex items-center gap-1">
+                <button
+                  type="button"
+                  onClick={() => setAt(at === p.id ? null : p.id)}
+                  className={cn(
+                    "flex flex-1 items-center gap-2 rounded px-2 py-1 text-left hover:bg-(--ss-panel)",
+                    at === p.id && "bg-(--ss-panel)",
+                  )}
+                >
+                  <MapPin className="size-3.5 text-primary" />
+                  <span className="flex-1 truncate">{placeLabel({ ...p, id: undefined })}</span>
+                  <span className="text-muted-foreground tabular-nums">{p.count}</span>
                 </button>
+                <Tip label="The place's page">
+                  <Button variant="ghost" size="sm" className="h-6 px-1.5" onClick={() => onPlace(p.id)} aria-label={`Open ${p.name}`}>
+                    <ArrowLeft className="size-3 rotate-180" />
+                  </Button>
+                </Tip>
               </li>
             ))}
-            {places.length > 24 && <li>+{places.length - 24} more on the map</li>}
           </ul>
         )}
+      </aside>
+    </div>
+  );
+}
+
+function PlaceView({
+  place,
+  places,
+  byId,
+  selection,
+  placing,
+  onPlacing,
+  onPick,
+  onUnplace,
+  onPerson,
+  onPlace,
+  onOpen,
+}: Placing & {
+  place: MapPlace;
+  places: MapPlace[];
+  byId: Map<string, Person>;
+  onPerson: (pid: string) => void;
+  onPlace: (id: string | null) => void;
+  onOpen: (sid: string, gid: string) => void;
+}) {
+  const who = React.useMemo(() => {
+    const n = new Map<string, number>();
+    for (const s of place.slides) for (const p of s.people) n.set(p, (n.get(p) ?? 0) + 1);
+    return [...n].filter(([p]) => byId.has(p)).sort((a, b) => b[1] - a[1]);
+  }, [place, byId]);
+  const trays = new Set(place.slides.map((s) => s.tray)).size;
+  return (
+    <div className="flex min-h-0 flex-1">
+      <div className="flex min-w-0 flex-1 flex-col">
+        <header className="border-b border-(--ss-line-soft) px-6 py-4">
+          <h1 className="flex items-center gap-2 text-[16px] font-medium">
+            <MapPin className="size-4 text-primary" /> {place.name}
+          </h1>
+          <p className="mt-0.5 text-[12px] text-muted-foreground">
+            {[place.admin, place.country].filter((x) => x && x !== place.name).join(", ")}
+            {(place.admin || place.country) && " · "}
+            {place.lat.toFixed(4)}, {place.lon.toFixed(4)} · {plural(place.count, "slide")}
+            {trays > 1 && ` in ${trays} trays`}
+          </p>
+          {who.length > 0 && (
+            <div className="mt-2 flex flex-wrap items-center gap-1.5 text-[11px]">
+              <span className="text-muted-foreground">Here</span>
+              {who.slice(0, 16).map(([pid, n]) => {
+                const p = byId.get(pid)!;
+                return (
+                  <button
+                    key={pid}
+                    type="button"
+                    onClick={() => onPerson(pid)}
+                    className="flex items-center gap-1.5 rounded-full border border-(--ss-line-soft) py-0.5 pr-2 pl-0.5 hover:border-primary/50"
+                  >
+                    <Avatar url={p.cover ?? p.faces[0]?.url} className="size-5" />
+                    {p.name || "someone unnamed"} <span className="text-muted-foreground tabular-nums">{n}</span>
+                  </button>
+                );
+              })}
+            </div>
+          )}
+        </header>
+        <PlaceBar selection={selection} placing={placing} onPlacing={onPlacing} onUnplace={onUnplace} unplaced={[]} />
+        <ul className="grid min-h-0 flex-1 auto-rows-min grid-cols-[repeat(auto-fill,minmax(168px,1fr))] gap-3 overflow-y-auto px-6 py-4">
+          {place.slides.map((s) => (
+            <SlideCard
+              key={slideId(s)}
+              slide={s}
+              picked={selection.picked.has(slideId(s))}
+              onPick={() => selection.toggle(slideId(s))}
+              onOpen={() => (selection.picked.size ? selection.toggle(slideId(s)) : onOpen(s.sid, s.gid))}
+              lines={[
+                s.date || "No date",
+                s.people.map((p) => byId.get(p)?.name).filter(Boolean).join(", ") || " ",
+                `${s.tray} · ${s.index + 1}`,
+              ]}
+            />
+          ))}
+        </ul>
       </div>
+      <aside className="flex w-[34%] max-w-[480px] min-w-[280px] flex-col border-l border-(--ss-line-soft)">
+        <AtlasMap
+          places={places}
+          selected={place.id}
+          onSelect={(id) => id && onPlace(id)}
+          picking={placing}
+          onPick={onPick}
+          className="min-h-0 flex-1"
+        />
+      </aside>
     </div>
   );
 }

@@ -1357,6 +1357,9 @@ def _people_payload(d: dict) -> dict:
             "slides": len({(faces[f]["sid"], faces[f]["gid"]) for f in fs}),
             # the ages their faces look (corrected by the calibration): youngest, oldest
             "ages": [round(ages[0]), round(ages[-1])] if ages else None,
+            # the clearest face, for the list
+            "cover": (lambda f: f and f"/api/people/faces/{f}.jpg?v={faces[f]['key']}")(
+                max(fs, key=lambda f: faces[f].get("score", 0), default=None)),
             "faces": [{"id": f, "url": f"/api/people/faces/{f}.jpg?v={faces[f]['key']}",
                        "sid": faces[f]["sid"], "gid": faces[f]["gid"],
                        "age": round(dating.corrected(faces[f]["age"], pid, cal)[0]) if "age" in faces[f] else None}
@@ -1394,6 +1397,15 @@ def people_scan():
 def _people_edit(fn, *args):
     try:
         return _people_payload(fn(*args))
+    except KeyError:
+        raise HTTPException(404, "No such person (the list changed meanwhile?)")
+
+
+@app.get("/api/people/{pid}")
+def people_one(pid: str):
+    """One person's page: their slides with dates, ages and places, and who they're seen with."""
+    try:
+        return dating.person(pid, people.refresh())
     except KeyError:
         raise HTTPException(404, "No such person (the list changed meanwhile?)")
 

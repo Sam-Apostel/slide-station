@@ -3,6 +3,7 @@
 // history, render keys, locked slides, dedupe, the upload rules — over a Library (library.ts)
 // instead of the file system, with the pixel work in web workers (engine.ts).
 import type {
+  PersonPage,
   AtlasPayload,
   AtlasPlace,
   AppState,
@@ -1144,6 +1145,7 @@ async function peoplePayload(r: Awaited<ReturnType<typeof refreshPeople>>) {
       birthday: p.birthday ?? "",
       slides: new Set(fs.map((f) => `${faces.get(f)!.sid}/${faces.get(f)!.gid}`)).size,
       ages: null, // the age model is the desktop app's
+      cover: fs.length ? `/api/people/faces/${fs[0]}.jpg?v=${faces.get(fs[0])!.key}` : null,
       faces: fs.map((f) => ({
         id: f,
         url: `/api/people/faces/${f}.jpg?v=${faces.get(f)!.key}`,
@@ -1168,6 +1170,74 @@ async function peoplePayload(r: Awaited<ReturnType<typeof refreshPeople>>) {
     pending: cfg.people_enabled ? (await facesPending()).length : 0,
     people: out,
   };
+}
+
+/** A person's page (dating.person): their slides with dates and places, and who they're with. No
+ *  ages here (the age model is the desktop app's), so `looks` is null; `age` comes from the birthday. */
+async function personPage(pid: string): Promise<PersonPage> {
+  const { d, faces } = await refreshPeople();
+  const p = d.people[pid];
+  if (!p) throw new HttpError(404, "No such person (the list changed meanwhile?)");
+  const years = (v: string) => {
+    const t = parseDate(v);
+    return t ? 1970 + t[0] / (365.2425 * 864e5) : null;
+  };
+  const born = p.birthday ? years(p.birthday) : null;
+  const owner = new Map<string, string>();
+  for (const [q, v] of Object.entries(d.people)) for (const f of v.faces) owner.set(f, q);
+  const onSlide = new Map<string, Set<string>>();
+  for (const [f, x] of faces) {
+    const q = owner.get(f);
+    if (q && q !== pid) onSlide.set(`${x.sid}/${x.gid}`, (onSlide.get(`${x.sid}/${x.gid}`) ?? new Set()).add(q));
+  }
+  const mine = new Map<string, string>(); // slide -> their (first) face on it
+  for (const f of p.faces) {
+    const x = faces.get(f);
+    if (x && !mine.has(`${x.sid}/${x.gid}`)) mine.set(`${x.sid}/${x.gid}`, f);
+  }
+  const together = new Map<string, number>();
+  const slides: PersonPage["slides"] = [];
+  for (const sid of [...new Set([...mine.keys()].map((k) => k.split("/")[0]))].sort()) {
+    let t: SessionData;
+    try {
+      t = await loadSession(sid);
+    } catch {
+      continue;
+    }
+    const dates = slideDates(t);
+    t.groups.forEach((g, index) => {
+      const f = mine.get(`${sid}/${g.id}`);
+      if (!f) return;
+      for (const q of onSlide.get(`${sid}/${g.id}`) ?? []) together.set(q, (together.get(q) ?? 0) + 1);
+      const est = dates[index];
+      const when = est.value ? years(est.value) : null;
+      slides.push({
+        sid,
+        gid: g.id,
+        tray: t.name,
+        index,
+        key: renderKey(g),
+        face: { id: f, url: `/api/people/faces/${f}.jpg?v=${faces.get(f)!.key}` },
+        looks: null,
+        age: when != null && born != null ? Math.round((when - born) * 10) / 10 : null,
+        date: est.value,
+        date_source: est.source as PersonPage["slides"][number]["date_source"],
+        place: g.place ?? null,
+        skip: !!g.skip,
+        locked: !!g.locked,
+      });
+    });
+  }
+  slides.sort(
+    (a, b) =>
+      +!a.date - +!b.date || (a.date < b.date ? -1 : a.date > b.date ? 1 : 0) || a.tray.localeCompare(b.tray) || a.index - b.index,
+  );
+  const withList = [...together]
+    .filter(([q]) => q in d.people)
+    .map(([q, n]) => ({ id: q, name: d.people[q].name ?? "", slides: n }))
+    .sort((a, b) => b.slides - a.slides)
+    .slice(0, 12);
+  return { id: pid, name: p.name ?? "", birthday: p.birthday ?? "", slides, with: withList };
 }
 
 /** People & Places' map: every place with its slides and who is on them (dating.atlas). */
@@ -3064,6 +3134,7 @@ export async function handle(method: string, url: string, body: Body = {}): Prom
     return peoplePayload(await refreshPeople((d) => renamePerson(d, pid, String(body.name ?? ""))));
   }
   if (is("GET", /^\/api\/atlas$/)) return atlas();
+  if ((m = is("GET", /^\/api\/people\/([^/]+)$/))) return personPage(m[1]);
   if ((m = is("POST", /^\/api\/people\/([^/]+)\/merge$/))) {
     const pid = m[1];
     const others = ((body.people as unknown[]) ?? []).map(String);

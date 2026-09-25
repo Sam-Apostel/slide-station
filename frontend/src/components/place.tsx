@@ -1,16 +1,26 @@
 // The slide's place: typed with autocomplete from the offline gazetteer (GeoNames cities, desktop
 // app), or as coordinates ("45.4371, 12.3326", optionally after a name) — the only way in the
 // browser version, which can't fetch GeoNames (no CORS there). Goes to Immich as latitude /
-// longitude and into the export as EXIF GPS.
+// longitude and into the export as EXIF GPS. Or on the little map: click, or drag the pin.
 import * as React from "react";
-import { Check, Download, MapPin, MapPinned, X } from "lucide-react";
+import { Check, Download, Map as MapIcon, MapPin, MapPinned, X } from "lucide-react";
 import { ProButton } from "@/components/ui/pro-button";
 import { Input } from "@/components/ui/input";
 import { Tip } from "@/components/tip";
 import { whySuggested } from "@/components/insights";
+import { PlaceMiniMap, placeAt } from "@/components/atlas-map";
 import { api, placeLabel, type Place, type PlacesAnswer, type Suggestion } from "@/lib/api";
 
 const coords = (p: Place) => `${p.lat.toFixed(4)}, ${p.lon.toFixed(4)}`;
+
+const MAP_KEY = "place-map"; // the little map shown or not, remembered
+const mapShown = () => {
+  try {
+    return localStorage.getItem(MAP_KEY) === "1";
+  } catch {
+    return false;
+  }
+};
 
 /** "Venice 45.4371, 12.3326" or "45.4371, 12.3326": a place of your own, named or not. */
 export function typedPlace(q: string): Place | null {
@@ -50,6 +60,22 @@ export function PlaceField({
   const [active, setActive] = React.useState(0);
   const [ready, setReady] = React.useState<boolean | null>(null);
   const seq = React.useRef(0);
+  const [map, setMap] = React.useState(mapShown);
+  const toggleMap = () =>
+    setMap((v) => {
+      try {
+        localStorage.setItem(MAP_KEY, v ? "0" : "1");
+      } catch {
+        /* private mode */
+      }
+      return !v;
+    });
+  const pickSeq = React.useRef(0);
+  const pickOnMap = async (lat: number, lon: number) => {
+    const n = ++pickSeq.current;
+    const p = await placeAt(lat, lon);
+    if (n === pickSeq.current) onChange(p);
+  };
 
   React.useEffect(() => {
     api<PlacesAnswer>("GET", "/api/places").then(
@@ -90,9 +116,22 @@ export function PlaceField({
 
   return (
     <div className="flex flex-col gap-1">
-      <label htmlFor={id} className="text-[11px] text-muted-foreground">
-        Place
-      </label>
+      <div className="flex items-center">
+        <label htmlFor={id} className="flex-1 text-[11px] text-muted-foreground">
+          Place
+        </label>
+        <Tip label={map ? "Hide the map" : "Show a map: click it or drag the pin to set the place"}>
+          <button
+            type="button"
+            className="ss-tag-add"
+            aria-label={map ? "Hide the map" : "Show the map"}
+            aria-pressed={map}
+            onClick={toggleMap}
+          >
+            <MapIcon />
+          </button>
+        </Tip>
+      </div>
       {!place && suggestion?.state === "suggested" && (
         // the same suggestion as in Insights; here too, so neighbours' places show without the tag model
         <div className="ss-suggestion">
@@ -198,6 +237,13 @@ export function PlaceField({
           </ul>
         )}
       </div>
+      {map && (
+        <PlaceMiniMap
+          place={place}
+          onPick={pickOnMap}
+          className="h-[160px] overflow-hidden rounded-md border border-(--ss-line-soft)"
+        />
+      )}
       {ready === false && (
         <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
           {downloading ? (

@@ -345,6 +345,8 @@ export type Person = {
   slides: number;
   /** The youngest and oldest they look, in years (with the age model). */
   ages?: [number, number] | null;
+  /** Their clearest face, for lists. */
+  cover?: string | null;
   faces: { id: string; url: string; sid?: string; gid?: string; age?: number | null }[];
 };
 
@@ -367,6 +369,33 @@ export type AtlasPlace = Omit<Place, "id"> & {
 };
 
 export type AtlasPayload = { places: AtlasPlace[]; slides: number };
+
+/** One slide as People & Places lists it. */
+export type AtlasSlide = { sid: string; gid: string; tray: string; index: number; date: string; key: string };
+
+/** A person's page (`GET /api/people/{pid}`). */
+export type PersonPage = {
+  id: string;
+  name: string;
+  birthday: string;
+  slides: (AtlasSlide & {
+    /** Their face on it. */
+    face: { id: string; url: string };
+    /** The age they look on it (corrected); null without the age model. */
+    looks: number | null;
+    /** The age they were, from their birthday and the slide's date; null without either. */
+    age: number | null;
+    date_source: "own" | "between" | "near" | "tray" | "scan";
+    place: Place | null;
+    skip: boolean;
+    locked: boolean;
+  })[];
+  /** Who they're on slides with, most first. */
+  with: { id: string; name: string; slides: number }[];
+};
+
+export const slidePreview = (s: { sid: string; gid: string; key: string }, size = 320) =>
+  `/api/sessions/${s.sid}/groups/${s.gid}/preview.jpg?size=${size}&v=${s.key}`;
 
 /** An Immich album to pull photos back in from (`GET /api/immich/albums`). */
 export type ImmichAlbum = { id: string; name: string; count: number; thumb: string | null };
