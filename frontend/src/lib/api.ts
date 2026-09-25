@@ -183,6 +183,8 @@ export type Group = {
   /** The slide's own date ("" = none) and caption. */
   date: string;
   caption: string;
+  /** Written on the slide's mount, as it says ("" = nothing; few slides have any). */
+  writing: string;
   /** The slide's own tags: go to Immich as tags and into the JPEG's XMP keywords. */
   tags: string[];
   /** The slide's own film stock ("" = the tray's, `SessionPayload.stock`). */
@@ -209,10 +211,45 @@ export type Group = {
   born_floor?: number | null;
 };
 
+/** Which of the two trays in a box: they stand side by side. */
+export type Side = "left" | "right";
+
+/** A numbered box of two trays; the shorter boxes hold trays of 36 instead of 50. */
+export type Box = {
+  number: number;
+  /** Slides a tray of it holds: 50, or 36. */
+  size: number;
+  /** What's written on the box ("" = nothing). */
+  writing: string;
+  /** Its trays by side: tray ids. */
+  trays: Partial<Record<Side, string>>;
+};
+
+/** The two sizes of box there are. */
+export const BOX_SIZES = [50, 36] as const;
+
+/** What a tray is called by where it lives: "Box 12 left". */
+export const trayLabel = (box: number | null | undefined, side: Side | null | undefined) =>
+  box == null ? "" : side ? `Box ${box} ${side}` : `Box ${box}`;
+
+/** A new tray: in a box (a new box's size and writing with it), or not; `name` "" = after its box. */
+export type NewTrayBody = {
+  name: string;
+  album: string;
+  date: string;
+  box?: number | null;
+  side?: Side | null;
+  box_size?: number;
+  box_writing?: string;
+};
+
 export type Summary = {
   id: string;
   name: string;
   album: string;
+  /** The box it lives in and which of its trays; null: not in a box (trays from before boxes). */
+  box: number | null;
+  side: Side | null;
   date: string;
   created: number;
   slides: number;
@@ -235,6 +272,8 @@ export type SessionPayload = {
   log: unknown[];
   /** The tray's film stock ("" = not set), for slides without their own. */
   stock: string;
+  /** The box it lives in (null: none), with the slides a tray of it holds and its writing. */
+  box?: Omit<Box, "trays"> | null;
   /** Slides in Immich not in the album / without the tray tag that Settings and the tray name ask for. */
   placement_stale?: boolean;
   /** The Immich album the tray goes to: Settings' album for every tray, else the tray's own. */
@@ -416,6 +455,8 @@ export type AppState = {
   config: Config;
   sources: Source[];
   sessions: Summary[];
+  /** Every box, numbered or holding a tray, by number. */
+  boxes?: Box[];
   job: Job | null;
   /** What the Python server can do (absent in the browser version): accounts (a hosted server,
    *  each Immich user their own library), camera RAW files. */

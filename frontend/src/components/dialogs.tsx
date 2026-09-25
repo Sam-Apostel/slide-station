@@ -17,11 +17,16 @@ import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select"
 import { isMac } from "@/lib/desktop";
 import {
   api,
+  BOX_SIZES,
   plural,
   sourceLabel,
   standalone,
+  trayLabel,
   type AppState,
+  type Box,
   type Group,
+  type NewTrayBody,
+  type Side,
   type Source,
 } from "@/lib/api";
 import type { Stats } from "@/lib/stats";
@@ -33,6 +38,16 @@ const primary = "bg-primary text-primary-foreground";
 
 const FOLDER = "__folder";
 const NOTHING = "__none";
+
+/** Where the next tray probably goes: the other tray of the last box you started, else a new box. */
+export function nextPlace(boxes: Box[]): { box: number; side: Side } {
+  const used = boxes.filter((b) => b.trays.left || b.trays.right);
+  const last = used.at(-1);
+  if (!last) return { box: (boxes.at(-1)?.number ?? 0) + 1, side: "left" };
+  if (!last.trays.left) return { box: last.number, side: "left" };
+  if (!last.trays.right) return { box: last.number, side: "right" };
+  return { box: last.number + 1, side: "left" };
+}
 
 export function NewTrayDialog({
   open,
@@ -50,13 +65,18 @@ export function NewTrayDialog({
   preferSource?: Source;
   /** Opened from a dropped or picked folder: import that. */
   preferFolder?: string;
-  onCreate: (body: { name: string; album: string; date: string }, source: string) => void;
+  onCreate: (body: NewTrayBody, source: string) => void;
   /** Browser version: pick a folder of scans to import (resolves to the new source). */
   onChooseFolder?: () => Promise<Source | null>;
   /** Start a tray from photos already in Immich instead. */
   onFromImmich?: () => void;
 }) {
   const sources = (state?.sources ?? []).filter((x) => x.count > 0);
+  const boxes = state?.boxes ?? [];
+  const [boxText, setBoxText] = React.useState("");
+  const [side, setSide] = React.useState<Side>("left");
+  const [size, setSize] = React.useState<number>(BOX_SIZES[0]);
+  const [writing, setWriting] = React.useState("");
   const [name, setName] = React.useState("");
   const [album, setAlbum] = React.useState("");
   const [date, setDate] = React.useState("");
@@ -65,6 +85,9 @@ export function NewTrayDialog({
 
   React.useEffect(() => {
     if (!open) return;
+    const next = nextPlace(boxes);
+    setBoxText(String(next.box));
+    setSide(next.side);
     setName("");
     setAlbum("");
     setDate("");
@@ -73,12 +96,39 @@ export function NewTrayDialog({
     // only when the dialog opens; the source list refreshes every poll
   }, [open]);
 
+  // empty: not in a box (a tray from somewhere else)
+  const boxNumber = /^\s*\d+\s*$/.test(boxText) && Number(boxText) > 0 ? Number(boxText) : null;
+  const badBox = boxText.trim() !== "" && boxNumber === null;
+  const known = boxes.find((b) => b.number === boxNumber);
+  const taken = (s: Side) => !!known?.trays[s];
+  const sideTaken = boxNumber !== null && taken(side);
+  // a box you're starting now: say how big it is and what's on it; a known one is as it was
+  const newBox = boxNumber !== null && !known;
+  React.useEffect(() => {
+    if (!newBox) return;
+    setSize(BOX_SIZES[0]);
+    setWriting("");
+  }, [boxNumber, newBox]);
+  React.useEffect(() => {
+    // the side that's free, when the box you typed has one tray already
+    if (known && taken(side) && !taken(side === "left" ? "right" : "left")) setSide(side === "left" ? "right" : "left");
+  }, [boxNumber]);
+
   const submit = (e: React.FormEvent) => {
     e.preventDefault();
+    if (badBox || sideTaken) return;
     const src = source === FOLDER ? folder.trim() : source === NOTHING ? "" : source;
     onOpenChange(false);
     onCreate(
-      { name: name.trim() || `Tray ${new Date().toLocaleDateString()}`, album: album.trim(), date: date.trim() },
+      {
+        // in a box the server names it after where it lives
+        name: name.trim() || (boxNumber === null ? `Tray ${new Date().toLocaleDateString()}` : ""),
+        album: album.trim(),
+        date: date.trim(),
+        box: boxNumber,
+        side: boxNumber === null ? null : side,
+        ...(newBox && { box_size: size, box_writing: writing.trim() }),
+      },
       src,
     );
   };
@@ -92,14 +142,83 @@ export function NewTrayDialog({
             <DialogDescription>One tray of slides becomes one Immich album.</DialogDescription>
           </DialogHeader>
           <FieldGroup className="gap-4">
+            <div className="flex gap-3">
+              <Field className="w-[110px] shrink-0" data-invalid={badBox || undefined}>
+                <FieldLabel htmlFor="n-box">Box</FieldLabel>
+                <Input
+                  id="n-box"
+                  autoFocus
+                  inputMode="numeric"
+                  value={boxText}
+                  aria-invalid={badBox || undefined}
+                  onChange={(e) => setBoxText(e.target.value)}
+                  placeholder="none"
+                />
+              </Field>
+              <Field className="min-w-0 flex-1" data-invalid={sideTaken || undefined}>
+                <FieldLabel htmlFor="n-side">Tray</FieldLabel>
+                <NativeSelect
+                  id="n-side"
+                  className="w-full"
+                  value={side}
+                  disabled={boxNumber === null}
+                  aria-invalid={sideTaken || undefined}
+                  onChange={(e) => setSide(e.target.value as Side)}
+                >
+                  {(["left", "right"] as const).map((s) => (
+                    <NativeSelectOption key={s} value={s} disabled={taken(s)}>
+                      {s === "left" ? "Left" : "Right"}
+                      {taken(s) ? " (already scanned)" : ""}
+                    </NativeSelectOption>
+                  ))}
+                </NativeSelect>
+              </Field>
+            </div>
+            {badBox ? (
+              <FieldDescription className="-mt-2 text-destructive">
+                The box number is a whole number; leave it empty for a tray that isn't in a box.
+              </FieldDescription>
+            ) : known ? (
+              <FieldDescription className="-mt-2">
+                Trays of {known.size}
+                {known.writing ? ` · “${known.writing}”` : ""}
+              </FieldDescription>
+            ) : null}
+            {newBox && (
+              <div className="flex gap-3">
+                <Field className="w-[110px] shrink-0">
+                  <FieldLabel htmlFor="n-size">Trays of</FieldLabel>
+                  <NativeSelect
+                    id="n-size"
+                    className="w-full"
+                    value={size}
+                    onChange={(e) => setSize(Number(e.target.value))}
+                  >
+                    {BOX_SIZES.map((n) => (
+                      <NativeSelectOption key={n} value={n}>
+                        {n} slides
+                      </NativeSelectOption>
+                    ))}
+                  </NativeSelect>
+                </Field>
+                <Field className="min-w-0 flex-1">
+                  <FieldLabel htmlFor="n-writing">Written on the box</FieldLabel>
+                  <Input
+                    id="n-writing"
+                    value={writing}
+                    onChange={(e) => setWriting(e.target.value)}
+                    placeholder="optional, as it says"
+                  />
+                </Field>
+              </div>
+            )}
             <Field>
               <FieldLabel htmlFor="n-name">Name</FieldLabel>
               <Input
                 id="n-name"
-                autoFocus
                 value={name}
                 onChange={(e) => setName(e.target.value)}
-                placeholder="Box 3 – tray 2"
+                placeholder={trayLabel(boxNumber, side) || "e.g. Italy 1978"}
               />
             </Field>
             <Field>
@@ -183,7 +302,7 @@ export function NewTrayDialog({
                 Cancel
               </Button>
             </DialogClose>
-            <Button type="submit" className={primary}>
+            <Button type="submit" className={primary} disabled={badBox || sideTaken}>
               Create
             </Button>
           </DialogFooter>

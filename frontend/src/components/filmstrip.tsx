@@ -7,6 +7,7 @@ import {
   plural,
   previewUrl,
   standalone,
+  trayLabel,
   useImageSrc,
   type Group,
   type GroupStatus,
@@ -150,8 +151,11 @@ export function Filmstrip({
     <aside className="flex size-full min-h-0 flex-col border-r border-border bg-[var(--pro-canvas)]">
       <div className="border-b border-border bg-(--ss-panel) px-3 pt-2.5 pb-2">
         <div className="truncate text-[13px] font-semibold text-foreground/90">{sm.name}</div>
-        <div className="text-[11px] text-muted-foreground">
-          {plural(sm.slides, "slide")} · {plural(sm.scans, "scan")}
+        <div className="truncate text-[11px] text-muted-foreground">
+          {/* a tray in a box: how full it is, and where it lives when its name says something else */}
+          {session.box ? `${sm.slides} of ${session.box.size} slides` : plural(sm.slides, "slide")} ·{" "}
+          {plural(sm.scans, "scan")}
+          {session.box && sm.name !== trayLabel(sm.box, sm.side) ? ` · ${trayLabel(sm.box, sm.side)}` : ""}
         </div>
         <TrayGauge session={session} sel={sel} onSelect={onSelect} />
       </div>
@@ -269,7 +273,8 @@ export function Filmstrip({
 
 /**
  * The tray seen from above: every slide stands on edge in its slot, coloured by where it is in the
- * workflow. The current one is pulled up out of the tray. Click a slot to go to that slide.
+ * workflow. The current one is pulled up out of the tray. Click a slot to go to that slide. A tray
+ * in a box shows its empty slots too: 50, or 36 in the shorter boxes.
  */
 function TrayGauge({ session, sel, onSelect }: { session: SessionPayload; sel: number; onSelect: (i: number) => void }) {
   const n = session.groups.length;
@@ -287,6 +292,9 @@ function TrayGauge({ session, sel, onSelect }: { session: SessionPayload; sel: n
           className="ss-tray-slide"
           onClick={() => onSelect(g.index)}
         />
+      ))}
+      {Array.from({ length: Math.max(0, (session.box?.size ?? 0) - n) }, (_, i) => (
+        <span key={`empty-${i}`} aria-hidden className="ss-tray-empty" />
       ))}
     </div>
   );

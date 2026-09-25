@@ -16,6 +16,8 @@ final class AppModel {
     private let libraryBookmark = CardBookmark(key: "libraryBookmark")
 
     private(set) var trays: [Tray] = []
+    /// Every numbered box (`boxes.json`), by number.
+    private(set) var boxes: [Int: Box] = [:]
     /// The open tray, with local edits applied immediately.
     private(set) var tray: Tray?
     var selection = 0
@@ -69,6 +71,7 @@ final class AppModel {
 
     func refresh() async {
         trays = await library.trays()
+        boxes = await library.boxes()
         if let id = tray?.id, let fresh = try? await library.load(id) { tray = fresh }
     }
 
@@ -134,6 +137,45 @@ final class AppModel {
         Task { try? await library.update(id) { $0.name = name; $0.album = album; $0.date = date }; await refresh() }
     }
 
+    /// The open tray's box (a known size and writing, or a new box's defaults); nil outside a box.
+    var box: Box? { tray?.box.map { boxes[$0] ?? Box(number: $0) } }
+
+    /// The box a tray is in: how many slots its tray has, and what's written on it.
+    func box(of tray: Tray) -> Box? { tray.box.map { boxes[$0] ?? Box(number: $0) } }
+
+    /// The tray on this side of box `n`, if there is one.
+    func tray(inBox n: Int, side: Tray.Side) -> Tray? { trays.first { $0.box == n && $0.side == side } }
+
+    /// Where the next tray probably goes: the other tray of the last box you started, else a new box.
+    func nextPlace() -> (box: Int, side: Tray.Side) {
+        let used = Set(trays.compactMap(\.box))
+        guard let last = used.max() else { return ((boxes.keys.max() ?? 0) + 1, .left) }
+        if let free = Tray.Side.allCases.first(where: { tray(inBox: last, side: $0) == nil }) { return (last, free) }
+        return (last + 1, .left)
+    }
+
+    /// Put the open tray in another box or on the other side (nil, nil: out of its box).
+    func move(box: Int?, side: Tray.Side?) {
+        guard let id = tray?.id else { return }
+        Task {
+            do {
+                tray = try await library.move(id, box: box, side: side)
+            } catch {
+                self.error = error.localizedDescription
+            }
+            await refresh()
+        }
+    }
+
+    /// The open tray's box: its size (trays of 50 or 36) and what's written on it.
+    func setBox(size: Int? = nil, writing: String? = nil) {
+        guard let n = tray?.box else { return }
+        Task {
+            do { try await library.saveBox(n, size: size, writing: writing) } catch { self.error = error.localizedDescription }
+            await refresh()
+        }
+    }
+
     func delete(_ id: String) async {
         try? await library.deleteTray(id)
         if tray?.id == id { tray = nil }
@@ -186,12 +228,17 @@ final class AppModel {
     func cancelJob() { jobTask?.cancel() }
 
     /// Import everything new from the card into a new tray (or `into` an existing one), then open it.
-    func importFromCard(name: String, date: String, into existing: String? = nil) {
+    /// In a box: `box`/`side`; a box that's new gets `boxSize` and `boxWriting`.
+    func importFromCard(name: String, date: String, into existing: String? = nil,
+                        box: Int? = nil, side: Tray.Side? = nil, boxSize: Int? = nil, boxWriting: String? = nil) {
         guard let url = cardURL() else { error = "The scanner isn't connected. Plug it in and open Files once."; return }
         let library = library, renderer = renderer, learning = learningEnabled ? learning : nil
         run("Starting import") { progress in
             var trayID = existing ?? ""
-            if existing == nil { trayID = try await library.createTray(name: name, date: date).id }
+            if existing == nil {
+                trayID = try await library.createTray(name: name, date: date, box: box, side: side).id
+                if let box, boxSize != nil || boxWriting != nil { try await library.saveBox(box, size: boxSize, writing: boxWriting) }
+            }
             let opened = trayID
             await MainActor.run { self.pendingOpen = opened }
             let scoped = url.startAccessingSecurityScopedResource()
@@ -274,6 +321,7 @@ final class AppModel {
                     t.groups[j].reviewed = snapshot.reviewed; t.groups[j].skip = snapshot.skip
                     t.groups[j].excluded = snapshot.excluded; t.groups[j].history = snapshot.history
                     t.groups[j].date = snapshot.date; t.groups[j].caption = snapshot.caption
+                    t.groups[j].writing = snapshot.writing
                     if snapshot.currentMount != nil { t.groups[j].mount = snapshot.mount }   // found lazily (findMount)
                 }
             }
@@ -483,6 +531,13 @@ final class AppModel {
     func setCaption(_ caption: String) {
         guard let s = slide else { return }
         edit(s.id, debounce: true) { $0.caption = caption.isEmpty ? nil : caption }
+    }
+
+    /// What's written on the slide's mount. Not the photo: fine on a locked slide, never uploaded.
+    func setWriting(_ writing: String) {
+        guard let s = slide else { return }
+        let w = writing.trimmingCharacters(in: .whitespacesAndNewlines)
+        edit(s.id, debounce: true) { $0.writing = w.isEmpty ? nil : w }
     }
 
     func next() { if let t = tray { selection = min(t.groups.count, selection + 1) } }

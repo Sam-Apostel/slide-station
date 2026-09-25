@@ -34,7 +34,9 @@ public actor Library {
 
     // MARK: trays
 
-    public func createTray(name: String, album: String? = nil, date: String = "") throws -> Tray {
+    /// A new, empty tray; in a box (a free side of it), named after where it lives unless given a name.
+    public func createTray(name: String, album: String? = nil, date: String = "", box: Int? = nil, side: Tray.Side? = nil) throws -> Tray {
+        try checkFree(box: box, side: side)
         let f = DateFormatter()
         f.dateFormat = "yyyyMMdd-HHmmss"
         f.locale = Locale(identifier: "en_US_POSIX")
@@ -42,9 +44,66 @@ public actor Library {
         for sub in ["originals", "cache"] {
             try FileManager.default.createDirectory(at: trayDir(id).appendingPathComponent(sub), withIntermediateDirectories: true)
         }
-        let tray = Tray(id: id, name: name, album: album, date: date)
+        let tray = Tray(id: id, name: name, album: album, date: date, box: box, side: side)
+        if let box { try saveBox(box) }
         try write(tray)
         return tray
+    }
+
+    /// Put a tray in box `box` as its `side` tray (nil, nil: out of its box). A name or album that
+    /// only said where it was moves with it; one you gave it stays (Python: `patch_session`).
+    @discardableResult
+    public func move(_ id: String, box: Int?, side: Tray.Side?) throws -> Tray {
+        try checkFree(box: box, side: side, besides: id)
+        if let box { try saveBox(box) }
+        return try update(id) { t in
+            let old = t.placeLabel, new = Tray.label(box: box, side: side)
+            if !old.isEmpty, !new.isEmpty {
+                if t.name == old { t.name = new }
+                if t.album == old { t.album = new }
+            }
+            t.box = box; t.side = side
+        }
+    }
+
+    /// One tray per side of a box.
+    private func checkFree(box: Int?, side: Tray.Side?, besides id: String? = nil) throws {
+        if let box, box < 1 { throw BoxError.badNumber }
+        guard let box, let side else { return }
+        if let there = trays().first(where: { $0.id != id && $0.box == box && $0.side == side }) {
+            throw BoxError.taken(Tray.label(box: box, side: side), by: there.name)
+        }
+    }
+
+    // MARK: boxes
+
+    /// Box number -> its size and writing (`boxes.json`, as the Python app writes it).
+    public func boxes() -> [Int: Box] {
+        guard let data = try? LocalFiles.read(root.appendingPathComponent("boxes.json")),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let raw = obj["boxes"] as? [String: [String: Any]] else { return [:] }
+        var out: [Int: Box] = [:]
+        for (k, v) in raw {
+            guard let n = Int(k) else { continue }
+            out[n] = Box(number: n, size: v["size"] as? Int ?? Box.sizes[0], writing: v["writing"] as? String ?? "")
+        }
+        return out
+    }
+
+    /// Create or change box `number`; what's not given stays (a new box holds trays of 50).
+    @discardableResult
+    public func saveBox(_ number: Int, size: Int? = nil, writing: String? = nil) throws -> Box {
+        if number < 1 { throw BoxError.badNumber }
+        if let size, !Box.sizes.contains(size) { throw BoxError.badSize }
+        var all = boxes()
+        var b = all[number] ?? Box(number: number)
+        if let size { b.size = size }
+        if let writing { b.writing = writing }
+        all[number] = b
+        // keys sort as strings, like Python's json.dumps of str keys would read back: order doesn't matter
+        let obj: [String: Any] = ["boxes": Dictionary(uniqueKeysWithValues: all.map { (String($0.key), ["size": $0.value.size, "writing": $0.value.writing] as [String: Any]) })]
+        try LocalFiles.write(JSONSerialization.data(withJSONObject: obj, options: [.sortedKeys, .prettyPrinted]), to: root.appendingPathComponent("boxes.json"))
+        return b
     }
 
     public func trays() -> [Tray] {
@@ -153,6 +212,32 @@ public actor Library {
         var obj: [String: Any] = idx.sha
         obj["_fp"] = idx.fp
         try LocalFiles.write(JSONSerialization.data(withJSONObject: obj, options: [.sortedKeys]), to: root.appendingPathComponent("imported.json"))
+    }
+}
+
+/// A numbered box of two trays, left and right: trays of 50, or 36 in the shorter boxes. A box can
+/// have writing on it; a tray can't. Python: `store.load_boxes`.
+public struct Box: Equatable, Sendable {
+    public static let sizes = [50, 36]
+    public var number: Int
+    /// Slides a tray of it holds.
+    public var size: Int = Box.sizes[0]
+    /// What's written on the box ("" = nothing).
+    public var writing: String = ""
+    public init(number: Int, size: Int = Box.sizes[0], writing: String = "") {
+        self.number = number; self.size = size; self.writing = writing
+    }
+}
+
+public enum BoxError: LocalizedError, Equatable {
+    case badNumber, badSize
+    case taken(String, by: String)
+    public var errorDescription: String? {
+        switch self {
+        case .badNumber: "A box number is a whole number: 1, 2, 3…"
+        case .badSize: "A box holds trays of 50 or 36 slides"
+        case .taken(let place, let name): "\(place) is already the tray \"\(name)\""
+        }
     }
 }
 

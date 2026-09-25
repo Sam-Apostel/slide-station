@@ -73,6 +73,8 @@ export type GroupData = {
   locked?: string;
   date?: string;
   caption?: string;
+  /** Written on the slide's mount, as it says (few slides have any). */
+  writing?: string;
   /** The slide's own tags (the desktop app's scene tags; the browser version keeps them as they are). */
   tags?: string[];
   /** The slide's own film stock (filmstock.ts); none = the tray's. */
@@ -105,6 +107,9 @@ export type SessionData = {
   id: string;
   name: string;
   album: string;
+  /** The numbered box it lives in, and which of its two trays: left or right (none: not in a box). */
+  box?: number | null;
+  side?: Side | null;
   date: string;
   /** The tray's film stock, for slides without their own. */
   stock?: string;
@@ -421,6 +426,18 @@ export function statuses(d: SessionData): GroupStatus[] {
   return d.groups.map((g, i) => groupStatus(g, metaKey(g, dates[i])));
 }
 
+// The slides are kept in numbered boxes of two trays, left and right. A box holds two trays of 50,
+// or (the shorter boxes) two of 36. A tray has nothing written on it; a box can have.
+export const BOX_SIZES = [50, 36] as const;
+export const SIDES = ["left", "right"] as const;
+export type Side = (typeof SIDES)[number];
+/** Box number -> its size and what's written on it (boxes.json). */
+export type Boxes = Record<number, { size: number; writing: string }>;
+
+/** What a tray is called by where it lives: "Box 12 left"; "" when it has no box. */
+export const trayLabel = (box: number | null | undefined, side: Side | null | undefined) =>
+  box == null ? "" : side ? `Box ${box} ${side}` : `Box ${box}`;
+
 export function summary(d: SessionData) {
   const st = statuses(d);
   const g = d.groups;
@@ -428,6 +445,8 @@ export function summary(d: SessionData) {
     id: d.id,
     name: d.name,
     album: d.album,
+    box: d.box ?? null,
+    side: d.side ?? null,
     date: d.date ?? "",
     created: d.created,
     slides: g.length,
