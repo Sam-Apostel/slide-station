@@ -1125,6 +1125,15 @@ export function develop(a: RGB, p: Params, crop = true, inPlace = false): RGB {
   return out;
 }
 
+/**
+ * The photo's look (restore, repairs, tone, colour) on its whole frame (imaging.develop_look): no
+ * trim, straighten or crop, so a point found on `a` is still where it was (the faces in People).
+ * local = false leaves out the local adjustments (their masks are drawn for another turn of the slide).
+ */
+export function developLook(a: RGB, p: Params, local = true): RGB {
+  return develop(a, { ...p, trim: false, angle: 0, crop: null, local: local ? p.local : [] });
+}
+
 /** Everything after the tone curves: white balance, brightness, contrast, saturation. In place. */
 function finish(out: RGB, p: Params) {
   const eps = 1e-5;

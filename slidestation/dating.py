@@ -378,7 +378,7 @@ def person(pid: str, pdata: dict | None = None) -> dict:
                 together[q] = together.get(q, 0) + 1
             slides.append({
                 "sid": sid, "gid": gid, "tray": d.get("name", ""), "index": i, "key": render_key(g),
-                "face": {"id": f, "url": f"/api/people/faces/{f}.jpg?v={x['key']}"},
+                "face": {"id": f, "url": f"/api/people/faces/{f}.jpg?v={render_key(g)}"},
                 "looks": round(corrected(x["age"], pid, cal)[0]) if "age" in x else None,
                 "age": round(when[0] - born[0], 1) if when and born else None,  # from the birthday
                 "date": est["value"], "date_source": est["source"], "place": g.get("place"),
