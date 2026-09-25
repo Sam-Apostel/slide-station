@@ -139,6 +139,11 @@ extension Develop {
         return MountEdge(angle: roundTo(angle, 2), confidence: roundTo(conf, 2), box: box)
     }
 
+    /// A mount box `[l, t, r, b]` of a scan mirrored left-right (Python: `mirror_box`).
+    public static func mirrorBox(_ box: [Double?]) -> [Double?] {
+        [box[2].map { roundTo(1 - $0, 4) }, box[1], box[0].map { roundTo(1 - $0, 4) }, box[3]]
+    }
+
     /// A mount box `[l, t, r, b]` of a scan turned clockwise by `rotation` (Python: `rotate_box`).
     public static func rotateBox(_ box: [Double?], _ rotation: Int) -> [Double?] {
         var b = box

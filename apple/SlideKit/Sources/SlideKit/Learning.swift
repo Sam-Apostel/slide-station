@@ -118,16 +118,21 @@ public enum Learning {
 
         public init(url: URL) {
             self.url = url
-            struct File: Decodable { var examples: [Example] }
-            if let d = try? Data(contentsOf: url), let f = try? JSONDecoder().decode(File.self, from: d) { examples = f.examples }
+            reload()
             fit()
+        }
+
+        /// The file as it is now: a library shared with the Mac app may have learned there since.
+        private func reload() {
+            struct File: Decodable { var examples: [Example] }
+            if let d = try? LocalFiles.read(url), let f = try? JSONDecoder().decode(File.self, from: d) { examples = f.examples }
         }
 
         public var ready: Bool { lock.withLock { X != nil } }
 
         private func save() {
             struct File: Encodable { var version = 1; var examples: [Example] }
-            try? JSONEncoder().encode(File(examples: Array(examples.suffix(Learning.maxExamples)))).write(to: url, options: .atomic)
+            if let d = try? JSONEncoder().encode(File(examples: Array(examples.suffix(Learning.maxExamples)))) { try? LocalFiles.write(d, to: url) }
         }
 
         private func fit() {
@@ -147,6 +152,7 @@ public enum Learning {
                                 p: Dictionary(uniqueKeysWithValues: Learning.keys.map { ($0.0, params[keyPath: $0.1]) }),
                                 trim: params.trim, c: Curves.clean(params.curves),
                                 s: stock.flatMap { Learning.stocks.contains($0) ? $0 : nil }, t: Date().timeIntervalSince1970)
+                reload()
                 if let i = examples.firstIndex(where: { $0.key == key }) { examples[i] = e } else { examples.append(e) }
                 save(); fit()
             }
@@ -154,6 +160,7 @@ public enum Learning {
 
         public func forget(key: String) {
             lock.withLock {
+                reload()
                 let n = examples.count
                 examples.removeAll { $0.key == key }
                 if examples.count != n { save(); fit() }

@@ -73,7 +73,7 @@ public final class Renderer: @unchecked Sendable {
     public func preview(_ tray: Tray, _ slide: Slide, maxEdge: Int = 1600, before: Bool = false, crop: Bool = true) throws -> RGBImage {
         var a = try fusedProxy(tray, slide)
         if maxEdge < max(a.width, a.height) { a = a.fitting(maxEdge: maxEdge) }
-        a = a.rotated(slide.rotation)
+        a = a.oriented(slide.rotation, mirror: slide.mirror)
         if before { return Develop.beforeView(a, slide.params, crop: crop) }
         Develop.developInPlace(&a, slide.params, crop: crop)
         return a
@@ -85,7 +85,7 @@ public final class Renderer: @unchecked Sendable {
 
     /// Histograms of what the tone curve works on.
     public func histogram(_ tray: Tray, _ slide: Slide) throws -> [String: [Int]] {
-        let a = try fusedProxy(tray, slide).fitting(maxEdge: 900).rotated(slide.rotation)
+        let a = try fusedProxy(tray, slide).fitting(maxEdge: 900).oriented(slide.rotation, mirror: slide.mirror)
         return Develop.histogram(Develop.toneBase(a, slide.params))
     }
 }

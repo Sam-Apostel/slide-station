@@ -10,6 +10,7 @@ struct SettingsView: View {
     @State private var key = ""
     @State private var test: String?
     @State private var testing = false
+    @State private var pickingLibrary = false
 
     var body: some View {
         NavigationStack {
@@ -37,9 +38,18 @@ struct SettingsView: View {
                     if model.cardPicked { Button("Forget the scanner", role: .destructive) { model.forgetCard() } }
                 }
                 Section {
+                    LabeledContent("Trays", value: model.libraryFolder?.lastPathComponent ?? "On this iPad")
+                    Button(model.libraryFolder == nil ? "Use a folder in Files…" : "Choose another folder…") { pickingLibrary = true }
+                    if model.libraryFolder != nil {
+                        Button("Use this iPad's own library") { Task { await model.useLibrary(nil) } }
+                    }
+                } header: { Text("Library") } footer: {
+                    Text("To share trays with the Mac app, put its library folder in iCloud Drive (Settings → Library in the Mac app) and pick that folder here — the one with “sessions” in it. Both apps then see the same trays, edits and learning. Switching doesn't move any trays.")
+                }
+                Section {
                     Toggle("Learn from developed slides", isOn: Bindable(model).learningEnabled)
                     Toggle("Keep original scans after upload", isOn: Bindable(model).keepOriginals)
-                } header: { Text("Library") } footer: {
+                } footer: {
                     Text("Learning suggests colour settings for new slides from the ones you developed (\(model.learning.examples.count) so far). With originals off, a tray's scans are deleted from this iPad once all its slides are in Immich; those slides can't be edited any more unless you import the scans again.")
                 }
                 Section {
@@ -52,6 +62,9 @@ struct SettingsView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { save(); dismiss() } } }
             .onAppear { url = model.immich.url; key = model.immich.key }
+            .fileImporter(isPresented: $pickingLibrary, allowedContentTypes: [.folder]) { result in
+                if case .success(let folder) = result { Task { await model.useLibrary(folder) } }
+            }
         }
     }
 

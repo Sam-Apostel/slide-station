@@ -4,6 +4,7 @@ import Foundation
 /// Launch-environment hooks for driving the app headlessly in the simulator (screenshots, CI).
 /// DEBUG builds only. Pass with `SIMCTL_CHILD_<NAME>=… xcrun simctl launch …`:
 ///   SS_CARD_PATH   a folder to use as the scanner card instead of the Files bookmark
+///   SS_LIBRARY_PATH  a library folder to use instead of the app's own (like one picked in Settings)
 ///   SS_AUTOIMPORT  import the card into a new tray with this name at launch (if there are no trays)
 ///   SS_OPEN        open the newest tray
 ///   SS_SELECT      select this slide index (or "end" for the finish line)
@@ -13,6 +14,7 @@ import Foundation
 enum DebugLaunch {
     static let env = ProcessInfo.processInfo.environment
     static var cardPath: URL? { env["SS_CARD_PATH"].map { URL(fileURLWithPath: $0, isDirectory: true) } }
+    static var libraryPath: URL? { env["SS_LIBRARY_PATH"].map { URL(fileURLWithPath: $0, isDirectory: true) } }
 
     @MainActor
     static func run(_ model: AppModel) async {

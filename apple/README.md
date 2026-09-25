@@ -49,6 +49,17 @@ The golden fixtures in `SlideKit/Tests/SlideKitTests/Golden` are synthetic slide
 | `cleanup_card`, `sync_locks`, keep originals off | `Originals` — same safety rules; card paths rebuilt from the card's root |
 | scanner under `/Volumes` | `CardBookmark` + `CardSource`: the card is picked once in Files, re-checked when the app becomes active |
 
+## Sharing a library with the Mac app
+
+Settings → Library → "Use a folder in Files…" points the app at a library folder (the one with
+`sessions/` in it), e.g. the Mac app's library moved to iCloud Drive. `Library` keeps each
+`session.json` as read (`JSONValue`) and writes back through `JSONValue.merge`, so fields only the
+Python app knows (insights, places, Immich stacks, `export`…) survive a save here; develop settings
+stay floats. `renderKey` and `metaKey` are byte-for-byte `store.render_key` / `store.meta_key`, so
+both apps agree on what's uploaded. Cloud-only files are fetched with `LocalFiles` (coordinated
+reads) before a tray opens. Check a real library with
+`SLIDEKIT_LIBRARY=~/Pictures/Slide\ Station swift test --filter LibraryInteropTests`.
+
 Not ported yet: a locked slide shows the local render rather than fetching Immich's own preview.
 
 ## Simple and Studio

@@ -51,7 +51,7 @@ public struct Uploader: Sendable {
         props[kCGImagePropertyTIFFDictionary] = tiff
         props[kCGImagePropertyExifDictionary] = exif
         props[kCGImagePropertyOrientation] = 1
-        return try Export.fullResolution(scans: urls, rotation: g.rotation, params: g.params, quality: jpegQuality, properties: props)
+        return try Export.fullResolution(scans: urls, rotation: g.rotation, mirror: g.mirror, params: g.params, quality: jpegQuality, properties: props)
     }
 
     public struct Result: Sendable, Equatable { public var uploaded = 0, lost = 0; public var album = "" }
@@ -126,10 +126,10 @@ public struct Uploader: Sendable {
 
 /// The full-resolution photo of one slide: fuse the bracket, turn it upright, develop, encode.
 public enum Export {
-    public static func fullResolution(scans: [URL], rotation: Int, params: Params, quality: Double = 0.95,
+    public static func fullResolution(scans: [URL], rotation: Int, mirror: Bool = false, params: Params, quality: Double = 0.95,
                                       properties: [CFString: Any] = [:]) throws -> Data {
         // 8-bit scans, turned upright before fusing (rotating 80 MB of bytes, not 240 MB of Float)
-        var sources: [any RowSource] = try scans.map { try RGBA8Image.load($0).rotated(rotation) }
+        var sources: [any RowSource] = try scans.map { try RGBA8Image.load($0).oriented(rotation, mirror: mirror) }
         var a = sources.count == 1 ? sources[0].rgbImage() : Fusion.fuse(sources: sources)
         sources = []
         Develop.developInPlace(&a, params)

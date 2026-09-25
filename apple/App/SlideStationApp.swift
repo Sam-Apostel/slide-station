@@ -20,7 +20,8 @@ struct SlideStationApp: App {
                     #endif
                 }
                 .onChange(of: phase) { _, now in
-                    if now == .active { Task { await model.checkCard() } }
+                    // the Mac may have changed a shared library meanwhile
+                    if now == .active { Task { await model.refresh(); await model.checkCard() } }
                 }
         }
     }

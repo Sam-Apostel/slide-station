@@ -34,6 +34,8 @@ public struct Slide: Codable, Identifiable, Equatable, Sendable {
     public var excluded: [String] = []
     public var autoExcluded: [String: String]?   // scan id -> "blurry" | "clipped"
     public var rotation: Int = 0                  // clockwise, 0/90/180/270
+    /// Scanned the wrong way round: flipped left-right before the rotation (Python: `g["mirror"]`).
+    public var mirror: Bool = false
     public var rotReason: String = ""             // "faces" | "sky" | "manual" | ""
     public var params: Params
     public var paramsSource: String?
@@ -52,6 +54,11 @@ public struct Slide: Codable, Identifiable, Equatable, Sendable {
     /// The slide's own film stock (Python: `g["stock"]`, filmstock.py); nil = the tray's. Kept so a
     /// tray saved here doesn't lose it; this app has no stock UI or guess yet.
     public var stock: String?
+    /// Read for the upload key only (Python: `g["tags"]`, `g["place"]`); `Library` keeps them in the file.
+    public var tags: [String]?
+    public var place: Place?
+
+    public struct Place: Codable, Equatable, Sendable { public var lat: Double; public var lon: Double }
 
     /// The slide's stock, else the tray's (Python: `filmstock.effective`).
     public func effectiveStock(in tray: Tray) -> String? {
@@ -64,7 +71,7 @@ public struct Slide: Codable, Identifiable, Equatable, Sendable {
     public var developed: Bool { reviewed || immich != nil }
 
     enum CodingKeys: String, CodingKey {
-        case id, scans, excluded, rotation, params, reviewed, skip, immich, date, caption, locked, feat, history, mount, stock
+        case id, scans, excluded, rotation, mirror, params, reviewed, skip, immich, date, caption, locked, feat, history, mount, stock, tags, place
         case autoExcluded = "auto_excluded", rotReason = "rot_reason", paramsSource = "params_source"
     }
 
@@ -79,6 +86,7 @@ public struct Slide: Codable, Identifiable, Equatable, Sendable {
         excluded = (try? c.decode([String].self, forKey: .excluded)) ?? []
         autoExcluded = try? c.decode([String: String].self, forKey: .autoExcluded)
         rotation = (try? c.decode(Int.self, forKey: .rotation)) ?? 0
+        mirror = (try? c.decode(Bool.self, forKey: .mirror)) ?? false
         rotReason = (try? c.decode(String.self, forKey: .rotReason)) ?? ""
         params = (try? c.decode(Params.self, forKey: .params)) ?? Params()
         paramsSource = try? c.decode(String.self, forKey: .paramsSource)
@@ -92,6 +100,8 @@ public struct Slide: Codable, Identifiable, Equatable, Sendable {
         history = try? c.decode(History.self, forKey: .history)
         mount = try? c.decode(MountEdge.self, forKey: .mount)
         stock = try? c.decode(String.self, forKey: .stock)
+        tags = try? c.decode([String].self, forKey: .tags)
+        place = try? c.decode(Place.self, forKey: .place)
     }
 
     /// Every key, nulls included, like the Python app writes a group (it reads some with `g["immich"]`).
@@ -100,6 +110,7 @@ public struct Slide: Codable, Identifiable, Equatable, Sendable {
         try c.encode(id, forKey: .id); try c.encode(scans, forKey: .scans); try c.encode(excluded, forKey: .excluded)
         try c.encodeIfPresent(autoExcluded, forKey: .autoExcluded)
         try c.encode(rotation, forKey: .rotation); try c.encode(rotReason, forKey: .rotReason)
+        if mirror { try c.encode(mirror, forKey: .mirror) }
         try c.encode(params, forKey: .params); try c.encodeIfPresent(paramsSource, forKey: .paramsSource)
         try c.encode(reviewed, forKey: .reviewed); try c.encode(skip, forKey: .skip)
         try c.encode(immich, forKey: .immich)
@@ -118,7 +129,7 @@ public struct Slide: Codable, Identifiable, Equatable, Sendable {
     public var canRedo: Bool { !(history?.redo.isEmpty ?? true) }
 
     var snapshot: History.Snapshot {
-        History.Snapshot(params: params, rotation: rotation, rotReason: rotReason, paramsSource: paramsSource ?? "", what: nil, t: 0)
+        History.Snapshot(params: params, rotation: rotation, mirror: mirror, rotReason: rotReason, paramsSource: paramsSource ?? "", what: nil, t: 0)
     }
 
     /// Push the look before an edit onto the undo stack (a slider drag is one step). Python: `_remember`.
@@ -142,7 +153,7 @@ public struct Slide: Codable, Identifiable, Equatable, Sendable {
         guard let snap = undo ? h.undo.popLast() : h.redo.popLast() else { return nil }
         var mine = snapshot; mine.what = snap.what
         if undo { h.redo.append(mine) } else { h.undo.append(mine) }
-        params = snap.params; rotation = snap.rotation; rotReason = snap.rotReason
+        params = snap.params; rotation = snap.rotation; mirror = snap.mirror; rotReason = snap.rotReason
         paramsSource = snap.paramsSource.isEmpty ? nil : snap.paramsSource
         history = h
         return snap.what
@@ -155,18 +166,20 @@ public struct History: Codable, Equatable, Sendable {
     public struct Snapshot: Codable, Equatable, Sendable {
         public var params: Params
         public var rotation: Int
+        public var mirror: Bool
         public var rotReason: String
         public var paramsSource: String
         public var what: String?
         public var t: Double
-        enum CodingKeys: String, CodingKey { case params, rotation, what, t, rotReason = "rot_reason", paramsSource = "params_source" }
-        public init(params: Params, rotation: Int, rotReason: String, paramsSource: String, what: String?, t: Double) {
-            self.params = params; self.rotation = rotation; self.rotReason = rotReason; self.paramsSource = paramsSource; self.what = what; self.t = t
+        enum CodingKeys: String, CodingKey { case params, rotation, mirror, what, t, rotReason = "rot_reason", paramsSource = "params_source" }
+        public init(params: Params, rotation: Int, mirror: Bool = false, rotReason: String, paramsSource: String, what: String?, t: Double) {
+            self.params = params; self.rotation = rotation; self.mirror = mirror; self.rotReason = rotReason; self.paramsSource = paramsSource; self.what = what; self.t = t
         }
         public init(from decoder: Decoder) throws {
             let c = try decoder.container(keyedBy: CodingKeys.self)
             params = (try? c.decode(Params.self, forKey: .params)) ?? Params()
             rotation = (try? c.decode(Int.self, forKey: .rotation)) ?? 0
+            mirror = (try? c.decode(Bool.self, forKey: .mirror)) ?? false
             rotReason = (try? c.decode(String.self, forKey: .rotReason)) ?? ""
             paramsSource = (try? c.decode(String.self, forKey: .paramsSource)) ?? ""
             what = try? c.decode(String.self, forKey: .what)
@@ -186,25 +199,22 @@ extension Slide {
         return s.isEmpty ? Array(scans.prefix(1)) : s
     }
 
-    /// Changes whenever the rendered pixels would change (Python: `store.render_key`).
+    /// Changes whenever the rendered pixels would change: exactly Python's `store.render_key`, so a
+    /// slide uploaded by either app reads as uploaded in both. Settings still at their neutral value
+    /// are left out, so slides uploaded before a setting existed don't become "changed".
     public var renderKey: String {
-        var parts: [String] = [activeScans.joined(separator: ","), String(rotation)]
-        let p = params
-        parts += [p.strength, p.brightness, p.contrast, p.warmth, p.tint, p.saturation].map { String(format: "%.4f", $0) }
-        parts.append(p.trim ? "trim" : "notrim")
-        if !p.curves.isEmpty { parts.append(p.curves.sorted { $0.key < $1.key }.map { "\($0.key):\($0.value)" }.joined(separator: ";")) }
-        if p.angle != 0 { parts.append(String(format: "a%.3f", p.angle)) }
-        if let c = p.crop { parts.append("c\(c)") }
-        if p.dust != 0 { parts.append(String(format: "d%.3f", p.dust)) }   // only when on: older keys stay
-        if p.mould != 0 { parts.append(String(format: "m%.3f", p.mould)) }   // likewise
-        if p.newton != 0 { parts.append(String(format: "n%.3f", p.newton)) }
-        if !p.local.isEmpty {   // likewise only when there are some
-            let enc = JSONEncoder()
-            enc.outputFormatting = .sortedKeys
-            parts.append("l" + String(decoding: (try? enc.encode(p.local)) ?? Data(), as: UTF8.self))
-        }
-        return shortHash(parts.joined(separator: "|"))
+        guard case .object(var p)? = try? JSONValue.encode(params).floats else { return "" }
+        for (k, v) in Slide.neutralExtras where p[k] == v { p[k] = nil }
+        var k: [JSONValue] = [.array(activeScans.map { .string($0) }), .int(rotation), .object(p)]
+        if mirror { k.append(.string("mirror")) }
+        return shortHash(JSONValue.array(k).pythonDumps())
     }
+
+    /// Python: `store.NEUTRAL_EXTRAS`.
+    static let neutralExtras: [String: JSONValue] = [
+        "curves": .object([:]), "angle": .double(0), "crop": .null, "dust": .double(0),
+        "mould": .double(0), "newton": .double(0), "local": .array([]),
+    ]
 }
 
 public enum SlideStatus: String, Sendable { case new, reviewed, changed, uploaded, skipped }
@@ -259,7 +269,13 @@ public struct Tray: Codable, Identifiable, Equatable, Sendable {
         return zip(groups, dates).map { g, d in Tray.status(g, meta: Tray.metaKey(g, date: d)) }
     }
 
-    public static func metaKey(_ g: Slide, date: SlideDate) -> String { shortHash("\(date.value)|\(g.caption ?? "")") }
+    /// What besides the pixels goes to Immich with a slide (Python: `store.meta_key`, byte for byte).
+    public static func metaKey(_ g: Slide, date: SlideDate) -> String {
+        var k: [JSONValue] = [.string(date.value), .string(g.caption ?? "")]
+        if let tags = g.tags, !tags.isEmpty { k.append(.array(tags.sorted(by: JSONValue.pythonOrder).map { .string($0) })) }
+        if let p = g.place { k.append(.object(["gps": .array([.string(String(format: "%.5f", p.lat)), .string(String(format: "%.5f", p.lon))])])) }
+        return shortHash(JSONValue.array(k).pythonDumps(sortKeys: false))
+    }
 
     public static func status(_ g: Slide, meta: String? = nil) -> SlideStatus {
         if g.skip { return .skipped }

@@ -7,9 +7,13 @@ import SwiftUI
 /// screen is edited optimistically and saved through `Library.update`.
 @MainActor @Observable
 final class AppModel {
-    let library: Library
-    let renderer: Renderer
-    let previews: PreviewCache
+    private(set) var library: Library
+    private(set) var renderer: Renderer
+    private(set) var previews: PreviewCache
+    /// A library folder picked in Files (shared with the Mac app, e.g. in iCloud Drive); nil = the
+    /// app's own. Kept open (security-scoped) for as long as it's in use.
+    private(set) var libraryFolder: URL?
+    private let libraryBookmark = CardBookmark(key: "libraryBookmark")
 
     private(set) var trays: [Tray] = []
     /// The open tray, with local edits applied immediately.
@@ -38,12 +42,20 @@ final class AppModel {
     }
 
     init() {
-        let root = Library.defaultRoot()
-        library = try! Library(root: root)
-        renderer = Renderer(library: library)
-        previews = PreviewCache(renderer: renderer)
-        RendererSizes.shared.library = library
-        learning = Learning.Model(url: root.appendingPathComponent("learning.json"))
+        var folder: URL?
+        #if DEBUG
+        folder = DebugLaunch.libraryPath
+        #endif
+        folder = folder ?? CardBookmark(key: "libraryBookmark").resolve()
+        if let folder { _ = folder.startAccessingSecurityScopedResource() }
+        let lib = folder.flatMap { try? Library(root: $0) } ?? (try! Library(root: Library.defaultRoot()))
+        libraryFolder = folder.flatMap { lib.root == $0 ? $0 : nil }
+        library = lib
+        let r = Renderer(library: lib)
+        renderer = r
+        previews = PreviewCache(renderer: r)
+        RendererSizes.shared.library = lib
+        learning = Learning.Model(url: lib.root.appendingPathComponent("learning.json"))
         immich = ImmichSettings(url: UserDefaults.standard.string(forKey: "immichURL") ?? "", key: Keychain.get("immichKey") ?? "")
         learningEnabled = UserDefaults.standard.object(forKey: "learningEnabled") as? Bool ?? true
         keepOriginals = UserDefaults.standard.object(forKey: "keepOriginals") as? Bool ?? true
@@ -60,7 +72,54 @@ final class AppModel {
         if let id = tray?.id, let fresh = try? await library.load(id) { tray = fresh }
     }
 
+    /// Switch to the library in `folder` (picked in Files), or back to this iPad's own (nil).
+    func useLibrary(_ folder: URL?) async {
+        guard !busy else { error = "Wait for the current job to finish first."; return }
+        let old = libraryFolder
+        do {
+            if let folder {
+                _ = folder.startAccessingSecurityScopedResource()
+                let lib = try Library(root: folder)
+                try libraryBookmark.save(folder)
+                setLibrary(lib, folder: folder)
+            } else {
+                libraryBookmark.forget()
+                setLibrary(try Library(root: Library.defaultRoot()), folder: nil)
+            }
+        } catch {
+            folder?.stopAccessingSecurityScopedResource()
+            self.error = "Couldn't use that folder: \(error.localizedDescription)"
+            return
+        }
+        if let old, old != folder { old.stopAccessingSecurityScopedResource() }
+        tray = nil
+        trays = []
+        await refresh()
+        await checkCard()
+    }
+
+    private func setLibrary(_ lib: Library, folder: URL?) {
+        library = lib
+        renderer = Renderer(library: lib)
+        previews = PreviewCache(renderer: renderer)
+        RendererSizes.shared.library = lib
+        learning = Learning.Model(url: lib.root.appendingPathComponent("learning.json"))
+        libraryFolder = folder
+    }
+
     func open(_ id: String) async {
+        // a shared library in iCloud Drive: fetch the tray's files before showing it
+        let library = library
+        let missing = await Task.detached { library.notDownloaded(id) }.value
+        if !missing.isEmpty {
+            pendingOpen = id
+            let total = missing.count
+            run("Downloading the tray") { progress in
+                await library.download(missing) { n in progress(JobProgress("Downloading the tray", done: n, total: total)) }
+                return "Downloaded \(total) files"
+            }
+            return
+        }
         guard let t = try? await library.load(id) else { return }
         tray = t
         // start where the work is: the first slide not developed or skipped yet
@@ -177,7 +236,7 @@ final class AppModel {
         didSet { UserDefaults.standard.set(keepOriginals, forKey: "keepOriginals") }
     }
     /// Colour settings learned from developed slides (the library's learning.json).
-    @ObservationIgnored let learning: Learning.Model
+    @ObservationIgnored private(set) var learning: Learning.Model
 
     // MARK: editing
 
@@ -281,7 +340,7 @@ final class AppModel {
                 p.strength = 0
                 let base = await Task.detached { () -> RGBImage? in
                     guard let a = try? renderer.fusedProxy(tray, g) else { return nil }
-                    return Develop.toneBase(a.fitting(maxEdge: 900).rotated(g.rotation), p)
+                    return Develop.toneBase(a.fitting(maxEdge: 900).oriented(g.rotation, mirror: g.mirror), p)
                 }.value
                 guard let base else { continue }
                 let fitted = Develop.fitCurves(base, g.params.curves)
@@ -298,7 +357,7 @@ final class AppModel {
         Task {
             let wt = await Task.detached { () -> (Double, Double)? in
                 guard let a = try? renderer.fusedProxy(tray, g) else { return nil }
-                return Develop.neutralBalance(a.rotated(g.rotation), g.params, x: point.x, y: point.y)
+                return Develop.neutralBalance(a.oriented(g.rotation, mirror: g.mirror), g.params, x: point.x, y: point.y)
             }.value
             if let wt { setBalance(warmth: wt.0, tint: wt.1) }
         }
@@ -323,14 +382,15 @@ final class AppModel {
     func straightenToMount(trim: Bool = false) {
         guard let tray, let g = slide, let m = g.currentMount, m.confidence > 0 else { return }
         var straight = g.params
-        straight.angle = m.angle == 0 ? 0 : -m.angle
+        // the mount was measured on the scan as it came
+        straight.angle = m.angle == 0 ? 0 : g.mirror ? m.angle : -m.angle
         let renderer = renderer, p = straight, angle = straight.angle
         Task {
             var crop = g.params.crop
             if trim {
                 crop = await Task.detached { () -> [Double]? in
                     guard let a = try? renderer.fusedProxy(tray, g) else { return nil }
-                    return Develop.mountCrop(a.rotated(g.rotation), p, box: Develop.rotateBox(m.box, g.rotation))
+                    return Develop.mountCrop(a.oriented(g.rotation, mirror: g.mirror), p, box: Develop.rotateBox(g.mirror ? Develop.mirrorBox(m.box) : m.box, g.rotation))
                 }.value
             }
             edit(g.id, what: "mount") { $0.params.angle = angle; $0.params.crop = crop }

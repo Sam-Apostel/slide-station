@@ -50,6 +50,26 @@ public struct RGBImage: Sendable {
         width = ow; height = b - t
     }
 
+    /// A slide's frame: mirrored left-right first (scanned the wrong way round), then rotated
+    /// (Python: `imaging.orient`).
+    public func oriented(_ degrees: Int, mirror: Bool) -> RGBImage { (mirror ? mirrored() : self).rotated(degrees) }
+
+    public func mirrored() -> RGBImage {
+        var out = RGBImage(width: width, height: height)
+        let w = width
+        data.withUnsafeBufferPointer { src in
+            out.data.withUnsafeMutableBufferPointer { dst in
+                for y in 0..<height {
+                    for x in 0..<w {
+                        let s = (y * w + (w - 1 - x)) * 3, d = (y * w + x) * 3
+                        dst[d] = src[s]; dst[d + 1] = src[s + 1]; dst[d + 2] = src[s + 2]
+                    }
+                }
+            }
+        }
+        return out
+    }
+
     /// Clockwise rotation by 0/90/180/270 degrees.
     public func rotated(_ degrees: Int) -> RGBImage {
         let rot = ((degrees % 360) + 360) % 360
@@ -459,6 +479,24 @@ public struct RGBA8Image: RowSource {
                 out[x * 3 + 2] = Float(p[base + x * 4 + 2]) / 255
             }
         }
+    }
+
+    /// Like `RGBImage.oriented`.
+    public func oriented(_ degrees: Int, mirror: Bool) -> RGBA8Image { (mirror ? mirrored() : self).rotated(degrees) }
+
+    public func mirrored() -> RGBA8Image {
+        let w = width, h = height
+        var out = [UInt32](repeating: 0, count: w * h)
+        bytes.withUnsafeBytes { raw in
+            let src = raw.bindMemory(to: UInt32.self)
+            out.withUnsafeMutableBufferPointer { dst in
+                let d = dst
+                parallelFor(h) { rows in
+                    for y in rows { for x in 0..<w { d[y * w + x] = src[y * w + (w - 1 - x)] } }
+                }
+            }
+        }
+        return RGBA8Image(width: w, height: h, bytes: out.withUnsafeBytes { Array($0) })
     }
 
     /// Clockwise by 0/90/180/270, like `RGBImage.rotated`.
