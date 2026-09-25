@@ -1460,6 +1460,13 @@ def learning_reset():
 def _people_payload(d: dict) -> dict:
     faces = people.all_faces()
     cal = dating.calibration(d, faces)
+    looks = {}  # (tray, slide) -> render key: a face's URL changes when its slide is edited
+    for sid in {x["sid"] for x in faces.values()}:
+        try:
+            looks.update({(sid, g["id"]): render_key(g) for g in Session(sid).data["groups"]})
+        except (FileNotFoundError, ValueError):
+            pass
+    url = lambda f: f"/api/people/faces/{f}.jpg?v={looks.get((faces[f]['sid'], faces[f]['gid']), '')}"
     out = []
     for pid, p in d["people"].items():
         fs = [f for f in p["faces"] if f in faces]
@@ -1472,9 +1479,8 @@ def _people_payload(d: dict) -> dict:
             # the ages their faces look (corrected by the calibration): youngest, oldest
             "ages": [round(ages[0]), round(ages[-1])] if ages else None,
             # the clearest face, for the list
-            "cover": (lambda f: f and f"/api/people/faces/{f}.jpg?v={faces[f]['key']}")(
-                max(fs, key=lambda f: faces[f].get("score", 0), default=None)),
-            "faces": [{"id": f, "url": f"/api/people/faces/{f}.jpg?v={faces[f]['key']}",
+            "cover": (lambda f: f and url(f))(max(fs, key=lambda f: faces[f].get("score", 0), default=None)),
+            "faces": [{"id": f, "url": url(f),
                        "sid": faces[f]["sid"], "gid": faces[f]["gid"],
                        "age": round(dating.corrected(faces[f]["age"], pid, cal)[0]) if "age" in faces[f] else None}
                       for f in fs],
@@ -1570,9 +1576,13 @@ def atlas():
     return dating.atlas()
 
 
+_face_looks: dict = {}  # the last few slides faces were cut from, developed
+_face_looks_lock = threading.Lock()
+
+
 @app.get("/api/people/faces/{sid}/{gid}/{n}.jpg")
 def people_face(sid: str, gid: str, n: str, v: str = ""):
-    """A face, cut from the slide it is on (as it was turned when the face was found)."""
+    """A face, cut from the slide it is on as edited (turned as it was when the face was found)."""
     s = _session(sid)
     entry = people.load_faces(sid).get(gid) or {}
     face = next((f for f in entry.get("faces", []) if f["id"] == f"{sid}/{gid}/{n}"), None)
@@ -1582,8 +1592,19 @@ def people_face(sid: str, gid: str, n: str, v: str = ""):
         face = None
     if not face:
         raise HTTPException(404)
-    a = people.face_crop(im.orient(wf.fused_proxy(s, g), entry.get("rot", 0), entry.get("mirror", False)), face["box"])
-    fresh = v and v == entry.get("key")
+    rot, mirror = entry.get("rot", 0), bool(entry.get("mirror"))
+    key = (str(s.dir), gid, render_key(g), rot, mirror)
+    with _face_looks_lock:
+        a = _face_looks.get(key)
+    if a is None:  # the slide as edited (several faces on it: developed once)
+        same = rot == g["rotation"] and mirror == bool(g.get("mirror"))
+        a = im.develop_look(im.orient(wf.fused_proxy(s, g), rot, mirror), Params.from_dict(g["params"]), local=same)
+        with _face_looks_lock:
+            _face_looks[key] = a
+            while len(_face_looks) > 8:
+                _face_looks.pop(next(iter(_face_looks)))
+    a = people.face_crop(a, face["box"])
+    fresh = v and v == render_key(g)  # face URLs carry the slide's render key: an edit makes a new one
     return Response(im.to_jpeg_bytes(a, 85), media_type="image/jpeg",
                     headers={"Cache-Control": "max-age=31536000" if fresh else "no-store"})
 

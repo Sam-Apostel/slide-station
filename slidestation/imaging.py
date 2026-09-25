@@ -6,7 +6,7 @@ import json
 import math
 import threading
 import warnings
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 
 import cv2
@@ -1060,6 +1060,13 @@ def develop(a: np.ndarray, p: Params, crop: bool = True) -> np.ndarray:
     if p.local:
         apply_local(out, p.local, (w, h), (l, t), p.angle)
     return out
+
+
+def develop_look(a: np.ndarray, p: Params, local: bool = True) -> np.ndarray:
+    """The photo's look (restore, repairs, tone, colour) on its whole frame: no trim, straighten or
+    crop, so a point found on `a` is still where it was (the faces in People). local=False leaves out
+    the local adjustments (their masks are drawn for another turn of the slide)."""
+    return develop(a, replace(p, trim=False, angle=0.0, crop=None, local=p.local if local else []))
 
 
 # --------------------------------------------------------------------------- local adjustments

@@ -2,8 +2,11 @@
 (people.embed_faces monkeypatched: no model, no network). Shared fixtures: conftest.py."""
 from __future__ import annotations
 
+import io
+
 import numpy as np
 import pytest
+from PIL import Image
 from conftest import CONFIG, new_tray, wait_job
 
 import fake_immich
@@ -163,6 +166,26 @@ def test_turned_slide_finds_its_faces_again(api, tmp_path, faces_on, monkeypatch
     after = people.load_faces(sid)[gid]
     assert after["rot"] == 90 and after["key"] != before["key"]
     assert [f["id"] for f in after["faces"]] == [before["faces"][0]["id"], f"{sid}/{gid}/1"]
+
+
+def test_face_shows_the_slide_as_edited(api, tmp_path, faces_on, monkeypatch):
+    """A person's picture is cut from the developed slide, and a new edit gives it a new URL."""
+    faces_on += [[face(ANN)], [], [], []]
+    sid, d = tray_without_helper(api, tmp_path, monkeypatch)
+    gid = d["groups"][0]["id"]
+    ann = next(p for p in api.get("/api/people").json()["people"] if p["faces"][0]["gid"] == gid)
+    url = ann["cover"]
+    before = api.get(url)
+    assert before.headers["cache-control"] == "max-age=31536000"
+    params = {**d["groups"][0]["params"], "brightness": 0.8}
+    assert api.patch(f"/api/sessions/{sid}/groups/{gid}", json={"params": params}).status_code == 200
+    now = next(p for p in api.get("/api/people").json()["people"] if p["id"] == ann["id"])["cover"]
+    assert now != url
+    after = api.get(now)
+    mean = lambda r: np.asarray(Image.open(io.BytesIO(r.content)), np.float32).mean() / 255
+    brighter = mean(after) - mean(before)
+    assert brighter > 0.05, brighter
+    assert api.get(url).headers["cache-control"] == "no-store"  # the old URL isn't cached as the new look
 
 
 def test_merged_slide_forgets_its_faces(api, tmp_path, faces_on, monkeypatch):

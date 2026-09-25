@@ -45,6 +45,7 @@ import {
   BOX_SIZES,
   MOUNT_SUGGEST,
   needsReview,
+  personLabel,
   plural,
   STOCK_NAMES,
   STOCKS,
@@ -656,7 +657,7 @@ function SlideDetails({
           {onIt.map((p, i) => (
             <React.Fragment key={p.id}>
               {i > 0 && ", "}
-              <span className="text-foreground/85">{p.name || "someone with a birthday"}</span>
+              <span className="text-foreground/85">{personLabel(p)}</span>
               {p.age != null && ` ≈ ${p.age}`}
             </React.Fragment>
           ))}
