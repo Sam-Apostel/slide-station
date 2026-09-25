@@ -1137,6 +1137,15 @@ const refreshPeople = (edit?: (d: PeopleFile) => PeopleFile | null) =>
 /** What the People dialog shows (server._people_payload). */
 async function peoplePayload(r: Awaited<ReturnType<typeof refreshPeople>>) {
   const { d, faces } = r;
+  const looks = new Map<string, string>(); // tray/slide -> render key: a face's URL changes when its slide is edited
+  for (const sid of new Set([...faces.values()].map((x) => x.sid))) {
+    try {
+      for (const g of (await loadSession(sid)).groups) looks.set(`${sid}/${g.id}`, renderKey(g));
+    } catch {
+      /* a tray that's gone */
+    }
+  }
+  const url = (f: string) => `/api/people/faces/${f}.jpg?v=${looks.get(`${faces.get(f)!.sid}/${faces.get(f)!.gid}`) ?? ""}`;
   const out = Object.entries(d.people).map(([pid, p]) => {
     const fs = p.faces.filter((f) => faces.has(f));
     return {
@@ -1145,10 +1154,10 @@ async function peoplePayload(r: Awaited<ReturnType<typeof refreshPeople>>) {
       birthday: p.birthday ?? "",
       slides: new Set(fs.map((f) => `${faces.get(f)!.sid}/${faces.get(f)!.gid}`)).size,
       ages: null, // the age model is the desktop app's
-      cover: fs.length ? `/api/people/faces/${fs[0]}.jpg?v=${faces.get(fs[0])!.key}` : null,
+      cover: fs.length ? url(fs[0]) : null,
       faces: fs.map((f) => ({
         id: f,
-        url: `/api/people/faces/${f}.jpg?v=${faces.get(f)!.key}`,
+        url: url(f),
         sid: faces.get(f)!.sid,
         gid: faces.get(f)!.gid,
         age: null,
@@ -1217,7 +1226,7 @@ async function personPage(pid: string): Promise<PersonPage> {
         tray: t.name,
         index,
         key: renderKey(g),
-        face: { id: f, url: `/api/people/faces/${f}.jpg?v=${faces.get(f)!.key}` },
+        face: { id: f, url: `/api/people/faces/${f}.jpg?v=${renderKey(g)}` },
         looks: null,
         age: when != null && born != null ? Math.round((when - born) * 10) / 10 : null,
         date: est.value,
@@ -1991,19 +2000,29 @@ export async function image(url: string, priority = 0): Promise<{ blob: Blob; fr
   }
   m = u.pathname.match(/\/api\/people\/faces\/([^/]+)\/([^/]+)\/([^/]+)\.jpg$/);
   if (m) {
-    // a face cut from the slide it is on, as it was turned when the face was found
+    // a face cut from the slide it is on as edited, turned as it was when the face was found
     const [, sid, gid, n] = m;
     const d = await loadSession(sid);
     const g = d.groups.find((x) => x.id === gid);
     const entry = (await loadFaces(sid))[gid];
     const face = entry?.faces.find((f) => f.id === `${sid}/${gid}/${n}`);
     if (!g || !entry || !face) throw new HttpError(404, "Not found");
+    const [rotation, mirror] = [entry.rot ?? 0, !!entry.mirror];
     const blob = await ui.call(
       "faceCrop",
-      { src: await fusedSrc(d, g), rotation: entry.rot ?? 0, mirror: !!entry.mirror, box: face.box },
+      {
+        src: await fusedSrc(d, g),
+        rotation,
+        mirror,
+        params: g.params,
+        local: rotation === g.rotation && mirror === !!g.mirror,
+        look: `${lib.name}/${sid}/${gid}:${renderKey(g)}:${rotation}:${+mirror}`,
+        box: face.box,
+      },
       priority,
     );
-    return { blob, fresh: u.searchParams.get("v") === entry.key };
+    // face URLs carry the slide's render key: an edit makes a new one
+    return { blob, fresh: u.searchParams.get("v") === renderKey(g) };
   }
   m = u.pathname.match(/\/api\/immich\/assets\/([^/]+)\/thumb\.jpg$/);
   if (m) return { blob: await immichClient().thumbnail(m[1]), fresh: true };

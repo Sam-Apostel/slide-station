@@ -24,6 +24,8 @@ export type Src = { key: string; blob: Blob };
 
 const cache = new Map<string, RGB>();
 const CACHE_MAX = 12; // 1600 px proxies are ~20 MB each as floats
+/** The last few slides faces were cut from, developed (faceCrop). */
+const faceLooks = new Map<string, RGB>();
 
 /** Width and height from a JPEG's frame header, without decoding it. */
 async function jpegSize(blob: Blob): Promise<[number, number] | null> {
@@ -532,9 +534,33 @@ const ops = {
     return { model: eyes.MODEL_ID, ear };
   },
 
-  /** A face cut from the picture for the People dialog (people.face_crop): 128 px JPEG. */
-  async faceCrop({ src, rotation, mirror, box }: { src: Src; rotation: number; mirror?: boolean; box: number[] }) {
-    const a = oriented(await load(src), rotation, mirror);
+  /**
+   * A face cut from the slide as edited for the People dialog (people.face_crop): 128 px JPEG.
+   * `look` names the developed slide, kept for its other faces; `local`: see developLook.
+   */
+  async faceCrop({
+    src,
+    rotation,
+    mirror,
+    params,
+    local,
+    look,
+    box,
+  }: {
+    src: Src;
+    rotation: number;
+    mirror?: boolean;
+    params: Params;
+    local: boolean;
+    look: string;
+    box: number[];
+  }) {
+    let a = faceLooks.get(look);
+    if (!a) {
+      a = im.developLook(oriented(await load(src), rotation, mirror), params, local);
+      faceLooks.set(look, a);
+      while (faceLooks.size > 4) faceLooks.delete(faceLooks.keys().next().value!);
+    }
     const [x0, y0, x1, y1] = people.cropBox(a.width, a.height, box);
     return encode(resized(cropped(a, y0, y1, x0, x1), 128, 128), 85);
   },
