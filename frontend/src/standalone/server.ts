@@ -101,6 +101,8 @@ import {
 import { LANDMARKS, MODEL_ID as EYES_MODEL, type EyesEntry } from "./eyes";
 import {
   activeScans,
+  BOX_SIZES,
+  type Boxes,
   cleanPlace,
   developed,
   dumpSession,
@@ -112,16 +114,19 @@ import {
   renderKey,
   samePlace,
   sha1Hex,
+  SIDES,
   slideDates,
   slugify,
   statuses,
   summary,
   toneKey,
+  trayLabel,
   type GroupData,
   type ImmichRecord,
   type Place,
   type Scan,
   type SessionData,
+  type Side,
   type Snapshot,
   type StoredInsights,
 } from "./store";
@@ -277,14 +282,80 @@ async function listSessions() {
   return out.sort((a, b) => (a.id < b.id ? 1 : -1));
 }
 
-async function createSession(name: string, album: string | null, date: string): Promise<SessionData> {
+async function loadBoxes(): Promise<Boxes> {
+  try {
+    const raw = JSON.parse((await lib.readText("boxes.json")) ?? "{}").boxes ?? {};
+    const out: Boxes = {};
+    for (const [n, b] of Object.entries(raw as Record<string, Partial<Boxes[number]>>))
+      out[Number(n)] = { size: b.size ?? BOX_SIZES[0], writing: b.writing ?? "" };
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+/** Create or change box `n`; what's not given stays (a new box holds trays of 50). Under the lock. */
+async function saveBox(n: number, size?: number, writing?: string) {
+  const boxes = await loadBoxes();
+  const b = (boxes[n] ??= { size: BOX_SIZES[0], writing: "" });
+  if (size !== undefined) b.size = size;
+  if (writing !== undefined) b.writing = writing;
+  const sorted = Object.keys(boxes).map(Number).sort((a, c) => a - c);
+  await lib.write("boxes.json", JSON.stringify({ boxes: Object.fromEntries(sorted.map((k) => [k, boxes[k]])) }, null, 1));
+}
+
+/** Every box, numbered or holding a tray: its size, its writing and the trays in it by side. */
+async function boxList(sessions: ReturnType<typeof summary>[]) {
+  const boxes = await loadBoxes();
+  const trays: Record<number, Record<string, string>> = {};
+  for (const s of sessions) if (s.box != null) (trays[s.box] ??= {})[s.side ?? ""] = s.id;
+  const nums = [...new Set([...Object.keys(boxes), ...Object.keys(trays)].map(Number))].sort((a, b) => a - b);
+  return nums.map((n) => ({ number: n, ...(boxes[n] ?? { size: BOX_SIZES[0], writing: "" }), trays: trays[n] ?? {} }));
+}
+
+/** A box number as typed: a whole number from 1; empty or null takes the tray out of its box. */
+function cleanBox(v: unknown): number | null {
+  if (v == null || String(v).trim() === "") return null;
+  const n = Number(String(v).trim());
+  if (!Number.isInteger(n) || n < 1) throw new HttpError(400, "A box number is a whole number: 1, 2, 3…");
+  return n;
+}
+
+function cleanSide(v: unknown): Side | null {
+  if (v == null || v === "") return null;
+  if (!SIDES.includes(v as Side)) throw new HttpError(400, "A tray is the left or the right one in its box");
+  return v as Side;
+}
+
+function boxSize(v: unknown): number {
+  const n = Number(v);
+  if (!BOX_SIZES.includes(n as (typeof BOX_SIZES)[number])) throw new HttpError(400, "A box holds trays of 50 or 36 slides");
+  return n;
+}
+
+/** One tray per side of a box: say which tray is there already. */
+async function placeFree(box: number | null, side: Side | null, sid?: string) {
+  if (box == null || side == null) return;
+  const there = (await listSessions()).find((s) => s.id !== sid && s.box === box && s.side === side);
+  if (there) throw new HttpError(409, `${trayLabel(box, side)} is already the tray "${there.name}"`);
+}
+
+async function createSession(
+  name: string,
+  album: string | null,
+  date: string,
+  box: number | null = null,
+  side: Side | null = null,
+): Promise<SessionData> {
   const t = new Date();
   const p = (n: number) => String(n).padStart(2, "0");
   const sid = `${t.getFullYear()}${p(t.getMonth() + 1)}${p(t.getDate())}-${p(t.getHours())}${p(t.getMinutes())}${p(t.getSeconds())}-${randomHex(4)}`;
   const d: SessionData = {
     id: sid,
-    name: name || "Untitled tray",
-    album: album ?? (name || "Untitled tray"),
+    name: name || trayLabel(box, side) || "Untitled tray",
+    album: album ?? (name || trayLabel(box, side) || "Untitled tray"),
+    box,
+    side,
     date,
     created: Date.now() / 1000,
     defaults: cleanParams({}),
@@ -1539,6 +1610,8 @@ async function payload(d: SessionData): Promise<SessionPayload> {
     album_from_settings: !!loadConfig().immich_album,
     defaults: d.defaults,
     stock: d.stock ?? "",
+    // the box it lives in: its number, size (slots in this tray) and writing; null outside a box
+    box: d.box != null ? { number: d.box, ...((await loadBoxes())[d.box] ?? { size: BOX_SIZES[0], writing: "" }) } : null,
     groups: d.groups.map((g, i) => ({
       id: g.id,
       scans: g.scans,
@@ -1555,6 +1628,7 @@ async function payload(d: SessionData): Promise<SessionPayload> {
       status: st[i],
       date: g.date ?? "",
       caption: g.caption ?? "",
+      writing: g.writing ?? "", // written on its mount
       tags: g.tags ?? [],
       stock: g.stock ?? "",
       place: g.place ?? null,
@@ -2816,7 +2890,14 @@ export async function handle(method: string, url: string, body: Body = {}): Prom
       immich_album_name: cfg.immich_album_name,
       tag_trays: cfg.tag_trays,
     };
-    return { config, sources: await sourceList(), sessions: await listSessions(), job: current } satisfies AppState;
+    const sessions = await listSessions();
+    return {
+      config,
+      sources: await sourceList(),
+      sessions,
+      boxes: await boxList(sessions),
+      job: current,
+    } satisfies AppState;
   }
   if (is("POST", /^\/api\/config$/)) {
     const cfg = loadConfig();
@@ -2862,12 +2943,31 @@ export async function handle(method: string, url: string, body: Body = {}): Prom
     return { ok: true };
   }
   if (is("POST", /^\/api\/sessions$/)) {
-    const d = await createSession(
-      String(body.name ?? "").trim(),
-      String(body.album ?? "").trim() || null,
-      String(body.date ?? "").trim(),
-    );
+    const box = cleanBox(body.box);
+    const side = cleanSide(body.side);
+    const size = body.box_size ? boxSize(body.box_size) : undefined;
+    const d = await locked(async () => {
+      await placeFree(box, side);
+      // a new box is made here; its size and writing as given, or kept
+      if (box != null)
+        await saveBox(box, size, "box_writing" in body ? String(body.box_writing).trim().slice(0, 500) : undefined);
+      return createSession(
+        String(body.name ?? "").trim(),
+        String(body.album ?? "").trim() || null,
+        String(body.date ?? "").trim(),
+        box,
+        side,
+      );
+    });
     return { id: d.id };
+  }
+  if ((m = is("PATCH", /^\/api\/boxes\/(\d+)$/))) {
+    // a box's size (trays of 50 or 36) and what's written on it
+    const n = cleanBox(m[1]);
+    if (n == null) throw new HttpError(400, "A box number is a whole number: 1, 2, 3…");
+    const size = "size" in body ? boxSize(body.size) : undefined;
+    await locked(() => saveBox(n, size, "writing" in body ? String(body.writing).trim().slice(0, 500) : undefined));
+    return { boxes: await boxList(await listSessions()) };
   }
   if ((m = is("GET", /^\/api\/sessions\/([^/]+)$/))) {
     const d = await loadSession(m[1]);
@@ -2877,8 +2977,21 @@ export async function handle(method: string, url: string, body: Body = {}): Prom
   }
   if ((m = is("PATCH", /^\/api\/sessions\/([^/]+)$/))) {
     const stock = "stock" in body ? checkedStock(body.stock) : null;
-    const { d } = await update(m[1], async (d) => {
+    const sid = m[1];
+    const { d } = await update(sid, async (d) => {
       for (const k of ["name", "album", "date"] as const) if (k in body) d[k] = String(body[k]).trim();
+      if ("box" in body || "side" in body) {
+        const box = "box" in body ? cleanBox(body.box) : (d.box ?? null);
+        const side = "side" in body ? cleanSide(body.side) : (d.side ?? null);
+        await placeFree(box, side, sid);
+        if (box != null) await saveBox(box);
+        // a name (and album) that only said where the tray was moves with it; one you gave it stays
+        const old = trayLabel(d.box, d.side);
+        const now = trayLabel(box, side);
+        for (const k of ["name", "album"] as const) if (!(k in body) && old && d[k] === old && now) d[k] = now;
+        d.box = box;
+        d.side = side;
+      }
       if ("defaults" in body) d.defaults = cleanParams(body.defaults as Params);
       if (stock !== null) {
         d.stock = stock;
@@ -2919,7 +3032,8 @@ export async function handle(method: string, url: string, body: Body = {}): Prom
     const models = await activeModels();
     const { d } = await update(sid, async (d) => {
       const g = group(d, gid);
-      if (Object.keys(body).some((k) => k !== "reviewed" && k !== "skip")) editable(g); // developed / left out are fine
+      // developed / left out / what's written on the mount are fine; changing the photo is not
+      if (Object.keys(body).some((k) => k !== "reviewed" && k !== "skip" && k !== "writing")) editable(g);
       const what =
         "rotation" in body
           ? "rotation"
@@ -2960,6 +3074,7 @@ export async function handle(method: string, url: string, body: Body = {}): Prom
       for (const k of ["reviewed", "skip"] as const) if (k in body) g[k] = !!body[k];
       if ("date" in body) g.date = cleanDate(body.date);
       if ("caption" in body) setCaption(g, String(body.caption).trim().slice(0, 2000), models);
+      if ("writing" in body) g.writing = String(body.writing).trim().slice(0, 500); // on its mount, as it says
       if ("tags" in body) for (const t of setTags(g, cleanTags(body.tags))) record("tags", t, "dismiss");
       if ("stock" in body) setStock(g, checkedStock(body.stock));
       if ("stock" in body || "skip" in body) label(await labels(), d, g);

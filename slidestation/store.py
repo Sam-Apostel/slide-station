@@ -184,6 +184,48 @@ def save_presets(presets: list[dict]) -> None:
         _atomic_write(_presets_file(), {"presets": presets})
 
 
+# --------------------------------------------------------------------------- boxes
+
+# The slides are kept in numbered boxes of two trays, left and right. A box holds two trays of 50,
+# or (the shorter boxes) two of 36. A tray has nothing written on it; a box can have.
+BOX_SIZES = (50, 36)
+SIDES = ("left", "right")
+
+
+def _boxes_file() -> Path:
+    return library() / "boxes.json"
+
+
+def load_boxes() -> dict[int, dict]:
+    """Box number -> {"size": 50 | 36, "writing": what's written on the box}."""
+    f = _boxes_file()
+    try:
+        raw = json.loads(f.read_text()).get("boxes", {}) if f.exists() else {}
+        return {int(n): {"size": b.get("size", BOX_SIZES[0]), "writing": b.get("writing", "")} for n, b in raw.items()}
+    except (ValueError, AttributeError):
+        return {}
+
+
+def save_box(number: int, size: int | None = None, writing: str | None = None) -> dict:
+    """Create or change box `number`; what's not given stays (a new box holds trays of 50)."""
+    with lock:
+        boxes = load_boxes()
+        b = boxes.setdefault(number, {"size": BOX_SIZES[0], "writing": ""})
+        if size is not None:
+            b["size"] = size
+        if writing is not None:
+            b["writing"] = writing
+        _atomic_write(_boxes_file(), {"boxes": {str(n): boxes[n] for n in sorted(boxes)}})
+        return b
+
+
+def tray_label(box: int | None, side: str | None) -> str:
+    """What a tray is called by where it lives: "Box 12 left"; "" when it has no box."""
+    if box is None:
+        return ""
+    return f"Box {box} {side}" if side else f"Box {box}"
+
+
 # --------------------------------------------------------------------------- sessions
 
 
@@ -218,15 +260,20 @@ class Session:
         return self.originals / self.data["scans"][scan_id]["file"]
 
     @classmethod
-    def create(cls, name: str, album: str | None = None, date: str = "") -> "Session":
+    def create(cls, name: str, album: str | None = None, date: str = "",
+               box: int | None = None, side: str | None = None) -> "Session":
+        """A new, empty tray. In a box, its name is where it lives ("Box 12 left") unless given one."""
         sid = time.strftime("%Y%m%d-%H%M%S-") + uuid.uuid4().hex[:4]
         d = library() / "sessions" / sid
         for sub in ("originals", "cache", "export"):
             (d / sub).mkdir(parents=True, exist_ok=True)
+        name = name or tray_label(box, side) or "Untitled tray"
         data = {
             "id": sid,
-            "name": name or "Untitled tray",
-            "album": album if album is not None else (name or "Untitled tray"),
+            "name": name,
+            "album": album if album is not None else name,
+            "box": box,
+            "side": side,
             "date": date,
             "created": time.time(),
             "defaults": Params().to_dict(),
@@ -441,6 +488,8 @@ def summary(d: dict) -> dict:
         "id": d["id"],
         "name": d["name"],
         "album": d["album"],
+        "box": d.get("box"),  # the box it lives in (a number), and which tray of it: "left" / "right"
+        "side": d.get("side"),
         "date": d.get("date", ""),
         "created": d["created"],
         "slides": len(groups),

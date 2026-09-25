@@ -12,6 +12,7 @@ import {
   type AppState,
   type Group,
   type InsightKind,
+  type NewTrayBody,
   type Params,
   type Place,
   type Preset,
@@ -732,6 +733,19 @@ export function useSlideStation() {
     }
   };
 
+  /** A box's size (trays of 50 or 36) and what's written on it: every tray in it shows the change. */
+  const patchBox = async (n: number, body: { size?: number; writing?: string }) => {
+    try {
+      await api("PATCH", `/api/boxes/${n}`, body);
+      refreshState();
+      if (ref.current.sessionId) await loadSession(ref.current.sessionId, true);
+      return true;
+    } catch (e) {
+      fail(e);
+      return false;
+    }
+  };
+
   const startImport = async (sid: string, source: string) => {
     try {
       await api("POST", `/api/sessions/${sid}/import`, { source });
@@ -742,7 +756,7 @@ export function useSlideStation() {
     }
   };
 
-  const createSession = async (body: { name: string; album: string; date: string }, source: string) => {
+  const createSession = async (body: NewTrayBody, source: string) => {
     try {
       const { id } = await api<{ id: string }>("POST", "/api/sessions", body);
       await refreshState();
@@ -965,6 +979,7 @@ export function useSlideStation() {
     undo,
     redo,
     patchSession,
+    patchBox,
     startImport,
     createSession,
     startUpload,

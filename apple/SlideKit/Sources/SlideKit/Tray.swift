@@ -44,6 +44,9 @@ public struct Slide: Codable, Identifiable, Equatable, Sendable {
     public var immich: UploadRecord?
     public var date: String?
     public var caption: String?
+    /// Written on the slide's mount, as it says (Python: `g["writing"]`); few slides have any.
+    /// Kept here, never uploaded.
+    public var writing: String?
     public var locked: String?
     /// Features of the blended, undeveloped slide, for learning (Python: `g["feat"]`).
     public var feat: [Double]?
@@ -71,7 +74,7 @@ public struct Slide: Codable, Identifiable, Equatable, Sendable {
     public var developed: Bool { reviewed || immich != nil }
 
     enum CodingKeys: String, CodingKey {
-        case id, scans, excluded, rotation, mirror, params, reviewed, skip, immich, date, caption, locked, feat, history, mount, stock, tags, place
+        case id, scans, excluded, rotation, mirror, params, reviewed, skip, immich, date, caption, writing, locked, feat, history, mount, stock, tags, place
         case autoExcluded = "auto_excluded", rotReason = "rot_reason", paramsSource = "params_source"
     }
 
@@ -95,6 +98,7 @@ public struct Slide: Codable, Identifiable, Equatable, Sendable {
         immich = try? c.decode(UploadRecord.self, forKey: .immich)
         date = try? c.decode(String.self, forKey: .date)
         caption = try? c.decode(String.self, forKey: .caption)
+        writing = try? c.decode(String.self, forKey: .writing)
         locked = try? c.decode(String.self, forKey: .locked)
         feat = try? c.decode([Double].self, forKey: .feat)
         history = try? c.decode(History.self, forKey: .history)
@@ -115,6 +119,7 @@ public struct Slide: Codable, Identifiable, Equatable, Sendable {
         try c.encode(reviewed, forKey: .reviewed); try c.encode(skip, forKey: .skip)
         try c.encode(immich, forKey: .immich)
         try c.encodeIfPresent(date, forKey: .date); try c.encodeIfPresent(caption, forKey: .caption); try c.encodeIfPresent(locked, forKey: .locked)
+        try c.encodeIfPresent(writing, forKey: .writing)
         try c.encodeIfPresent(feat, forKey: .feat); try c.encodeIfPresent(history, forKey: .history)
         try c.encodeIfPresent(mount, forKey: .mount)
         try c.encodeIfPresent(stock, forKey: .stock)
@@ -219,11 +224,14 @@ extension Slide {
 
 public enum SlideStatus: String, Sendable { case new, reviewed, changed, uploaded, skipped }
 
-/// A tray (or box) of slides that becomes one Immich album. Python: a session.
+/// A tray of slides that becomes one Immich album. Python: a session. It lives in a numbered box
+/// (`box`), as its left or right tray (`side`); both nil for a tray that isn't in a box.
 public struct Tray: Codable, Identifiable, Equatable, Sendable {
     public var id: String
     public var name: String
     public var album: String
+    public var box: Int?
+    public var side: Side?
     public var date: String
     public var created: Double
     public var defaults: Params
@@ -240,14 +248,30 @@ public struct Tray: Codable, Identifiable, Equatable, Sendable {
     public var stock: String?
 
     enum CodingKeys: String, CodingKey {
-        case id, name, album, date, created, defaults, scans, groups, log, stock
+        case id, name, album, box, side, date, created, defaults, scans, groups, log, stock
         case dateKey = "date_key", immichAlbumId = "immich_album_id", orphanAssets = "orphan_assets", cardCleaned = "card_cleaned"
     }
 
-    public init(id: String, name: String, album: String? = nil, date: String = "") {
+    /// Which of the two trays in a box: they stand side by side.
+    public enum Side: String, Codable, CaseIterable, Sendable { case left, right }
+
+    /// What a tray is called by where it lives: "Box 12 left"; "" when it has no box (Python: `store.tray_label`).
+    public static func label(box: Int?, side: Side?) -> String {
+        guard let box else { return "" }
+        return side.map { "Box \(box) \($0.rawValue)" } ?? "Box \(box)"
+    }
+
+    /// Where it lives, as a name: "Box 12 left", or "".
+    public var placeLabel: String { Tray.label(box: box, side: side) }
+
+    /// In a box, a tray without a name of its own is named after where it lives.
+    public init(id: String, name: String, album: String? = nil, date: String = "", box: Int? = nil, side: Side? = nil) {
         self.id = id
-        self.name = name.isEmpty ? "Untitled tray" : name
+        let fallback = Tray.label(box: box, side: side)
+        self.name = !name.isEmpty ? name : fallback.isEmpty ? "Untitled tray" : fallback
         self.album = album ?? self.name
+        self.box = box
+        self.side = side
         self.date = date
         created = Date().timeIntervalSince1970
         defaults = Params()

@@ -25,8 +25,12 @@ struct FilmstripPanel: View {
         VStack(alignment: .leading, spacing: 0) {
             VStack(alignment: .leading, spacing: 2) {
                 Text(tray.name).font(.system(size: 13, weight: .semibold)).lineLimit(1)
-                Text("\(tray.groups.count) slides · \(tray.scans.count) scans").font(.system(size: 11)).foregroundStyle(ProTheme.muted)
-                TraySlots(statuses: statuses, current: model.selection < tray.groups.count ? model.selection : nil) { model.select($0) }
+                // a tray in a box: how full it is, and where it lives when its name says something else
+                Text((model.box.map { "\(tray.groups.count) of \($0.size) slides" } ?? "\(tray.groups.count) slides")
+                     + " · \(tray.scans.count) scans"
+                     + (!tray.placeLabel.isEmpty && tray.name != tray.placeLabel ? " · \(tray.placeLabel)" : ""))
+                    .font(.system(size: 11)).foregroundStyle(ProTheme.muted).lineLimit(1)
+                TraySlots(statuses: statuses, size: model.box?.size, current: model.selection < tray.groups.count ? model.selection : nil) { model.select($0) }
                     .padding(.top, 6)
             }
             .padding(.horizontal, 10).padding(.top, 10).padding(.bottom, 10)
@@ -320,6 +324,7 @@ struct MetaFields: View {
     let estimated: SlideDate
     @State private var date = ""
     @State private var caption = ""
+    @State private var writing = ""
     @State private var ranging = false
     @State private var rangeFrom = 1
     @State private var rangeTo = 1
@@ -368,13 +373,17 @@ struct MetaFields: View {
             }
             .font(.system(size: 11))
             .popover(isPresented: $ranging) { rangeForm }
+            field("Written on the mount") {
+                TextField("As it says — few slides have any", text: $writing, axis: .vertical).lineLimit(1...3)
+                    .onChange(of: writing) { _, v in if v.trimmingCharacters(in: .whitespacesAndNewlines) != (slide.writing ?? "") { model.setWriting(v) } }
+            }
             field("Caption") {
                 TextField("Immich description", text: $caption, axis: .vertical).lineLimit(1...4)
                     .onChange(of: caption) { _, v in if v != (slide.caption ?? "") { model.setCaption(v) } }
             }
         }
         .padding(12)
-        .task(id: slide.id) { date = slide.date ?? ""; caption = slide.caption ?? "" }
+        .task(id: slide.id) { date = slide.date ?? ""; caption = slide.caption ?? ""; writing = slide.writing ?? "" }
     }
 
     private func field<C: View>(_ label: String, @ViewBuilder _ c: () -> C) -> some View {
@@ -388,17 +397,70 @@ struct MetaFields: View {
     }
 }
 
-/// The tray's name (the Immich album) and date, and what has been learned.
+/// Where the tray lives (box, side; the box's size and writing), its name (the Immich album) and
+/// date, and what has been learned.
 struct TrayFields: View {
     @Environment(AppModel.self) private var model
     let tray: Tray
+    @State private var boxText = ""
+    @State private var boxWriting = ""
     @State private var name = ""
     @State private var album = ""
     @State private var date = ""
 
+    private func taken(_ s: Tray.Side) -> Bool {
+        guard let n = tray.box, let t = model.tray(inBox: n, side: s) else { return false }
+        return t.id != tray.id
+    }
+
+    /// Into the typed box, on the side that's free there (this one first); empty: out of its box.
+    private func commitBox() {
+        let v = boxText.trimmingCharacters(in: .whitespaces)
+        guard v != (tray.box.map(String.init) ?? "") else { return }
+        if v.isEmpty { model.move(box: nil, side: nil); return }
+        guard let n = Int(v), n > 0 else {
+            model.error = BoxError.badNumber.localizedDescription
+            boxText = tray.box.map(String.init) ?? ""
+            return
+        }
+        let free = ([tray.side ?? .left] + Tray.Side.allCases).first { model.tray(inBox: n, side: $0).map { $0.id == tray.id } ?? true }
+        guard let free else {
+            model.error = "Box \(n) has both its trays already"
+            boxText = tray.box.map(String.init) ?? ""
+            return
+        }
+        model.move(box: n, side: free)
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            row("Name", $name); row("Album", $album); row("Date", $date)
+            HStack {
+                Text("Box").font(.system(size: 11)).foregroundStyle(ProTheme.muted).frame(width: 46, alignment: .leading)
+                TextField("none", text: $boxText).keyboardType(.numberPad).textFieldStyle(.plain).font(.system(size: 12))
+                    .padding(.horizontal, 8).padding(.vertical, 5).frame(width: 64)
+                    .background(SS.field, in: RoundedRectangle(cornerRadius: 5))
+                    .overlay { RoundedRectangle(cornerRadius: 5).strokeBorder(ProTheme.line, lineWidth: 1) }
+                    .onSubmit(commitBox)
+                Picker("Tray", selection: Binding(get: { tray.side ?? .left }, set: { model.move(box: tray.box, side: $0) })) {
+                    ForEach(Tray.Side.allCases, id: \.self) { s in
+                        Text(s == .left ? "Left" : "Right").tag(s).disabled(taken(s))
+                    }
+                }
+                .pickerStyle(.segmented).disabled(tray.box == nil)
+            }
+            if let box = model.box {
+                HStack {
+                    Text("Trays of").font(.system(size: 11)).foregroundStyle(ProTheme.muted).frame(width: 46, alignment: .leading)
+                    Picker("Trays of", selection: Binding(get: { box.size }, set: { model.setBox(size: $0) })) {
+                        ForEach(Box.sizes, id: \.self) { Text("\($0)").tag($0) }
+                    }
+                    .pickerStyle(.segmented).frame(width: 110)
+                    Spacer(minLength: 0)
+                }
+                row("On box", $boxWriting).onSubmit { model.setBox(writing: boxWriting.trimmingCharacters(in: .whitespaces)) }
+            }
+            Group { row("Name", $name); row("Album", $album); row("Date", $date) }
+                .onSubmit { model.rename(name, album: album.isEmpty ? name : album, date: SlideDates.parse(date) == nil ? "" : date) }
             if model.learningEnabled {
                 Text(model.learning.ready ? "Learned from \(model.learning.examples.count) developed slides" : "Learning starts after 5 developed slides (\(model.learning.examples.count) so far)")
                     .font(.system(size: 11)).foregroundStyle(ProTheme.dim)
@@ -406,7 +468,11 @@ struct TrayFields: View {
         }
         .padding(12)
         .task(id: tray.id) { name = tray.name; album = tray.album; date = tray.date }
-        .onSubmit { model.rename(name, album: album.isEmpty ? name : album, date: SlideDates.parse(date) == nil ? "" : date) }
+        // moving it can rename it; the box's writing is the box's, shown for whichever tray is open
+        .onChange(of: tray.box, initial: true) { boxText = tray.box.map(String.init) ?? "" }
+        .onChange(of: model.box?.writing, initial: true) { boxWriting = model.box?.writing ?? "" }
+        .onChange(of: tray.name) { name = tray.name }
+        .onChange(of: tray.album) { album = tray.album }
     }
 
     private func row(_ label: String, _ text: Binding<String>) -> some View {

@@ -87,6 +87,7 @@ def state():
         "config": {k: v for k, v in cfg.items() if k != "immich_key"} | {"has_key": bool(cfg.get("immich_key"))},
         "sources": wf.detect_sources(),
         "sessions": Session.list_all(),
+        "boxes": _boxes(),
         "job": wf.current_job.as_dict() if wf.current_job else None,
         # what this server can do: accounts (hosted), RAW files, tethered capture (camera rig)
         "server": {"accounts": accounts.enabled(), "raw": raw.available(), "watch": watch.available()},
@@ -354,6 +355,7 @@ def _session_payload(s: Session) -> dict:
             "status": st[i],
             "date": g.get("date", ""),
             "caption": g.get("caption", ""),
+            "writing": g.get("writing", ""),  # written on its mount
             "tags": g.get("tags", []),
             "stock": g.get("stock", ""),  # its own ("" = the tray's, below)
             "insights": _slide_insights(g, live[i], models),
@@ -387,6 +389,9 @@ def _session_payload(s: Session) -> dict:
         "cleanup_blockers": wf.cleanup_blockers(s),
         "log": d.get("log", [])[-20:],
         "stock": d.get("stock", ""),  # the tray's film stock, for slides without their own
+        # the box it lives in: {"number", "size" (slots in this tray), "writing"}; None outside a box
+        "box": ({"number": d["box"], **store.load_boxes().get(d["box"], {"size": store.BOX_SIZES[0], "writing": ""})}
+                if d.get("box") is not None else None),
         **_insights_payload(s, models),
         # place suggestions from signs: the text reader + place names are there (else ocr_mb to download)
         "places": {"ocr": insights.ocr_on(),
@@ -409,10 +414,77 @@ def _insights_payload(s: Session, models: list[str]) -> dict:
     return {"insights": status, "similar": {k: v for k, v in sim.items() if k != "pending"} if sim else None}
 
 
+def _boxes() -> list[dict]:
+    """Every box, numbered or holding a tray: its size, its writing and the trays in it by side."""
+    boxes = store.load_boxes()
+    trays: dict[int, dict] = {}
+    for sm in Session.list_all():
+        if sm.get("box") is not None:
+            trays.setdefault(sm["box"], {})[sm.get("side") or ""] = sm["id"]
+    return [{"number": n, **boxes.get(n, {"size": store.BOX_SIZES[0], "writing": ""}), "trays": trays.get(n, {})}
+            for n in sorted(set(boxes) | set(trays))]
+
+
+def _clean_box(v) -> int | None:
+    """A box number as typed: a whole number from 1; empty or null takes the tray out of its box."""
+    if v is None or str(v).strip() == "":
+        return None
+    try:
+        n = int(str(v).strip())
+    except ValueError:
+        n = 0
+    if n < 1:
+        raise HTTPException(400, "A box number is a whole number: 1, 2, 3…")
+    return n
+
+
+def _clean_side(v) -> str | None:
+    if v is None or v == "":
+        return None
+    if v not in store.SIDES:
+        raise HTTPException(400, "A tray is the left or the right one in its box")
+    return v
+
+
+def _box_size(v) -> int:
+    try:
+        n = int(v)
+    except (TypeError, ValueError):
+        n = 0
+    if n not in store.BOX_SIZES:
+        raise HTTPException(400, "A box holds trays of 50 or 36 slides")
+    return n
+
+
+def _place_free(box: int | None, side: str | None, sid: str | None = None) -> None:
+    """One tray per side of a box: say which tray is there already."""
+    if box is None or side is None:
+        return
+    for sm in Session.list_all():
+        if sm["id"] != sid and sm.get("box") == box and sm.get("side") == side:
+            raise HTTPException(409, f"{store.tray_label(box, side)} is already the tray \"{sm['name']}\"")
+
+
 @app.post("/api/sessions")
 def create_session(body: dict = Body(...)):
-    s = Session.create(body.get("name", "").strip(), (body.get("album") or "").strip() or None, body.get("date", "").strip())
+    box, side = _clean_box(body.get("box")), _clean_side(body.get("side"))
+    _place_free(box, side)
+    if box is not None:  # a new box is made here; its size and writing as given, or kept
+        store.save_box(box, _box_size(body["box_size"]) if body.get("box_size") else None,
+                       str(body["box_writing"]).strip()[:500] if "box_writing" in body else None)
+    s = Session.create(body.get("name", "").strip(), (body.get("album") or "").strip() or None,
+                       body.get("date", "").strip(), box, side)
     return {"id": s.id}
+
+
+@app.patch("/api/boxes/{number}")
+def patch_box(number: int, body: dict = Body(...)):
+    """A box's size (trays of 50 or 36) and what's written on it."""
+    if number < 1:
+        raise HTTPException(400, "A box number is a whole number: 1, 2, 3…")
+    store.save_box(number, _box_size(body["size"]) if "size" in body else None,
+                   str(body["writing"]).strip()[:500] if "writing" in body else None)
+    return {"boxes": _boxes()}
 
 
 @app.get("/api/sessions/{sid}")
@@ -433,6 +505,19 @@ def patch_session(sid: str, body: dict = Body(...)):
         for k in ("name", "album", "date"):
             if k in body:
                 s.data[k] = str(body[k]).strip()
+        if "box" in body or "side" in body:
+            box = _clean_box(body["box"]) if "box" in body else s.data.get("box")
+            side = _clean_side(body["side"]) if "side" in body else s.data.get("side")
+            _place_free(box, side, sid)
+            if box is not None:
+                store.save_box(box)
+            # a name (and album) that only said where the tray was moves with it; one you gave it stays
+            old = store.tray_label(s.data.get("box"), s.data.get("side"))
+            new = store.tray_label(box, side)
+            for k in ("name", "album"):
+                if k not in body and old and s.data.get(k) == old and new:
+                    s.data[k] = new
+            s.data["box"], s.data["side"] = box, side
         if "defaults" in body:
             s.data["defaults"] = Params.from_dict(body["defaults"]).to_dict()
         if "stock" in body:
@@ -675,7 +760,8 @@ def patch_group(sid: str, gid: str, body: dict = Body(...)):
     with lock:
         s = _session(sid)
         g = s.group(gid)
-        if set(body) - {"reviewed", "skip"}:  # developed / left out are fine; changing the photo is not
+        # developed / left out / what's written on the mount are fine; changing the photo is not
+        if set(body) - {"reviewed", "skip", "writing"}:
             _editable(g)
         what = _edit_label(body)
         local = body.get("params", {}).get("local") if isinstance(body.get("params"), dict) else None
@@ -711,6 +797,8 @@ def patch_group(sid: str, gid: str, body: dict = Body(...)):
             g["date"] = _clean_date(body["date"])
         if "caption" in body:
             _set_caption(g, str(body["caption"]).strip()[:2000])
+        if "writing" in body:  # written on the slide's mount, as it says (few slides have any)
+            g["writing"] = str(body["writing"]).strip()[:500]
         if "tags" in body:
             _set_tags(g, _clean_tags(body["tags"]))
         if "stock" in body:

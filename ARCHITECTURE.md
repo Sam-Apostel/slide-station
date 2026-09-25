@@ -66,12 +66,22 @@ so a library in iCloud Drive shared with the iPad doesn't carry half a gigabyte 
 account on a hosted server keeps them in its library, or `SLIDESTATION_MODELS`), and the library folder (default `~/Pictures/Slide Station`), which holds
 `sessions/<id>/{session.json,faces.json,embeddings.json,originals,cache,export}`, `imported.json`
 (dedupe index), `learning.json`, `presets.json`, `people.json` (§5c), `insights.json` (§5a),
-and `stocks.json` (§5d).
+`stocks.json` (§5d) and `boxes.json` (below).
 
 ## 3. Architecture notes that matter
 
 - **A "group" is a slide**; a "scan" is one JPEG from the card. `session.json` is the whole truth
   for a tray: scans, groups, params, rotation, review/skip flags, export and Immich records.
+- **Boxes.** The slides are kept in numbered boxes of two trays, left and right: trays of 50, or 36
+  in the shorter boxes. A tray's `box` (number) and `side` ("left" / "right") are in its
+  `session.json` (both null: not in a box, like trays from before); `boxes.json` has each box's
+  `size` and `writing` (what's written on it; a tray has nothing written on it). One tray per side
+  (409 otherwise). A tray in a box is named after it ("Box 12 left") unless given a name, and a
+  name or album that only said where it was follows it when it moves. The tray gauge shows the
+  box's empty slots. A slide's `writing` is what's written on its mount: kept, never uploaded, and
+  editable on a locked slide. `GET /api/state` lists `boxes`; `PATCH /api/boxes/{n}` sets size and
+  writing. The browser version (`standalone/server.ts`) and the iPad app (`Library.move`,
+  `Library.saveBox`) do the same.
 - **`render_key(group)`** hashes active scans + rotation + params. `group_status()` compares it to
   the key stored at upload time, which is how a slide becomes `changed` after an edit and gets
   re-uploaded (old asset moved to Immich trash).

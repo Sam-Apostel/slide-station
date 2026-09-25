@@ -299,6 +299,8 @@ extension Color {
 /// standing tall and white (`.ss-tray`).
 struct TraySlots: View {
     let statuses: [SlideStatus]
+    /// Slots in the tray (its box's: 50, or 36): the empty ones show too. nil = just the slides.
+    var size: Int?
     var current: Int?
     var onSelect: ((Int) -> Void)?
 
@@ -314,6 +316,11 @@ struct TraySlots: View {
                     .shadow(color: isCurrent ? .white.opacity(0.35) : .clear, radius: 4)
                     .contentShape(Rectangle())
                     .onTapGesture { onSelect?(i) }
+            }
+            // a slot with no slide in it: the tray's floor between the ridges
+            ForEach(0..<max(0, (size ?? 0) - statuses.count), id: \.self) { _ in
+                RoundedRectangle(cornerRadius: 1).fill(.white.opacity(0.07))
+                    .frame(maxWidth: 9, minHeight: 1).frame(height: 2)
             }
         }
         .frame(maxWidth: .infinity)

@@ -42,16 +42,19 @@ import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select"
 import { InsightsPanel, StockField, SuggestionRow, TagsField, insightsNote } from "@/components/insights";
 import { PlaceField } from "@/components/place";
 import {
+  BOX_SIZES,
   MOUNT_SUGGEST,
   needsReview,
   personLabel,
   plural,
   STOCK_NAMES,
   STOCKS,
+  type Box,
   type EraHint,
   type Group,
   type InsightKind,
   type SessionPayload,
+  type Side,
 } from "@/lib/api";
 import { CHANNELS, isStraight } from "@/lib/curves";
 import type { SlideStation } from "@/hooks/use-slide-station";
@@ -206,6 +209,7 @@ export function Inspector({
 }) {
   const { current: g, sel } = app;
   const sm = session.summary;
+  const boxes = app.state?.boxes ?? [];
   const blockers = session.cleanup_blockers;
   const section = useSections();
   const undeveloped = session.groups.filter(needsReview).length;
@@ -350,6 +354,41 @@ export function Inspector({
 
         <ProDisclosureGroup title="Tray" summary={sm.name} showsBottomSeparator={false} {...section("tray")}>
           <div className="flex flex-col gap-2 px-3 pt-2.5 pb-3">
+            <TrayPlace
+              box={sm.box}
+              side={sm.side}
+              boxes={boxes}
+              onChange={(place) => app.patchSession(place)}
+            />
+            {session.box && (
+              <div className="flex gap-2">
+                <div className="flex w-[92px] shrink-0 flex-col gap-1">
+                  <Label htmlFor={`${sessionId}-size`} className="text-[11px] font-normal text-muted-foreground">
+                    Trays of
+                  </Label>
+                  <NativeSelect
+                    id={`${sessionId}-size`}
+                    value={session.box.size}
+                    onChange={(e) => app.patchBox(session.box!.number, { size: Number(e.target.value) })}
+                  >
+                    {BOX_SIZES.map((n) => (
+                      <NativeSelectOption key={n} value={n}>
+                        {n}
+                      </NativeSelectOption>
+                    ))}
+                  </NativeSelect>
+                </div>
+                <div className="min-w-0 flex-1">
+                  <TrayField
+                    key={`${session.box.number}-writing`}
+                    label="Written on the box"
+                    value={session.box.writing}
+                    placeholder="as it says"
+                    onCommit={(v) => app.patchBox(session.box!.number, { writing: v })}
+                  />
+                </div>
+              </div>
+            )}
             <TrayField label="Name" value={sm.name} onCommit={(v) => app.patchSession({ name: v })} />
             {session.album_from_settings ? (
               <Tip label="Every tray goes into this album: change it in Settings" side="left">
@@ -529,6 +568,7 @@ function detailsNote(g: Group, trayStock: string) {
     date,
     stock && stock !== "unknown" ? STOCK_NAMES[stock] : "",
     g.place?.name ?? "",
+    g.writing ? `“${g.writing}”` : "",
     g.caption,
     g.tags.length ? g.tags.join(", ") : "",
   ]
@@ -654,6 +694,13 @@ function SlideDetails({
         onDownload={() => app.downloadPlaces()}
       />
       <TrayField
+        key={`${g.id}-writing`}
+        label="Written on the mount"
+        value={g.writing ?? ""}
+        placeholder="as it says — few slides have any"
+        onCommit={(v) => app.patchGroup({ writing: v })}
+      />
+      <TrayField
         key={`${g.id}-caption`}
         label="Caption"
         value={g.caption}
@@ -752,6 +799,84 @@ function UploadArea({
 }
 
 /** The tray's film stock: every slide without its own is taken to be on it (learning, dates). */
+/** Which box the tray lives in, and whether it's the left or the right tray of it. */
+function TrayPlace({
+  box,
+  side,
+  boxes,
+  onChange,
+}: {
+  box: number | null;
+  side: Side | null;
+  boxes: Box[];
+  onChange: (place: Record<string, string>) => Promise<boolean>;
+}) {
+  const id = React.useId();
+  const [draft, setDraft] = React.useState(box == null ? "" : String(box));
+  const [editing, setEditing] = React.useState(false);
+  React.useEffect(() => {
+    if (!editing) setDraft(box == null ? "" : String(box));
+  }, [box, editing]);
+  const commit = async () => {
+    setEditing(false);
+    const v = draft.trim();
+    if (v === (box == null ? "" : String(box))) return;
+    // into a box: the side that's free there (left first); out of it: no side either
+    const there = boxes.find((b) => String(b.number) === v)?.trays ?? {};
+    const free: Side = side && !there[side] ? side : there.left ? "right" : "left";
+    if (!(await onChange(v ? { box: v, side: free } : { box: "", side: "" }))) setDraft(box == null ? "" : String(box));
+  };
+  const taken = (s: Side) => {
+    const t = boxes.find((b) => b.number === box)?.trays[s];
+    return !!t && s !== side;
+  };
+  return (
+    <div className="flex gap-2">
+      <div className="flex w-[92px] shrink-0 flex-col gap-1">
+        <Label htmlFor={`${id}-box`} className="text-[11px] font-normal text-muted-foreground">
+          Box
+        </Label>
+        <Input
+          id={`${id}-box`}
+          inputMode="numeric"
+          value={draft}
+          placeholder="none"
+          onFocus={() => setEditing(true)}
+          onChange={(e) => setDraft(e.target.value)}
+          onBlur={commit}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") e.currentTarget.blur();
+            if (e.key === "Escape") {
+              setDraft(box == null ? "" : String(box));
+              setEditing(false);
+              requestAnimationFrame(() => (e.target as HTMLInputElement).blur());
+            }
+          }}
+        />
+      </div>
+      <div className="flex min-w-0 flex-1 flex-col gap-1">
+        <Label htmlFor={`${id}-side`} className="text-[11px] font-normal text-muted-foreground">
+          Tray
+        </Label>
+        <NativeSelect
+          id={`${id}-side`}
+          value={side ?? ""}
+          disabled={box == null}
+          onChange={(e) => onChange({ side: e.target.value })}
+        >
+          {box == null && <NativeSelectOption value="">—</NativeSelectOption>}
+          {(["left", "right"] as const).map((s) => (
+            <NativeSelectOption key={s} value={s} disabled={taken(s)}>
+              {s === "left" ? "Left" : "Right"}
+              {taken(s) ? " (another tray)" : ""}
+            </NativeSelectOption>
+          ))}
+        </NativeSelect>
+      </div>
+    </div>
+  );
+}
+
 function TrayStock({ value, onChange }: { value: string; onChange: (stock: string) => void }) {
   const id = React.useId();
   return (
