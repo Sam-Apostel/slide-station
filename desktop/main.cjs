@@ -279,9 +279,17 @@ function command(name, arg) {
 function buildMenu() {
   const s = menuState;
   const cmd = (name, arg) => () => command(name, arg);
-  /** Single-key shortcuts are handled by the UI; the menu only shows them (never registers them),
-   *  so typing an "r" into a text field still types an "r". */
-  const hint = (accelerator) => ({ accelerator, registerAccelerator: false });
+  /** Single-key shortcuts are handled by the UI; the menu only shows them. On macOS, Chromium still
+   *  offers every key the page didn't take to the menu, so an "m" typed into a text field would
+   *  also fire Merge: key presses are the UI's to handle (it knows when you're typing), and the
+   *  menu acts only on a real click. */
+  const hint = (accelerator, name, arg) => ({
+    accelerator,
+    registerAccelerator: false,
+    click: (_item, _win, e) => {
+      if (!e?.triggeredByAccelerator) command(name, arg);
+    },
+  });
 
   /** @type {Electron.MenuItemConstructorOptions[]} */
   const template = [
@@ -356,19 +364,19 @@ function buildMenu() {
     {
       label: "Slide",
       submenu: [
-        { label: "Next Slide", ...hint("Right"), enabled: s.hasSlides, click: cmd("next") },
-        { label: "Previous Slide", ...hint("Left"), enabled: s.hasSlides, click: cmd("prev") },
-        { label: "Develop, Next", ...hint("Space"), enabled: s.hasSlides, click: cmd("review") },
+        { label: "Next Slide", enabled: s.hasSlides, ...hint("Right", "next") },
+        { label: "Previous Slide", enabled: s.hasSlides, ...hint("Left", "prev") },
+        { label: "Develop, Next", enabled: s.hasSlides, ...hint("Space", "review") },
         { type: "separator" },
-        { label: "Rotate Right", ...hint("R"), enabled: s.hasSlides, click: cmd("rotate", 90) },
-        { label: "Rotate Left", ...hint("Shift+R"), enabled: s.hasSlides, click: cmd("rotate", -90) },
-        { label: "Mirror", ...hint("H"), enabled: s.hasSlides, click: cmd("mirror") },
+        { label: "Rotate Right", enabled: s.hasSlides, ...hint("R", "rotate", 90) },
+        { label: "Rotate Left", enabled: s.hasSlides, ...hint("Shift+R", "rotate", -90) },
+        { label: "Mirror", enabled: s.hasSlides, ...hint("H", "mirror") },
         { type: "separator" },
-        { label: "Copy Colour from Previous", ...hint("C"), enabled: s.hasSlides, click: cmd("copy-prev") },
-        { label: "Reset Colour", ...hint("0"), enabled: s.hasSlides, click: cmd("reset-colour") },
+        { label: "Copy Colour from Previous", enabled: s.hasSlides, ...hint("C", "copy-prev") },
+        { label: "Reset Colour", enabled: s.hasSlides, ...hint("0", "reset-colour") },
         { type: "separator" },
-        { label: "Skip Slide", ...hint("X"), enabled: s.hasSlides, click: cmd("skip") },
-        { label: "Merge with Next", ...hint("M"), enabled: s.hasSlides, click: cmd("merge") },
+        { label: "Skip Slide", enabled: s.hasSlides, ...hint("X", "skip") },
+        { label: "Merge with Next", enabled: s.hasSlides, ...hint("M", "merge") },
       ],
     },
     {
@@ -400,7 +408,7 @@ function buildMenu() {
     {
       role: "help",
       submenu: [
-        { label: "Keyboard Shortcuts", ...hint("Shift+/"), click: cmd("help") },
+        { label: "Keyboard Shortcuts", ...hint("Shift+/", "help") },
         ...(isMac ? [] : [{ label: "Check for Updates…", click: () => updates.checkNow() }]),
         { type: "separator" },
         {
