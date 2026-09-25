@@ -474,6 +474,12 @@ def remove_faces(pid: str, face_ids: list[str]) -> dict:
     return _edit(fn)
 
 
+def label(pid: str, p: dict) -> str:
+    """What to call someone: their name, or "Person 12" (the number in their id, which stays
+    theirs) until they have one."""
+    return p.get("name") or f"Person {pid.removeprefix('p')}"
+
+
 def tag_name(name: str) -> str:
     """The Immich tag for a named person ("/" would nest tags, so it becomes "-")."""
     return "People/" + name.replace("/", "-").strip()

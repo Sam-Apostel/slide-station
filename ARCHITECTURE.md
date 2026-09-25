@@ -1819,10 +1819,13 @@ Esc steps back: out of placing, then the picked slides, then the page, then the 
   merge the ones picked ("These N are one person").
 - **Overviews:** People = a face grid (named, then "Who are they?"), the face search / Immich tag
   actions and the ages note; Places = the map of every place, a click opens the place.
+- **Unnamed people** are "Person 12" everywhere (`people.label` / `personLabel`: the number in their
+  id, which a person keeps across refreshes and merges into them).
 - **A person's page** (`GET /api/people/{pid}` → `dating.person`): name and birthday editable in
   the header, slides / places / "looks 21–23", "Often with" (the people on the same slides, most
   first; a click goes to them). Their slides grouped by year (the date each goes to Immich with,
-  estimates marked ≈), each card with their face in the corner, "age 21 · looks 23" (the age from
+  estimates marked ≈ — or, where the people's guess says another year and isn't dismissed, that
+  year, `date_source` `people`: "age 2 · looks 27" meant the tray's neighbours had it wrong), each card with their face in the corner, "age 21 · looks 23" (the age from
   the birthday and the slide's date, and the age the face looks), the place and the tray; × on a
   card = "not this person". Beside it a map of their places and the list of those (a click keeps
   only that place's slides; → opens the place's page).
@@ -1869,8 +1872,20 @@ photo) 22–24, Messi (~23) 27–29 — it guesses adults older, which the calib
   accepting a people suggestion (`insights.date` source `people`, accepted, same value) is left out,
   so the calibration never learns from its own guesses. Cached on people.json's and every
   session / faces file's mtime (`library_slides` re-reads only trays that changed).
-- Per slide: its own people combined (inverse variance) are the **anchor** (else the most certain
-  neighbour). Up to 12 undated slides either side join with their SD grown by 0.5 + 0.1 × distance —
+- **Birth years without a birthday** (`implied_births`): someone on a slide you dated (not one
+  dated by accepting a people suggestion) was born around that date minus the age they look there;
+  their faces then date their other slides. Their own habit (looking older) is in both and mostly
+  cancels. Only a given birthday is a floor (`born_floor`).
+- **Events:** the tray's scenes (`similar.scenes`, runs of look-alike slides; `_events`, cached on
+  embeddings.json's mtime and the slides' keys) of 2+ slides are one moment. Their people are pooled —
+  each person once, at the median of the years their faces there say (a mask that "looks 46" doesn't
+  drag it), SD shrunk by √(slides, at most 3) — and every slide of the scene takes that year, also the
+  ones with nobody on them; a slide whose own people contradict its scene stays on its own. A slide of
+  the scene dated by hand dates the rest (± 0.25 y) when the people don't contradict it. Several
+  people on a slide or in a scene are combined by `_consensus` (the ones agreeing with the most
+  others; the rest are left out, not averaged).
+- Per slide: its own (or its scene's) people are the **anchor** (else a dated slide of its scene,
+  else the most certain neighbour). Up to 12 undated slides either side join with their SD grown by 0.5 + 0.1 × distance —
   but only the nearest slide of each *set of people*, and none whose people are all on this slide
   (someone who looks older does so on every slide: repeating them isn't new evidence). The
   ordinary estimate (`store.slide_dates`: between → SD a quarter of the gap, ≥ 0.5; near → 1.5 +
@@ -1901,8 +1916,9 @@ captions), so the payload has no `people` / `people_year` there and nothing is d
 the floor on SD), dates from people through the API with `embed_faces` / `estimate_ages` replaced
 (birthdays validated, calibration counts, the suggestion and its text, accepting it not feeding the
 calibration, a neighbour without people getting a vaguer year), the birth-year floor, ages added to
-faces found before (ids kept), birthdays surviving merges, conflicting people not averaged, the
-atlas (grouping, people, skipped slides) and a person's page (order, ages, place, who they're with,
+faces found before (ids kept), birthdays surviving merges, conflicting people not averaged, an
+event dating its slides (faces pooled, a mask not dragging it, the person's page showing that year
+until it's dismissed), the (grouping, people, skipped slides) and a person's page (order, ages, place, who they're with,
 404). `tests/web_flow.py` opens the view in the browser version (no faces, no places yet) and
 leaves it with Esc.
 

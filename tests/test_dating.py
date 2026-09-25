@@ -88,9 +88,12 @@ def test_people_date_a_tray(api, tmp_path, aged, monkeypatch):
     ann, bob = _who(out, sid, gids[0]), _who(out, sid, gids[2])
     assert ann["ages"] == [30, 34] and ann["faces"][0]["age"] == 30
 
-    # no birthdays yet: nothing to date by
+    # no birthdays yet, but slide 1 is dated: Ann looks 30 there, so she was born around 1950 and
+    # looking 34 says slide 2 is from around 1984 - vague (± 7 y), so the dated neighbour's 1980 weighs more
     d = api.patch(f"/api/sessions/{sid}/groups/{gids[0]}", json={"date": "1980"}).json()
-    assert all(g["people_year"] is None for g in d["groups"])
+    g2 = d["groups"][1]
+    assert 1980 < g2["people_year"][0] < 1982 and g2["people_year"][1] < 2
+    assert g2["people"] == [] and g2["born_floor"] is None  # an implied birth year is no floor
 
     assert api.patch(f"/api/people/{ann['id']}", json={"birthday": "someday"}).status_code == 400
     api.patch(f"/api/people/{ann['id']}", json={"name": "Ann", "birthday": "1950"})
@@ -246,3 +249,45 @@ def test_person_page(api, tmp_path, aged, monkeypatch):
     assert s1["face"]["url"].startswith(f"/api/people/faces/{sid}/{gids[1]}/")
     assert p["with"] == [{"id": bob["id"], "name": "Bob", "slides": 1}]
     assert api.get("/api/people/nobody").status_code == 404
+
+
+def test_an_event_dates_its_slides(api, tmp_path, aged, monkeypatch):
+    """The tray's one dated slide says 1971 and Tom (born 1968) looks 3 next to it, but slides 3-6
+    are one scene where he looks 27, 46 (a mask) and 29: that scene is from the late 1990s. His
+    faces there are pooled (the median, so the mask doesn't drag it), the scene's slide without
+    anyone on it gets the same year, and his page shows it instead of the neighbours' 1971."""
+    faces, ages = aged
+    faces += [[], [face(ANN)], [face(ANN)], [face(ANN)], [], [face(ANN)]]
+    ages += [[3.0], [27.0], [46.0], [29.0]]
+    sid, d = new_tray(api, tmp_path / "scans", slides=6)
+    monkeypatch.setattr(wf, "active_session", None)
+    monkeypatch.setattr(dating, "_events", lambda sid_, groups: [(2, 5)])
+    gids = [g["id"] for g in d["groups"]]
+    tom = _who(api.get("/api/people").json(), sid, gids[1])["id"]
+    api.patch(f"/api/people/{tom}", json={"name": "Tom", "birthday": "1968-11-25"})
+    api.patch(f"/api/sessions/{sid}/groups/{gids[0]}", json={"date": "1971"})
+
+    gs = api.get(f"/api/sessions/{sid}").json()["groups"]
+    assert gs[1]["date_est"]["value"] == "1971" and (gs[1]["insights"] or {}).get("date") is None  # looks 3: fits
+    for g in gs[2:]:
+        assert 1995 <= g["people_year"][0] <= 2000, g["people_year"]
+        sug = g["insights"]["date"]
+        assert sug["source"] == "people" and 1995 <= int(sug["value"]) <= 2000
+        assert "Tom ≈ 29" in sug["text"] and "say 1971" in sug["text"]
+    assert len({g["insights"]["date"]["value"] for g in gs[2:]}) == 1  # one event, one year
+
+    p = api.get(f"/api/people/{tom}").json()
+    by = {s["gid"]: s for s in p["slides"]}
+    assert by[gids[1]]["date"] == "1971" and by[gids[1]]["date_source"] == "near"
+    s = by[gids[2]]
+    assert s["date_source"] == "people" and s["date"] == gs[2]["insights"]["date"]["value"]
+    assert 26 <= s["age"] <= 32 and s["looks"] == 27
+    # turned down, the page goes back to what the slide goes with
+    api.post(f"/api/sessions/{sid}/insights/decide", json={"kind": "date", "action": "dismiss", "groups": [gids[2]]})
+    s = next(x for x in api.get(f"/api/people/{tom}").json()["slides"] if x["gid"] == gids[2])
+    assert s["date"] == "1971" and s["date_source"] == "near"
+
+
+def test_unnamed_people_have_a_number():
+    assert people.label("p12", {"name": ""}) == "Person 12"
+    assert people.label("p12", {"name": "Tom"}) == "Tom"

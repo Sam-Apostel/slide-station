@@ -362,6 +362,10 @@ export type PeoplePayload = {
   ages?: { enabled: boolean; model: boolean; model_mb: number; calibrated: number; bias: number; sigma: number };
 };
 
+/** What to call someone: their name, or "Person 12" (the number in their id, which stays theirs;
+ *  people.label) until they have one. */
+export const personLabel = (p: { id: string; name?: string }) => p.name || `Person ${p.id.replace(/^p/, "")}`;
+
 /** A place on the map with its slides (`GET /api/atlas`). */
 export type AtlasPlace = Omit<Place, "id"> & {
   id: string;
@@ -385,7 +389,8 @@ export type PersonPage = {
     looks: number | null;
     /** The age they were, from their birthday and the slide's date; null without either. */
     age: number | null;
-    date_source: "own" | "between" | "near" | "tray" | "scan";
+    /** "people": the year the people on it (and its scene) say, where that differs from what it goes with. */
+    date_source: "own" | "between" | "near" | "tray" | "scan" | "people";
     place: Place | null;
     skip: boolean;
     locked: boolean;

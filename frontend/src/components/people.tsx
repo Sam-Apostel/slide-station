@@ -16,6 +16,7 @@ import { PreviewImg } from "@/components/filmstrip";
 import { AtlasMap, placeAt, type MapPlace } from "@/components/atlas-map";
 import {
   api,
+  personLabel,
   placeLabel,
   plural,
   slidePreview,
@@ -295,7 +296,7 @@ function Sidebar({
   const seenOnce = people.filter((p) => !p.name && p.faces.length === 1).length;
   const shownPeople = React.useMemo(() => {
     let list = people.filter((p) => once || p.name || p.faces.length > 1);
-    if (needle) list = list.filter((p) => (p.name || "unnamed").toLowerCase().includes(needle));
+    if (needle) list = list.filter((p) => personLabel(p).toLowerCase().includes(needle));
     if (sort === "birthday") list = list.filter((p) => !p.birthday);
     const byName = (a: Person, b: Person) =>
       +!a.name - +!b.name || a.name.localeCompare(b.name) || b.slides - a.slides;
@@ -373,7 +374,7 @@ function Sidebar({
                   <Avatar url={p.cover ?? p.faces[0]?.url} className="size-8" />
                   <span className="min-w-0 flex-1">
                     <span className={cn("block truncate text-[12px]", !p.name && "text-muted-foreground italic")}>
-                      {p.name || "Unnamed"}
+                      {personLabel(p)}
                     </span>
                     <span className="block truncate text-[11px] text-muted-foreground">
                       {plural(p.slides, "slide")}
@@ -384,7 +385,7 @@ function Sidebar({
                 <Checkbox
                   checked={merging.includes(p.id)}
                   onCheckedChange={(v) => setMerging((m) => (v === true ? [...m, p.id] : m.filter((x) => x !== p.id)))}
-                  aria-label={`Select ${p.name || "this person"} to merge`}
+                  aria-label={`Select ${personLabel(p)} to merge`}
                   className={cn(
                     "absolute top-1/2 right-2 -translate-y-1/2 opacity-0 group-hover:opacity-100 focus-visible:opacity-100",
                     merging.includes(p.id) && "opacity-100",
@@ -558,7 +559,7 @@ function FaceGrid({ title, people, onPerson }: { title: string; people: Person[]
             >
               <Avatar url={p.cover ?? p.faces[0]?.url} className="size-[72px] ring-1 ring-(--ss-line-soft) group-hover:ring-primary/60" />
               <span className={cn("w-full truncate text-[12px]", !p.name && "text-muted-foreground italic")}>
-                {p.name || "Unnamed"}
+                {personLabel(p)}
               </span>
               <span className="-mt-1 text-[11px] text-muted-foreground">
                 {plural(p.slides, "slide")}
@@ -781,6 +782,14 @@ function SlideCard({
 const dateText = (date: string, source: string) =>
   !date ? "No date" : source === "own" ? date : `≈ ${date}`;
 
+/** The ages (from the birthday) of a year's slides: "2", or "2–3" when the year spans a birthday. */
+function ageRange(slides: { age: number | null }[]) {
+  const a = slides.flatMap((s) => (s.age != null ? [Math.max(0, Math.floor(s.age))] : []));
+  if (!a.length) return "";
+  const [lo, hi] = [Math.min(...a), Math.max(...a)];
+  return lo === hi ? `${lo}` : `${lo}–${hi}`;
+}
+
 function PersonView({
   page,
   person,
@@ -832,7 +841,6 @@ function PersonView({
     }
     return out;
   }, [slides]);
-  const born0 = page.birthday ? +page.birthday.slice(0, 4) : null;
   const looks = person?.ages;
   const unplaced = page.slides.filter((s) => !s.place && !s.locked).map(slideId);
 
@@ -880,7 +888,7 @@ function PersonView({
                     onClick={() => onPerson(w.id)}
                     className="rounded-full border border-(--ss-line-soft) px-2 py-0.5 hover:border-primary/50"
                   >
-                    {w.name || "someone unnamed"} <span className="text-muted-foreground tabular-nums">{w.slides}</span>
+                    {personLabel(w)} <span className="text-muted-foreground tabular-nums">{w.slides}</span>
                   </button>
                 ))}
               </div>
@@ -907,9 +915,7 @@ function PersonView({
             <section key={y || "undated"} className="pt-4">
               <h2 className="sticky top-0 z-10 -mx-6 mb-2 bg-background/95 px-6 py-1 text-[12px] font-medium backdrop-blur">
                 {y || "Undated"}
-                {y && born0 != null && (
-                  <span className="ml-2 font-normal text-muted-foreground">age {Math.max(0, +y - born0)}</span>
-                )}
+                {ageRange(list) && <span className="ml-2 font-normal text-muted-foreground">age {ageRange(list)}</span>}
                 <span className="ml-2 font-normal text-muted-foreground">{plural(list.length, "slide")}</span>
               </h2>
               <ul className="grid grid-cols-[repeat(auto-fill,minmax(168px,1fr))] gap-3">
@@ -925,7 +931,15 @@ function PersonView({
                     dim={s.skip}
                     lines={[
                       <>
-                        {dateText(s.date, s.date_source)}
+                        <span
+                          title={
+                            s.date_source === "people"
+                              ? "The year the people on it and its scene say (a suggestion: accept it on the slide)"
+                              : undefined
+                          }
+                        >
+                          {dateText(s.date, s.date_source)}
+                        </span>
                         {s.age != null && <span className="text-muted-foreground"> · age {Math.floor(s.age)}</span>}
                         {s.looks != null && <span className="text-muted-foreground"> · looks {s.looks}</span>}
                       </>,
@@ -1030,7 +1044,7 @@ function PlaceView({
                     className="flex items-center gap-1.5 rounded-full border border-(--ss-line-soft) py-0.5 pr-2 pl-0.5 hover:border-primary/50"
                   >
                     <Avatar url={p.cover ?? p.faces[0]?.url} className="size-5" />
-                    {p.name || "someone unnamed"} <span className="text-muted-foreground tabular-nums">{n}</span>
+                    {personLabel(p)} <span className="text-muted-foreground tabular-nums">{n}</span>
                   </button>
                 );
               })}
