@@ -275,7 +275,7 @@ you uploaded before ("a scan from 2021") is found by the optional look-alike che
 ## Tag suggestions (optional)
 
 Settings → **Suggest tags (downloads a ~155 MB model)**. The first time, the app downloads a
-scene-recognition model (CLIP, from Hugging Face) into the library's `models` folder — the top bar
+scene-recognition model (CLIP, from Hugging Face) into `~/.slidestation/models` (on this Mac, not in the library) — the top bar
 shows the progress; an interrupted download continues where it stopped. From then on it looks at
 each slide on this computer, in the background, and suggests tags like beach, snow, mountains,
 wedding, birthday, church, car, dog, family group, portrait or interior. Nothing is applied on its
@@ -345,8 +345,8 @@ without its own. It is on in both the desktop app and the browser version (no mo
 ## Caption suggestions (optional)
 
 Settings → **Suggest captions (downloads a ~276 MB model)**. The app downloads a small
-image-description model (Microsoft's Florence-2, from Hugging Face) into the library's `models`
-folder, then writes a one-sentence English caption for each slide on this computer, in the
+image-description model (Microsoft's Florence-2, from Hugging Face) into `~/.slidestation/models`,
+then writes a one-sentence English caption for each slide on this computer, in the
 background — a few seconds a slide ("A woman in an orange space suit with a helmet."). The
 **Insights** section shows it in a box you can edit: Enter or ✓ makes it the slide's caption
 (which Immich shows as the description), × dismisses it. "Apply to 12–31…" offers it to the
@@ -406,16 +406,17 @@ dialog. Names are only ever added, never removed from Immich.
 Library folder → `sessions/<tray>/originals`, `cache` (previews), `export` (finished JPEGs),
 `session.json` (all edits; safe to back up), `faces.json` (faces found, when people are on),
 `embeddings.json` (what the tag model saw, for look-alikes; recomputed if deleted);
-`people.json` (who is who) and `models/` (the downloaded face model) at the top.
+`people.json` (who is who) at the top. Downloaded models and place names stay on this Mac, in
+`~/.slidestation/models` and `data`, so the library can go in iCloud Drive for the iPad app.
 
 Face detection uses OpenCV's YuNet model (MIT licence, from opencv_zoo), bundled in
-`slidestation/models`. Tag suggestions download OpenAI's CLIP (MIT licence) into the library's
-`models` folder when turned on; `insights.json` in the library remembers which tags you accept and dismiss.
+`slidestation/models`. Tag suggestions download OpenAI's CLIP (MIT licence) into
+`~/.slidestation/models` when turned on; `insights.json` in the library remembers which tags you accept and dismiss.
 "Prefer the shot with open eyes" downloads Google's MediaPipe face landmarks model (Apache 2.0, as
 ONNX) into `models/face-landmarks-478`.
 `stocks.json` in the library holds the slides whose film stock you set (for the film stock guess).
-Places use GeoNames' `cities15000` (CC BY 4.0, <https://www.geonames.org>), downloaded into the
-library's `data/geonames` folder, and reading signs uses PaddleOCR's models (Apache 2.0) in `models/ppocr`.
+Places use GeoNames' `cities15000` (CC BY 4.0, <https://www.geonames.org>), downloaded into
+`~/.slidestation/data/geonames`, and reading signs uses PaddleOCR's models (Apache 2.0) in `models/ppocr`.
 
 Caption suggestions download Microsoft's Florence-2 (MIT licence) the same way. Recognising people
 uses OpenCV's SFace model (Apache 2.0), downloaded when you turn it on.

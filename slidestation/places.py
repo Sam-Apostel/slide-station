@@ -7,11 +7,11 @@ Immich as latitude / longitude (`PUT /assets/{id}`, no re-upload).
 
 - **Gazetteer:** GeoNames `cities15000` (every place with 15,000+ people, ~34k; CC BY 4.0) plus
   `countryInfo.txt` and `admin1CodesASCII.txt` for the country / region names, downloaded on first
-  use into `<library>/data/geonames/`, never committed. Searched by name, ASCII name and the
+  use into `~/.slidestation/data/geonames/`, never committed. Searched by name, ASCII name and the
   Latin-script alternate names ("Venezia", "München").
 - **Suggestions** (through insights, never applied silently): text read from the photo (signs,
   "WELCOME TO …") matched against the gazetteer, by PaddleOCR's detector + Latin recogniser as ONNX
-  on CPU (`<library>/models/ppocr/`); and tray neighbours: a slide between two slides with the same
+  on CPU (`~/.slidestation/models/ppocr/`); and tray neighbours: a slide between two slides with the same
   confirmed place is offered that place.
 """
 from __future__ import annotations
@@ -28,7 +28,8 @@ from pathlib import Path
 
 import numpy as np
 
-from .store import library
+from .store import data_dir as _data_root
+from .store import library, models_dir
 
 # ------------------------------------------------------------------------------------ a place
 
@@ -100,7 +101,7 @@ MIN_ROWS = 100  # a GeoNames table has thousands (cities15000 ~34k, admin1 ~3.8k
 
 
 def data_dir() -> Path:
-    return library() / "data" / "geonames"
+    return _data_root() / "geonames"
 
 
 def gazetteer_ready() -> bool:
@@ -127,7 +128,7 @@ OFFLINE = ("Couldn't reach download.geonames.org to download the place names ({}
 
 
 def download_gazetteer(job) -> None:
-    """Fetch the GeoNames files into the library (a job). Each goes to a .part file, is checked,
+    """Fetch the GeoNames files (a job). Each goes to a .part file, is checked,
     then moved into place, so a broken download is never used."""
     import httpx
 
@@ -308,7 +309,7 @@ OCR_MB = round(sum(f[2] for f in OCR_FILES) / 1e6)
 
 
 def ocr_dir() -> Path:
-    return library() / "models" / "ppocr"
+    return models_dir() / "ppocr"
 
 
 def ocr_files_ready() -> bool:

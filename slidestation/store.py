@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import threading
 import time
 import uuid
@@ -96,10 +97,32 @@ def save_config(cfg: dict) -> None:
 
 
 def models_dir() -> Path:
-    """Downloaded models: the library's models/ folder, or one folder every account on a hosted
-    server shares (SLIDESTATION_MODELS), so each user doesn't download their own copy."""
+    """Downloaded models: one folder every account on a hosted server shares (SLIDESTATION_MODELS),
+    so each user doesn't download their own copy; else this machine's (see `_local`)."""
     shared = os.environ.get("SLIDESTATION_MODELS")
-    return Path(shared) if shared else library() / "models"
+    return Path(shared) if shared else _local("models")
+
+
+def data_dir() -> Path:
+    """Downloaded reference data (the GeoNames gazetteer): this machine's, like the models."""
+    return _local("data")
+
+
+def _local(name: str) -> Path:
+    """A folder of downloads kept on this machine, next to config.json, not in the library: the
+    library may be in iCloud Drive, shared with the iPad, which has no use for half a gigabyte of
+    models. Older versions kept it in the library; it moves out the first time it's asked for.
+    An account on a hosted server keeps its own in its library, as before."""
+    if user_home() is not None:
+        return library() / name
+    new, old = CONFIG_DIR / name, library() / name
+    if old.is_dir() and not new.exists():
+        try:
+            new.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(old), str(new))
+        except OSError:
+            return old  # can't move it (read-only, a sync in progress): keep using it where it is
+    return new
 
 
 def library() -> Path:

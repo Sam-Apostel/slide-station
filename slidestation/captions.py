@@ -26,7 +26,7 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
-from .store import library, load_config
+from .store import library, load_config, models_dir
 
 MODEL_ID = "florence-2-base"
 _REPO = "https://huggingface.co/onnx-community/Florence-2-base-ft/resolve/e88a44eaf3791a35eae0c5a47b3dbcd36e67eb6f/"
@@ -57,7 +57,7 @@ MAX_CHARS = 200
 
 
 def model_dir() -> Path:
-    return library() / "models" / MODEL_ID
+    return models_dir() / MODEL_ID
 
 
 def model_ready() -> bool:
@@ -70,7 +70,7 @@ def enabled() -> bool:
 
 
 def download_model(job) -> None:
-    """Fetch the caption model into the library (resumable, verified, atomic: `insights.fetch_files`)."""
+    """Fetch the caption model (resumable, verified, atomic: `insights.fetch_files`)."""
     from . import insights
 
     insights.fetch_files(job, _REPO, MODEL_FILES, model_dir(), "caption model")

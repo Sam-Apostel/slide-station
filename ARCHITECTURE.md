@@ -60,10 +60,13 @@ tests/                    API tests (pytest), synthetic scans, mock Immich, Play
 ```
 
 State lives outside the repo: `~/.slidestation/config.json` (settings, incl. the Immich API key,
-chmod 600) and the library folder (default `~/Pictures/Slide Station`), which holds
+chmod 600) with this machine's downloads next to it (`models/`, §5a–§5g, and `data/geonames/`,
+§5f: `store.models_dir` / `data_dir`, moved out of the library the first time they're asked for,
+so a library in iCloud Drive shared with the iPad doesn't carry half a gigabyte of models; an
+account on a hosted server keeps them in its library, or `SLIDESTATION_MODELS`), and the library folder (default `~/Pictures/Slide Station`), which holds
 `sessions/<id>/{session.json,faces.json,embeddings.json,originals,cache,export}`, `imported.json`
 (dedupe index), `learning.json`, `presets.json`, `people.json` (§5c), `insights.json` (§5a),
-`stocks.json` (§5d), `models/` (downloaded models, §5a–§5g) and `data/geonames/` (place names, §5f).
+and `stocks.json` (§5d).
 
 ## 3. Architecture notes that matter
 
@@ -705,8 +708,9 @@ disk) moves between the apps with its suggestions, decisions, embeddings and peo
 
 **Downloads** (`models.ts`, `insights.fetch_files`): the same files from the same pinned Hugging
 Face revisions into the same library folders (`models/clip-vit-b32/`, `models/ppocr/`,
-`models/face_recognition_sface_2021dec.onnx`, `data/geonames/`), so a disk library downloaded by
-either app is ready in both. Hugging Face answers other origins: `resolve/` URLs and the CDN they
+`models/face_recognition_sface_2021dec.onnx`, `data/geonames/`). The browser can only reach the
+folder it was given, so it keeps them there; the local app keeps its own in `~/.slidestation/`
+(§2) and moves a library's out when it first needs them, after which the browser downloads again. Hugging Face answers other origins: `resolve/` URLs and the CDN they
 redirect to both send `Access-Control-Allow-Origin`, and the preflight allows `Range` (checked with
 `curl -I` / `OPTIONS`). Each file goes to `<name>.part`, written through a `FileSystemWritableFileStream`
 that is closed and reopened every 16 MB (`Library.writer`: what arrived survives a closed tab; a
