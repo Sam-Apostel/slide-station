@@ -42,12 +42,12 @@ const pct = (c: number) => `${Math.round(c * 100)}%`;
 
 /** Film stock and date guesses need no model: the Details section shows them, in both versions. */
 const MODEL_FREE = (kind: InsightKind, e: Suggestion) =>
-  kind === "stock" || (kind === "date" && e.source === "neighbours+stock");
+  kind === "stock" || (kind === "date" && (e.source === "neighbours+stock" || e.source === "people"));
 
 /** Where a suggestion comes from, in words. */
 export function whySuggested(e: Suggestion) {
   const from = e.source === "tray" ? "neighbours" : e.source.startsWith("ppocr") ? "text in the photo" : e.source;
-  return e.text ? `${from}: ${e.source === "tray" ? e.text : `“${e.text}”`}` : from;
+  return e.text ? `${from}: ${e.source === "tray" || e.source === "people" ? e.text : `“${e.text}”`}` : from;
 }
 
 /** A slide's open suggestions, tags first; `models`: only what the models suggested. A caption is

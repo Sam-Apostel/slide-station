@@ -166,6 +166,16 @@ export function useSlideStation() {
     setSel(next);
   }, []);
 
+  /** Go to a slide, in whichever tray it is (People & Places). */
+  const openSlide = React.useCallback(
+    async (sid: string, gid: string) => {
+      if (ref.current.sessionId !== sid || !ref.current.session) await loadSession(sid);
+      const i = ref.current.sessionId === sid ? (ref.current.session?.groups.findIndex((g) => g.id === gid) ?? -1) : -1;
+      if (i >= 0) select(i);
+    },
+    [loadSession, select],
+  );
+
   // ---------------------------------------------------------------- edits
 
   const groupUrl = () => {
@@ -918,6 +928,7 @@ export function useSlideStation() {
     refreshState,
     loadSession,
     select,
+    openSlide,
     setParam,
     rotate,
     mirror,

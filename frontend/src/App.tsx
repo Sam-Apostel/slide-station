@@ -291,7 +291,8 @@ function SlideStationApp() {
     if (ok) app.startCleanup();
   };
 
-  const onPeople = state?.config.people_enabled ? () => setPeopleOpen(true) : undefined;
+  // People & Places: the places need no model, so it's always there
+  const onPeople = state ? () => setPeopleOpen(true) : undefined;
 
   const handlers: DesktopHandlers = {
     settings: () => openSettings(),
@@ -608,6 +609,10 @@ function SlideStationApp() {
         onOpenChange={setPeopleOpen}
         job={state?.job ?? null}
         onSettings={() => (setPeopleOpen(false), openSettings("smart"))}
+        onOpenSlide={(sid, gid) => {
+          setGrid(false);
+          app.openSlide(sid, gid);
+        }}
       />
       <CommandPalette
         open={paletteOpen}

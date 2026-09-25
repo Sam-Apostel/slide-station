@@ -237,8 +237,8 @@ export function AppActions({
         </Tip>
       )}
       {onPeople && (
-        <Tip label="People">
-          <ProButton onClick={onPeople} aria-label="People">
+        <Tip label="People & Places">
+          <ProButton onClick={onPeople} aria-label="People and places">
             <Users />
           </ProButton>
         </Tip>

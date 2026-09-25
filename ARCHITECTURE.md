@@ -43,7 +43,8 @@ slidestation/
   similar.py              look-alikes from the CLIP embeddings: duplicates, split / merge, scenes, Immich (§5e)
   eyes.py                 eyes open for look-alikes' "keep the best": face mesh + eye aspect ratio (§5e)
   captions.py             a caption per slide from Florence-2 (ONNX), for the insights (§5b)
-  people.py               faces -> people: SFace embeddings, clustering, names (§5c)
+  people.py               faces -> people: SFace embeddings, clustering, names, birthdays, ages (§5c)
+  dating.py               dates from people's birthdays + ages; the places map (§5g)
   places.py               places: GeoNames gazetteer, sign OCR, tray neighbours (§5f)
   uploads.py, accounts.py folders uploaded from the browser; Immich-user accounts (§4e)
   watch.py                watched folders: sub-folders dropped into a share become trays (§4e)
@@ -62,7 +63,7 @@ State lives outside the repo: `~/.slidestation/config.json` (settings, incl. the
 chmod 600) and the library folder (default `~/Pictures/Slide Station`), which holds
 `sessions/<id>/{session.json,faces.json,embeddings.json,originals,cache,export}`, `imported.json`
 (dedupe index), `learning.json`, `presets.json`, `people.json` (§5c), `insights.json` (§5a),
-`stocks.json` (§5d), `models/` (downloaded models, §5a–§5f) and `data/geonames/` (place names, §5f).
+`stocks.json` (§5d), `models/` (downloaded models, §5a–§5g) and `data/geonames/` (place names, §5f).
 
 ## 3. Architecture notes that matter
 
@@ -1800,6 +1801,76 @@ synthetic 1600 px sign photos (faded, grainy, blurred, tilted ±6°): 13/13 righ
 "Hotel Zürich" and "Via Roma 12" → nothing; and in the server app with the real CLIP + text
 reader: a "WELCOME TO VENICE" slide got Venice at 0.65 and, after placing slides 1 and 3 in Venice,
 slide 2 got the tray suggestion.
+
+## 5g. People & Places, dates from people (`dating.py`)
+
+One dialog (top bar / ⌘K "People & Places…", `components/people.tsx`), always there: the places
+need no model. Two tabs.
+
+**People** is the old People dialog plus a birthday per person and the ages their faces look.
+`PATCH /api/people/{pid} {"birthday": "1952" | "1952-03" | "1952-03-14" | ""}` (400 on junk, via
+`people.clean_birthday`; can come with `name`) stores `people.json` `people[pid].birthday`; a
+birthday alone keeps an otherwise empty person (like a name), a merge keeps the first birthday.
+Clicking a face opens its slide (`app.openSlide(sid, gid)`: loads the tray if needed).
+
+**Ages** (desktop / server app, opt-in `ages_enabled`, Settings under "Recognise people"): a ViT-B/16
+age regressor trained on UTKFace (0–116, so children, who date a slide best), ONNX from
+onnx-community at a pinned revision, 329 MB, checksummed and downloaded like SFace
+(`people._download`, generic now) by the face-search job when turned on. `people.estimate_ages(rgb,
+boxes)` (the function tests replace) crops each face like the People dialog does (`face_crop`, a
+square of 1.6× the box, 224 px), ImageNet mean / std, and keeps `faces.json` `faces[].age` (years,
+1 decimal). `record(…, ages=True)` ages new faces; faces found before (`people.unaged`) are aged in
+place by `add_ages` without detecting again (ids untouched) — `faces_pending` counts them, so the
+background helper and "Find faces" catch up. Checked by hand on two real photos: Lena (21 in the
+photo) 22–24, Messi (~23) 27–29 — it guesses adults older, which the calibration corrects.
+
+**The date** (`dating.tray_view`, computed per payload; no file):
+- A face of someone with a birthday gives `born + age`. Ages are corrected by a **calibration on the
+  slides dated by hand** (`calibrate`): residuals r = log1p(real) − log1p(guess) (error ∝ age),
+  common bias = Σr / (n + 3), spread from those with a prior of 0.2 (3 pseudo-slides), and a
+  per-person bias shrunk with 4 pseudo-slides. SD in years = sigma × (1 + age), at least 0.5, plus
+  the birthday's own spread (a year-only birthday is ±0.29). A slide whose own date came from
+  accepting a people suggestion (`insights.date` source `people`, accepted, same value) is left out,
+  so the calibration never learns from its own guesses. Cached on people.json's and every
+  session / faces file's mtime (`library_slides` re-reads only trays that changed).
+- Per slide: its own people combined (inverse variance) are the **anchor** (else the most certain
+  neighbour). Up to 12 undated slides either side join with their SD grown by 0.5 + 0.1 × distance —
+  but only the nearest slide of each *set of people*, and none whose people are all on this slide
+  (someone who looks older does so on every slide: repeating them isn't new evidence). The
+  ordinary estimate (`store.slide_dates`: between → SD a quarter of the gap, ≥ 0.5; near → 1.5 +
+  0.1 × distance; tray → 3) joins too. **Anything more than 2.5 combined SDs from the anchor is left
+  out**, not averaged: in a real run, Lena (~1974) and Messi (~2015) interleaved in a tray dated
+  1972 had averaged to a meaningless 1982; now each slide says its own person's year, and the text
+  says "the dated slides around it say 1972".
+- Payload per slide: `people` [{id, name, age}] (named or with a birthday), `people_year` [year,
+  SD], `born_floor` (the latest birth year on it: the UI warns when the date or estimate is older).
+- **Suggestion**: `{value: "YYYY", source: "people", confidence: 0.9 − 0.08 × SD (0.3..0.9), text:
+  "Ann ≈ 30, Bob ≈ 7 (± 2 y)"}` for undated, not skipped slides with SD ≤ 8, lifted to
+  `born_floor`, inside the film stock's era, and only when its year differs from the year the
+  slide already goes with. `dating.views` wraps `filmstock.views`: the people's guess replaces the
+  neighbours+stock one (it already includes that estimate) through `filmstock._merged`, which
+  treats source `people` as a live guess like the stock ones; decide / review / "accept all" work
+  unchanged. Nothing moves a slide's date or `meta_key` until accepted.
+
+**Places** tab: `GET /api/atlas` → every slide with `g["place"]` (not skipped) grouped by name +
+coordinates (3 decimals), with tray, index, own date, render key and the people on it. The map is
+Leaflet (`components/atlas-map.tsx`) on OpenStreetMap's tiles (no key; CARTO's basemaps now need
+one), darkened with a CSS filter in `theme.css`, which also undoes Tailwind's `img { max-width:
+100% }` — it squashes Leaflet's tiles to nothing. One circle per place, area ∝ slides; pick a person
+to see only their places (also "N places" on their row); click a place for its slides, a slide to
+open it. Offline the dots still show on a blank map.
+
+**Browser version:** birthdays (`standalone/people.ts` `cleanBirthday` / `setBirthday`, the same
+people.json) and the atlas route are ported; ages are not (329 MB in every browser's storage, like
+captions), so the payload has no `people` / `people_year` there and nothing is dated by people.
+**Swift app:** not ported.
+
+**Tests:** `tests/test_dating.py` — calibration maths (neutral start, learning a bias, per person,
+the floor on SD), dates from people through the API with `embed_faces` / `estimate_ages` replaced
+(birthdays validated, calibration counts, the suggestion and its text, accepting it not feeding the
+calibration, a neighbour without people getting a vaguer year), the birth-year floor, ages added to
+faces found before (ids kept), birthdays surviving merges, conflicting people not averaged, and the
+atlas (grouping, people, skipped slides).
 
 ## 6. Immich integration facts (hard-won)
 

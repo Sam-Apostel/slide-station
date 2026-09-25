@@ -3,6 +3,8 @@
 // history, render keys, locked slides, dedupe, the upload rules — over a Library (library.ts)
 // instead of the file system, with the pixel work in web workers (engine.ts).
 import type {
+  AtlasPayload,
+  AtlasPlace,
   AppState,
   Config,
   FullInfo,
@@ -57,6 +59,8 @@ import {
   refresh as refreshPeopleData,
   removeFaces,
   rename as renamePerson,
+  cleanBirthday,
+  setBirthday,
   SFACE,
   slideNames,
   stale,
@@ -1137,8 +1141,16 @@ async function peoplePayload(r: Awaited<ReturnType<typeof refreshPeople>>) {
     return {
       id: pid,
       name: p.name ?? "",
+      birthday: p.birthday ?? "",
       slides: new Set(fs.map((f) => `${faces.get(f)!.sid}/${faces.get(f)!.gid}`)).size,
-      faces: fs.map((f) => ({ id: f, url: `/api/people/faces/${f}.jpg?v=${faces.get(f)!.key}` })),
+      ages: null, // the age model is the desktop app's
+      faces: fs.map((f) => ({
+        id: f,
+        url: `/api/people/faces/${f}.jpg?v=${faces.get(f)!.key}`,
+        sid: faces.get(f)!.sid,
+        gid: faces.get(f)!.gid,
+        age: null,
+      })),
     };
   });
   // named people first (by name), then the ones seen most
@@ -1156,6 +1168,47 @@ async function peoplePayload(r: Awaited<ReturnType<typeof refreshPeople>>) {
     pending: cfg.people_enabled ? (await facesPending()).length : 0,
     people: out,
   };
+}
+
+/** People & Places' map: every place with its slides and who is on them (dating.atlas). */
+async function atlas() {
+  const { d, faces } = await refreshPeople();
+  const who = new Map<string, string[]>();
+  for (const [pid, p] of Object.entries(d.people))
+    for (const f of p.faces) {
+      const x = faces.get(f);
+      if (!x) continue;
+      const ids = who.get(`${x.sid}/${x.gid}`) ?? [];
+      if (!ids.includes(pid)) who.set(`${x.sid}/${x.gid}`, [...ids, pid]);
+    }
+  const places = new Map<string, AtlasPlace>();
+  const trays = (await lib.list("sessions")).filter((e) => e.kind === "directory").map((e) => e.name);
+  for (const sid of trays.sort()) {
+    let t: SessionData;
+    try {
+      t = await loadSession(sid);
+    } catch {
+      continue;
+    }
+    t.groups.forEach((g, index) => {
+      const pl = g.place;
+      if (!pl || g.skip) return;
+      const k = `${pl.name ?? ""}@${pl.lat.toFixed(3)},${pl.lon.toFixed(3)}`;
+      if (!places.has(k))
+        places.set(k, { id: k, name: pl.name, lat: pl.lat, lon: pl.lon, country: pl.country, admin: pl.admin, slides: [] });
+      places.get(k)!.slides.push({
+        sid,
+        gid: g.id,
+        tray: t.name,
+        index,
+        date: g.date ?? "",
+        key: renderKey(g),
+        people: who.get(`${sid}/${g.id}`) ?? [],
+      });
+    });
+  }
+  const out = [...places.values()].sort((a, b) => b.slides.length - a.slides.length);
+  return { places: out, slides: out.reduce((n, p) => n + p.slides.length, 0) } satisfies AtlasPayload;
 }
 
 /** The job: the face model if needed, then the faces on every slide of the library (workflow.scan_people). */
@@ -3000,9 +3053,17 @@ export async function handle(method: string, url: string, body: Body = {}): Prom
     return { ok: true };
   }
   if ((m = is("PATCH", /^\/api\/people\/([^/]+)$/))) {
+    // a name (a name someone else has joins the two) and / or a birthday (server.people_rename)
     const pid = m[1];
+    if ("birthday" in body) {
+      const b = cleanBirthday(body.birthday);
+      if (b === null) throw new HttpError(400, "A birthday is a year, year-month or a full date, like 1952-03-14");
+      const r = await refreshPeople((d) => setBirthday(d, pid, b));
+      if (!("name" in body)) return peoplePayload(r);
+    }
     return peoplePayload(await refreshPeople((d) => renamePerson(d, pid, String(body.name ?? ""))));
   }
+  if (is("GET", /^\/api\/atlas$/)) return atlas();
   if ((m = is("POST", /^\/api\/people\/([^/]+)\/merge$/))) {
     const pid = m[1];
     const others = ((body.people as unknown[]) ?? []).map(String);

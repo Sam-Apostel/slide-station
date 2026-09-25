@@ -14,7 +14,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from . import accounts, captions, eyes, filmstock, insights, learning
-from . import people, places
+from . import dating, people, places
 from . import raw, similar, tether, uploads, watch
 from . import store
 from . import workflow as wf
@@ -181,7 +181,7 @@ def set_config(body: dict = Body(...)):
             return _err(e, 502)
     for k in (*own, "immich_key", "keep_originals", "keep_exports", "jpeg_quality",
               "learning_enabled", "upload_originals_stacked", "insights_enabled", "captions_enabled",
-              "people_enabled", "lookalike_enabled", "eyes_enabled", "immich_album", "immich_album_name", "tag_trays"):
+              "people_enabled", "ages_enabled", "lookalike_enabled", "eyes_enabled", "immich_album", "immich_album_name", "tag_trays"):
         if k in body and not (k == "immich_key" and body[k] == ""):
             cfg[k] = body[k]
     if "stats_target" in body:  # slides to digitise in all, for the stats' projected finish
@@ -338,7 +338,8 @@ def _session_payload(s: Session) -> dict:
     models = insights.active_models()  # once: every slide's insights key depends on it
     dates = slide_dates(d)
     st = statuses(d)
-    live = filmstock.views(d, dates)  # film stock and date guesses: no model, always on
+    # film stock and date guesses (no model, always on), the people's date guess where there is one
+    live, ppl = dating.views(s.id, d, dates)
     for i, g in enumerate(d["groups"]):
         groups.append({
             **{k: g[k] for k in ("id", "scans", "excluded", "rotation", "rot_reason", "params", "skip")},
@@ -360,6 +361,11 @@ def _session_payload(s: Session) -> dict:
             "lookalike": similar.lookalike_view(g),
             "place": g.get("place"),  # {"name", "lat", "lon", "country"} or None
             "date_est": dates[i],  # {"value", "source": own|between|near|tray|scan, "from": [indices]}
+            # the named people on it (age: as it looks, corrected; None without the age model) and
+            # the year they put it in [value, SD] (dating.py); None when nobody with a birthday is near
+            "people": ppl[i]["people"],
+            "people_year": ppl[i]["year"],
+            "born_floor": ppl[i]["floor"],
             "active": active_scans(g),
             "key": render_key(g),  # preview cache key: the UI must use this, not its own guess
             "tone_key": tone_key(g),  # histogram cache key
@@ -947,7 +953,7 @@ def insights_decide(sid: str, body: dict = Body(...)):
         if gids is not None and len(targets) == 1 and action == "accept":
             _editable(targets[0])
         # film stock and date guesses live in no file until decided: write down what is shown
-        live = filmstock.views(s.data, slide_dates(s.data)) if kind in ("stock", "date") else None
+        live = dating.views(sid, s.data, slide_dates(s.data))[0] if kind in ("stock", "date") else None
         n = 0
         for g in targets:
             if action == "accept" and g.get("locked"):
@@ -1339,20 +1345,32 @@ def learning_reset():
 
 def _people_payload(d: dict) -> dict:
     faces = people.all_faces()
+    cal = dating.calibration(d, faces)
     out = []
     for pid, p in d["people"].items():
         fs = [f for f in p["faces"] if f in faces]
+        ages = sorted(dating.corrected(faces[f]["age"], pid, cal)[0] for f in fs if "age" in faces[f])
         out.append({
             "id": pid,
             "name": p.get("name", ""),
+            "birthday": p.get("birthday", ""),
             "slides": len({(faces[f]["sid"], faces[f]["gid"]) for f in fs}),
-            "faces": [{"id": f, "url": f"/api/people/faces/{f}.jpg?v={faces[f]['key']}"} for f in fs],
+            # the ages their faces look (corrected by the calibration): youngest, oldest
+            "ages": [round(ages[0]), round(ages[-1])] if ages else None,
+            "faces": [{"id": f, "url": f"/api/people/faces/{f}.jpg?v={faces[f]['key']}",
+                       "sid": faces[f]["sid"], "gid": faces[f]["gid"],
+                       "age": round(dating.corrected(faces[f]["age"], pid, cal)[0]) if "age" in faces[f] else None}
+                      for f in fs],
         })
     # named people first (by name), then the ones seen most
     out.sort(key=lambda p: (not p["name"], p["name"].lower(), -len(p["faces"])))
     cfg = load_config()
-    return {"enabled": bool(cfg.get("people_enabled")), "model": people.model_ready(), "model_mb": people.MODEL_MB,
-            "pending": len(wf.faces_pending()) if cfg.get("people_enabled") else 0, "people": out}
+    on = bool(cfg.get("people_enabled"))
+    return {"enabled": on, "model": people.model_ready(), "model_mb": people.MODEL_MB,
+            "pending": len(wf.faces_pending()) if on else 0, "people": out,
+            # ages for dating: turned on, downloaded; the calibration on the slides dated by hand
+            "ages": {"enabled": bool(cfg.get("ages_enabled")), "model": people.age_ready(), "model_mb": people.AGE_MB,
+                     "calibrated": cal["n"], "bias": round(cal["bias"], 3), "sigma": round(cal["sigma"], 3)}}
 
 
 @app.get("/api/people")
@@ -1382,7 +1400,16 @@ def _people_edit(fn, *args):
 
 @app.patch("/api/people/{pid}")
 def people_rename(pid: str, body: dict = Body(...)):
-    """Name a person; a name someone else already has joins the two."""
+    """Name a person (a name someone else already has joins the two) and / or give their birthday
+    (`birthday`: "1952", "1952-03" or "1952-03-14"; "" forgets it)."""
+    if "birthday" in body:
+        try:
+            people.clean_birthday(body["birthday"])
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        r = _people_edit(people.set_birthday, pid, body["birthday"])
+        if "name" not in body:
+            return r
     return _people_edit(people.rename, pid, body.get("name", ""))
 
 
@@ -1409,6 +1436,12 @@ def people_tag():
     except RuntimeError as e:
         return _err(e, 409)
     return {"ok": True}
+
+
+@app.get("/api/atlas")
+def atlas():
+    """People & Places: every place with its slides and who is on them (dating.atlas)."""
+    return dating.atlas()
 
 
 @app.get("/api/people/faces/{sid}/{gid}/{n}.jpg")

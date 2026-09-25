@@ -327,7 +327,7 @@ def era_hint(d: dict, g: dict, value: str) -> dict | None:
 def _merged(stored: dict | None, live: dict | None) -> dict | None:
     """What a slide shows for one kind: a model's own open suggestion stays; a decision stands
     while the live guess is the same value; a different live guess is new and is offered."""
-    if stored and stored.get("state") == "suggested" and stored.get("source") not in (SOURCE, DATE_SOURCE) \
+    if stored and stored.get("state") == "suggested" and stored.get("source") not in (SOURCE, DATE_SOURCE, "people") \
             and not str(stored.get("source", "")).startswith("knn:"):
         return stored
     if live and not (stored and stored.get("value") == live["value"] and stored.get("state") in ("accepted", "dismissed")):

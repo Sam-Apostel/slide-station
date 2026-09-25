@@ -795,6 +795,11 @@ def people_on() -> bool:
     return bool(load_config().get("people_enabled")) and people.model_ready()
 
 
+def ages_on() -> bool:
+    """Ages on the faces (for dating slides by the people on them): opt-in too, a model of its own."""
+    return people_on() and bool(load_config().get("ages_enabled")) and people.age_ready()
+
+
 def find_faces(sid: str, gid: str) -> bool:
     """Record one slide's faces, if they aren't up to date. Only faces.json is written, never the
     session: the slide is read fresh and the result is stored under the key it was found for."""
@@ -803,9 +808,14 @@ def find_faces(sid: str, gid: str) -> bool:
         g = s.group(gid)
     except KeyError:
         return False
-    if not people.stale(g, people.load_faces(sid).get(gid)):
+    entry = people.load_faces(sid).get(gid)
+    ages = ages_on()
+    if people.stale(g, entry):
+        people.record(sid, g, im.orient(fused_proxy(s, g), g["rotation"], g.get("mirror", False)), ages)
+    elif ages and people.unaged(entry):  # found before the age model was there
+        people.add_ages(sid, gid, im.orient(fused_proxy(s, g), g["rotation"], g.get("mirror", False)))
+    else:
         return False
-    people.record(sid, g, im.orient(fused_proxy(s, g), g["rotation"], g.get("mirror", False)))
     return True
 
 
@@ -829,7 +839,9 @@ def faces_pending(sids: list[str] | None = None) -> list[tuple[str, str]]:
         gids = {g["id"] for g in s.data["groups"]}
         if set(faces) - gids:
             people.update_faces(sid, lambda d: [d.pop(k) for k in list(d) if k not in gids])
-        todo += [(sid, g["id"]) for g in s.data["groups"] if people.stale(g, faces.get(g["id"]))]
+        ages = ages_on()
+        todo += [(sid, g["id"]) for g in s.data["groups"]
+                 if people.stale(g, faces.get(g["id"])) or (ages and not g.get("skip") and people.unaged(faces.get(g["id"])))]
     return todo
 
 
@@ -842,6 +854,13 @@ def scan_people(job: Job) -> None:
 
         progress(0, people.MODEL_MB)
         people.download_model(progress)
+    if load_config().get("ages_enabled") and not people.age_ready():
+        def progress(done, total):
+            job.done, job.total = done, total
+            job.message = f"Downloading the age model ({done} of {total} MB)"
+
+        progress(0, people.AGE_MB)
+        people.download_age_model(progress)
     todo = faces_pending()
     job.done, job.total = 0, len(todo)
     for sid, gid in todo:

@@ -1802,3 +1802,40 @@ body {
   background: var(--ss-line);
   color: var(--ss-text);
 }
+
+/* People & Places' map (Leaflet): Tailwind's img reset squashes the tiles; dark controls to match */
+.leaflet-container {
+  background: #0e0e11;
+  font: inherit;
+}
+.leaflet-container img.leaflet-tile {
+  max-width: none;
+  max-height: none;
+}
+.ss-map-tiles {
+  /* OSM's light style, turned dark: inverted, hues put back, dimmed */
+  filter: invert(1) hue-rotate(180deg) brightness(0.8) contrast(0.85) saturate(0.4);
+}
+.leaflet-bar a,
+.leaflet-bar a:hover {
+  background: var(--ss-panel-2);
+  color: var(--foreground);
+  border-color: var(--ss-line-soft);
+}
+.leaflet-container .leaflet-control-attribution {
+  background: rgb(14 14 17 / 0.75);
+  color: var(--muted-foreground);
+  font-size: 10px;
+}
+.leaflet-control-attribution a {
+  color: inherit;
+}
+.leaflet-tooltip {
+  background: var(--ss-panel);
+  color: var(--foreground);
+  border-color: var(--ss-line-soft);
+  font-size: 11px;
+}
+.leaflet-tooltip-top::before {
+  border-top-color: var(--ss-panel);
+}

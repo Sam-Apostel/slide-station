@@ -4,7 +4,10 @@ Faces are found with YuNet (imaging.detect_faces) on the upright, blended proxy 
 OpenCV's SFace (FaceRecognizerSF: alignCrop on YuNet's landmarks, then a 128-d feature). The model is
 downloaded on first use into the library's models/ folder. Per tray the faces live next to
 session.json in faces.json (derived data, never written into the session itself); the people -
-clusters with an optional name - live in the library's people.json.
+clusters with an optional name and birthday - live in the library's people.json.
+
+Ages: with the age model downloaded (opt-in, `ages_enabled`), every face also gets the age it looks
+(`age`, years), which dating.py turns into a date for the slide once the person has a birthday.
 """
 from __future__ import annotations
 
@@ -25,6 +28,15 @@ MODEL_NAME = "face_recognition_sface_2021dec.onnx"
 MODEL_URL = "https://huggingface.co/opencv/face_recognition_sface/resolve/main/" + MODEL_NAME
 MODEL_SHA256 = "0ba9fbfa01b5270c96627c4ef784da859931e02f04419c829e83484087c34e79"
 MODEL_MB = 39
+
+AGE_NAME = "age_vit_utkface.onnx"
+# a ViT-B/16 with an age regression head, trained on UTKFace (ages 0-116, so children too, which
+# date a slide best); Apache-2.0 weights, ONNX export by onnx-community, pinned to a revision
+AGE_URL = ("https://huggingface.co/onnx-community/age-gender-prediction-ONNX/resolve/"
+           "6c138f6454d37dd55e5d4648e23e1ec23844e705/onnx/model.onnx")
+AGE_SHA256 = "0c35c868ea8ffba6d5fe727c1a6b82d9da600e690342d58ca268270560e28304"
+AGE_MB = 329
+AGE_SIZE = 224  # its input: a 224 px square around the face, ImageNet mean / std
 
 SAME_PERSON = 0.363  # SFace's recommended cosine-similarity threshold for "same identity"
 MIN_SCORE = 0.7  # the detector confidence a face needs (as for the rotation vote)
@@ -47,17 +59,32 @@ def model_ready() -> bool:
 
 def download_model(progress=None) -> Path:
     """Fetch SFace into the library (checked against its SHA-256). progress(done_mb, total_mb)."""
+    return _download(MODEL_URL, MODEL_SHA256, model_file(), MODEL_MB, "face model", progress)
+
+
+def age_file() -> Path:
+    return models_dir() / AGE_NAME
+
+
+def age_ready() -> bool:
+    return age_file().exists()
+
+
+def download_age_model(progress=None) -> Path:
+    return _download(AGE_URL, AGE_SHA256, age_file(), AGE_MB, "age model", progress)
+
+
+def _download(url: str, sha256: str, dest: Path, mb: int, what: str, progress=None) -> Path:
     import httpx
 
-    dest = model_file()
     if dest.exists():
         return dest
     dest.parent.mkdir(parents=True, exist_ok=True)
     tmp = dest.with_suffix(".part")
     h = hashlib.sha256()
-    with httpx.stream("GET", MODEL_URL, follow_redirects=True, timeout=120) as r:
+    with httpx.stream("GET", url, follow_redirects=True, timeout=120) as r:
         r.raise_for_status()
-        total = int(r.headers.get("content-length", 0)) or MODEL_MB << 20
+        total = int(r.headers.get("content-length", 0)) or mb << 20
         done = 0
         with open(tmp, "wb") as f:
             for chunk in r.iter_bytes(1 << 20):
@@ -66,9 +93,9 @@ def download_model(progress=None) -> Path:
                 done += len(chunk)
                 if progress:
                     progress(done >> 20, total >> 20)
-    if h.hexdigest() != MODEL_SHA256:
+    if h.hexdigest() != sha256:
         tmp.unlink(missing_ok=True)
-        raise RuntimeError("The downloaded face model didn't match its checksum - try again.")
+        raise RuntimeError(f"The downloaded {what} didn't match its checksum - try again.")
     os.replace(tmp, dest)
     return dest
 
@@ -100,6 +127,27 @@ def embed_faces(rgb: np.ndarray) -> list[dict]:
         box = [f[0] / width, f[1] / height, f[2] / width, f[3] / height]
         out.append({"box": [round(float(v), 4) for v in box], "score": round(float(f[14]), 3), "emb": e})
     return out
+
+
+_ager = None
+_ager_lock = threading.Lock()
+
+
+def estimate_ages(rgb: np.ndarray, boxes: list[list[float]]) -> list[float]:
+    """The age (years) each face looks, boxes as stored (0..1 of the upright picture). The one
+    function tests replace, like embed_faces."""
+    import onnxruntime as ort
+
+    global _ager
+    if not boxes:
+        return []
+    with _ager_lock:
+        if _ager is None:
+            _ager = ort.InferenceSession(str(age_file()), providers=["CPUExecutionProvider"])
+        x = np.stack([face_crop(rgb, b, AGE_SIZE) for b in boxes]).astype(np.float32)
+        x = (np.clip(x, 0, 1) - [0.485, 0.456, 0.406]) / [0.229, 0.224, 0.225]
+        out = _ager.run(None, {_ager.get_inputs()[0].name: x.transpose(0, 3, 1, 2).astype(np.float32)})[0]
+    return [round(float(np.clip(a, 0, 100)), 1) for a in out[:, 0]]
 
 
 # --------------------------------------------------------------------------- faces per tray
@@ -146,10 +194,19 @@ def stale(g: dict, entry: dict | None) -> bool:
     return not g.get("skip") and (not entry or entry.get("key") != face_key(g))
 
 
-def record(sid: str, g: dict, rgb: np.ndarray) -> list[dict]:
+def unaged(entry: dict | None) -> bool:
+    """Faces on the slide without an age yet (found before the age model was there)."""
+    return bool(entry) and any("age" not in f for f in entry.get("faces", []))
+
+
+def record(sid: str, g: dict, rgb: np.ndarray, ages: bool = False) -> list[dict]:
     """Find and describe the faces on one slide (rgb = its upright blend) and store them. A face found
-    again keeps its id, so a name or a removal made in the People dialog stays with it."""
+    again keeps its id, so a name or a removal made in the People dialog stays with it. `ages`: the
+    age model is on, every face gets the age it looks."""
     found = embed_faces(rgb)
+    if ages:
+        for f, a in zip(found, estimate_ages(rgb, [f["box"] for f in found])):
+            f["age"] = a
     key, gid = face_key(g), g["id"]
 
     def commit(d: dict):
@@ -168,11 +225,26 @@ def record(sid: str, g: dict, rgb: np.ndarray) -> list[dict]:
                 taken.add(n)
                 match = f"{sid}/{gid}/{n}"
             used.add(match)
-            faces.append({"id": match, "box": f["box"], "score": f["score"], "emb": _pack(f["emb"])})
+            faces.append({"id": match, "box": f["box"], "score": f["score"], "emb": _pack(f["emb"]),
+                          **({"age": f["age"]} if "age" in f else {})})
         d[gid] = {"key": key, "rot": g["rotation"], "mirror": bool(g.get("mirror")), "faces": faces}
 
     update_faces(sid, commit)
     return found
+
+
+def add_ages(sid: str, gid: str, rgb: np.ndarray) -> None:
+    """Give the faces already found on a slide their ages (rgb = the same upright blend)."""
+    entry = load_faces(sid).get(gid) or {}
+    todo = [f for f in entry.get("faces", []) if "age" not in f]
+    ages = dict(zip((f["id"] for f in todo), estimate_ages(rgb, [f["box"] for f in todo])))
+
+    def commit(d: dict):
+        for f in (d.get(gid) or {}).get("faces", []):
+            if f["id"] in ages and "age" not in f:
+                f["age"] = ages[f["id"]]
+
+    update_faces(sid, commit)
 
 
 # --------------------------------------------------------------------------- clustering
@@ -252,7 +324,7 @@ def people_file() -> Path:
 
 
 def load_people() -> dict:
-    """{"people": {pid: {"name", "faces": [face ids]}}, "rejected": {face id: [pids]}, "next": int}"""
+    """{"people": {pid: {"name", "faces": [face ids], "birthday"?}}, "rejected": {face id: [pids]}, "next": int}"""
     f = people_file()
     d = json.loads(f.read_text()) if f.exists() else {}
     return {"people": d.get("people", {}), "rejected": d.get("rejected", {}), "next": d.get("next", 1)}
@@ -266,7 +338,7 @@ _face_cache: dict[str, tuple[int, dict]] = {}
 
 
 def all_faces() -> dict[str, dict]:
-    """Every face in the library: {face id: {"sid", "gid", "emb", "box", "key"}}."""
+    """Every face in the library: {face id: {"sid", "gid", "emb", "box", "score", "key", "age"?}}."""
     out = {}
     for f in sorted((library() / "sessions").glob("*/faces.json")):
         sid = f.parent.name
@@ -278,7 +350,8 @@ def all_faces() -> dict[str, dict]:
                 for gid, e in json.loads(f.read_text()).items():
                     for x in e.get("faces", []):
                         faces[x["id"]] = {"sid": sid, "gid": gid, "emb": unpack(x["emb"]), "box": x["box"],
-                                          "key": e.get("key", "")}
+                                          "score": x.get("score", 0), "key": e.get("key", ""),
+                                          **({"age": x["age"]} if "age" in x else {})}
                 hit = (mt, faces)
                 _face_cache[sid] = hit
         except (OSError, ValueError):
@@ -303,7 +376,7 @@ def refresh() -> dict:
         groups = agglomerate(emb, clusters, rejected)
         people = {}
         for p, g in zip(pids, groups):
-            if g or d["people"][p].get("name"):
+            if g or d["people"][p].get("name") or d["people"][p].get("birthday"):
                 people[p] = {**d["people"][p], "faces": [ids[i] for i in g]}
         for g in groups[len(pids):]:
             people[f"p{d['next']}"] = {"name": "", "faces": [ids[i] for i in g]}
@@ -338,6 +411,34 @@ def rename(pid: str, name: str) -> dict:
     return _edit(fn)
 
 
+def clean_birthday(v) -> str:
+    """'1952', '1952-03' or '1952-03-14' (as dates are typed everywhere else), "" = none. ValueError on junk."""
+    from .store import format_date, parse_date
+
+    v = str(v or "").strip()
+    if not v:
+        return ""
+    p = parse_date(v)
+    if not p or not 1850 <= p[0].year <= 2100:
+        raise ValueError("A birthday is a year, year-month or a full date, like 1952-03-14")
+    return format_date(*p)
+
+
+def set_birthday(pid: str, value) -> dict:
+    """Someone's birthday (for dating the slides they're on); "" forgets it."""
+    b = clean_birthday(value)
+
+    def fn(d):
+        if pid not in d["people"]:
+            raise KeyError(pid)
+        if b:
+            d["people"][pid]["birthday"] = b
+        else:
+            d["people"][pid].pop("birthday", None)
+
+    return _edit(fn)
+
+
 def _merge(d: dict, into: str, others: list[str]) -> None:
     target = d["people"][into]
     for p in others:
@@ -346,6 +447,8 @@ def _merge(d: dict, into: str, others: list[str]) -> None:
         gone = d["people"].pop(p)
         target["faces"] += gone["faces"]
         target["name"] = target.get("name") or gone.get("name", "")
+        if not target.get("birthday") and gone.get("birthday"):
+            target["birthday"] = gone["birthday"]
         for f, ps in d["rejected"].items():
             d["rejected"][f] = sorted({into if x == p else x for x in ps})
 

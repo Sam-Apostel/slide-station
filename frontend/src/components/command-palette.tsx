@@ -319,7 +319,7 @@ export function CommandPalette({
           icon: <ChartNoAxesColumn />,
           run: views.stats,
         },
-        { id: "people", label: "People…", icon: <Users />, hidden: !onPeople, run: () => onPeople?.() },
+        { id: "people", label: "People & Places…", icon: <Users />, hidden: !onPeople, run: () => onPeople?.() },
         { id: "settings", label: "Settings…", icon: <Settings />, keys: `${mod},`, run: handlers.settings },
         { id: "help", label: "Keyboard shortcuts", icon: <Keyboard />, keys: "?", run: handlers.help },
       ],

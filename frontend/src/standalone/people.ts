@@ -4,7 +4,7 @@
 // library into people.json with the same average-linkage rule, named once. The same files as the
 // desktop app, so a library moves between them with its people.
 import type { ModelSource } from "./models";
-import { pyDumps, PyInt, sha1Hex, activeScans, type GroupData } from "./store";
+import { pyDumps, PyInt, sha1Hex, activeScans, parseDate, formatDate, type GroupData } from "./store";
 import { dot, unit } from "./clip";
 
 export const MODEL_NAME = "face_recognition_sface_2021dec.onnx";
@@ -25,7 +25,7 @@ export const MATCH = 0.8; // a face found again (after the slide was turned) kee
 export type Found = { box: number[]; score: number; emb: Float32Array };
 export type StoredFace = { id: string; box: number[]; score: number; emb: string };
 export type FacesFile = Record<string, { key: string; rot: number; mirror?: boolean; faces: StoredFace[] }>;
-export type Person = { name: string; faces: string[] };
+export type Person = { name: string; faces: string[]; birthday?: string };
 export type PeopleFile = { people: Record<string, Person>; rejected: Record<string, string[]>; next: number };
 
 /** What a slide's faces were found on: its blended scans, turned upright (people.face_key). */
@@ -167,7 +167,7 @@ export function refresh(d: PeopleFile, faces: Map<string, Float32Array>): { d: P
   );
   const people: Record<string, Person> = {};
   pids.forEach((p, i) => {
-    if (groups[i].length || d.people[p].name) people[p] = { ...d.people[p], faces: groups[i].map((x) => ids[x]) };
+    if (groups[i].length || d.people[p].name || d.people[p].birthday) people[p] = { ...d.people[p], faces: groups[i].map((x) => ids[x]) };
   });
   let next = d.next;
   for (const g of groups.slice(pids.length)) people[`p${next++}`] = { name: "", faces: g.map((x) => ids[x]) };
@@ -185,6 +185,7 @@ function mergeInto(d: PeopleFile, into: string, others: string[]) {
     delete d.people[p];
     target.faces.push(...gone.faces);
     target.name = target.name || gone.name || "";
+    if (!target.birthday && gone.birthday) target.birthday = gone.birthday;
     for (const [f, ps] of Object.entries(d.rejected))
       d.rejected[f] = [...new Set(ps.map((x) => (x === p ? into : x)))].sort();
   }
@@ -200,6 +201,25 @@ export function rename(d0: PeopleFile, pid: string, name: string): PeopleFile | 
     (p) => p !== pid && n && (d.people[p].name ?? "").toLowerCase() === n.toLowerCase(),
   );
   if (same.length) mergeInto(d, same[0], [pid]);
+  return d;
+}
+
+/** people.clean_birthday: '1952', '1952-03' or '1952-03-14', "" = none; null on junk. */
+export function cleanBirthday(v: unknown): string | null {
+  const s = String(v ?? "").trim();
+  if (!s) return "";
+  const p = parseDate(s);
+  if (!p) return null;
+  const y = new Date(p[0]).getUTCFullYear();
+  return y >= 1850 && y <= 2100 ? formatDate(...p) : null;
+}
+
+/** Someone's birthday (people.set_birthday); "" forgets it. Null: no such person. */
+export function setBirthday(d0: PeopleFile, pid: string, birthday: string): PeopleFile | null {
+  const d = clone(d0);
+  if (!(pid in d.people)) return null;
+  if (birthday) d.people[pid].birthday = birthday;
+  else delete d.people[pid].birthday;
   return d;
 }
 

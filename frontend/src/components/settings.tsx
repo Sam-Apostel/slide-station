@@ -84,6 +84,7 @@ export function SettingsDialog({
   const [tagTrays, setTagTrays] = React.useState(true);
   const [learning, setLearning] = React.useState(true);
   const [people, setPeople] = React.useState(false);
+  const [ages, setAges] = React.useState(false);
   const [learned, setLearned] = React.useState<{ examples: number; min_examples: number } | null>(null);
   const [suggestTags, setSuggestTags] = React.useState(false);
   const [lookalikes, setLookalikes] = React.useState(false);
@@ -113,6 +114,7 @@ export function SettingsDialog({
     if (config.has_key) api<ImmichAlbum[]>("GET", "/api/immich/albums").then(setAlbums, () => setAlbums(null));
     setLearning(config.learning_enabled ?? true);
     setPeople(!!config.people_enabled);
+    setAges(!!config.ages_enabled);
     api<{ examples: number; min_examples: number }>("GET", "/api/learning").then(setLearned, () => setLearned(null));
     setSuggestTags(config.insights_enabled ?? false);
     setLookalikes(!!config.lookalike_enabled);
@@ -142,6 +144,7 @@ export function SettingsDialog({
     eyes_enabled: openEyes,
     ...(standalone ? {} : { captions_enabled: suggestCaptions }), // captions: the desktop app only
     people_enabled: people,
+    ...(standalone ? {} : { ages_enabled: ages }), // ages: the desktop app only (a 329 MB model)
   };
   const saved = config && {
     immich_url: config.immich_url || "",
@@ -157,6 +160,7 @@ export function SettingsDialog({
     eyes_enabled: !!config.eyes_enabled,
     ...(standalone ? {} : { captions_enabled: config.captions_enabled ?? false }),
     people_enabled: !!config.people_enabled,
+    ...(standalone ? {} : { ages_enabled: !!config.ages_enabled }),
   };
   const dirty = !!key.trim() || JSON.stringify(values) !== JSON.stringify(saved);
   const connected = !!config?.has_key && !!config.immich_url;
@@ -190,7 +194,7 @@ export function SettingsDialog({
       ];
       if (models.length && !insights?.downloading) await api("POST", "/api/insights/model", { models }).catch(() => {});
       toast.success("Settings saved");
-      if (people && !config?.people_enabled) {
+      if (people && (!config?.people_enabled || (ages && !config?.ages_enabled))) {
         // turned on: fetch the face model and look for faces on the slides already in the library
         await api("POST", "/api/people/scan").then(
           () => toast("Looking for faces on your slides — see People when it's done"),
@@ -503,6 +507,16 @@ export function SettingsDialog({
                       badge={!config?.people_enabled && <ModelBadge mb={39} />}
                       description="Groups faces by person so you name each person once; Immich gets the names as tags."
                     />
+                    {!standalone && people && (
+                      <ToggleRow
+                        id="cfg-ages"
+                        checked={ages}
+                        onChange={setAges}
+                        title="Date slides by the ages of the people on them"
+                        badge={!config?.ages_enabled && <ModelBadge mb={329} />}
+                        description="Estimates how old each face looks. With birthdays in People & Places, that suggests a year for undated slides — checked against the slides you dated yourself."
+                      />
+                    )}
                   </Group>
                   {standalone && (
                     <Note>The models are kept in the library, so a library folder on disk shares them with the desktop app.</Note>

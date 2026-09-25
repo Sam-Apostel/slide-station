@@ -38,6 +38,21 @@ file and runs it with onnxruntime-web (MIT, `frontend/package.json`).
 use (Settings → recognise people) from OpenCV's Hugging Face mirror into the library's `models/`
 folder. It is never bundled.
 
+## Age estimation model (dates from people) — downloaded, not in the repo
+
+When "Date slides by the ages of the people on them" is turned on (desktop / server app), the app
+downloads a ViT-B/16 age and gender model, Apache 2.0 licence
+(<https://huggingface.co/abhilash88/age-gender-prediction>), as the ONNX export by onnx-community
+(<https://huggingface.co/onnx-community/age-gender-prediction-ONNX>, a pinned revision) into the
+library's `models/` folder; only its age output is used. It was trained on the UTKFace dataset, whose
+images are for non-commercial research. Nothing of it is committed or bundled.
+
+## Map — Leaflet and OpenStreetMap
+
+People & Places draws its map with Leaflet (BSD 2-clause, `frontend/package.json`) on
+OpenStreetMap's tiles (© OpenStreetMap contributors, ODbL; credited on the map), fetched from
+tile.openstreetmap.org by the viewer's browser under OSM's tile usage policy.
+
 ## CLIP ViT-B/32 (scene tags) — downloaded, not in the repo
 
 When "Suggest tags" is turned on, the app downloads OpenAI's CLIP ViT-B/32 (MIT licence,

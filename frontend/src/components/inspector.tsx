@@ -563,7 +563,10 @@ function SlideDetails({
   const from = est.from?.map((i) => `#${i + 1}`).join(" & ");
   const era = est.era;
   const dateSug =
-    g.insights?.date?.state === "suggested" && g.insights.date.source === "neighbours+stock" ? g.insights.date : null;
+    g.insights?.date?.state === "suggested" && ["neighbours+stock", "people"].includes(g.insights.date.source)
+      ? g.insights.date
+      : null;
+  const onIt = g.people ?? [];
   const decide = async (kind: InsightKind, action: "accept" | "dismiss", value: string) => {
     const p = await app.decide(kind, action, value, [g.id]);
     if (p?.decided && action === "accept") onAccepted(kind, value, p.groups, g.index);
@@ -598,10 +601,33 @@ function SlideDetails({
             </>
           }
           e={dateSug}
-          why={`from the dated slides around it${era ? `, within ${eraText(era)}` : ""}`}
+          why={
+            dateSug.source === "people"
+              ? `from their ages and birthdays: ${dateSug.text ?? ""}`
+              : `from the dated slides around it${era ? `, within ${eraText(era)}` : ""}`
+          }
           onAccept={() => decide("date", "accept", dateSug.value)}
           onDismiss={() => decide("date", "dismiss", dateSug.value)}
         />
+      )}
+      {onIt.length > 0 && (
+        <p className="text-[11px] text-muted-foreground">
+          On it:{" "}
+          {onIt.map((p, i) => (
+            <React.Fragment key={p.id}>
+              {i > 0 && ", "}
+              <span className="text-foreground/85">{p.name || "someone with a birthday"}</span>
+              {p.age != null && ` ≈ ${p.age}`}
+            </React.Fragment>
+          ))}
+          {g.people_year && !dateSug && g.date_est.source !== "own" && ` · they say ≈ ${Math.floor(g.people_year[0])} ± ${Math.max(1, Math.round(g.people_year[1]))}`}
+        </p>
+      )}
+      {g.born_floor != null && g.date_est.value && +g.date_est.value.slice(0, 4) < g.born_floor && (
+        <p className="text-[11px] text-primary" role="status">
+          {g.date_est.source === "own" ? "This date" : "The estimate"} is before {g.born_floor}, when someone on it was
+          born: check the date or the names.
+        </p>
       )}
       <Tip label="Give a run of slides one date, e.g. 12–31: 1978-08">
         <ProButton className="self-start" onClick={onDateRange}>

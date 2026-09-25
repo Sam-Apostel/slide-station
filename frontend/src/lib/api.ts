@@ -201,6 +201,12 @@ export type Group = {
     /** Its film stock's era: a hint only, never changes the value. */
     era?: EraHint;
   };
+  /** The named people on it (or with a birthday); age: as it looks, corrected (null without the age model). */
+  people?: { id: string; name: string; age: number | null }[];
+  /** The year its people put it in, [year, SD in years] (dating.py); null when nobody with a birthday is near. */
+  people_year?: [number, number] | null;
+  /** The birth year of the youngest person on it with a birthday: it can't be older. */
+  born_floor?: number | null;
 };
 
 export type Summary = {
@@ -322,18 +328,24 @@ export type Config = {
   captions_enabled?: boolean;
   /** Faces → people (opt-in, downloads a face model). */
   people_enabled?: boolean;
+  /** The age each face looks, to date slides by birthdays (desktop app only; opt-in, a 329 MB model). */
+  ages_enabled?: boolean;
   /** Look-alikes: prefer the shot where nobody blinked (opt-in, downloads a small face mesh model). */
   eyes_enabled?: boolean;
 };
 
-/** Someone found on the slides: faces grouped by likeness across every tray (People dialog). */
+/** Someone found on the slides: faces grouped by likeness across every tray (People & Places). */
 export type Person = {
   id: string;
   /** "" until named. */
   name: string;
+  /** "1952", "1952-03" or "1952-03-14"; "" = not given. Dates their slides with the ages they look. */
+  birthday?: string;
   /** How many slides they are on. */
   slides: number;
-  faces: { id: string; url: string }[];
+  /** The youngest and oldest they look, in years (with the age model). */
+  ages?: [number, number] | null;
+  faces: { id: string; url: string; sid?: string; gid?: string; age?: number | null }[];
 };
 
 export type PeoplePayload = {
@@ -344,7 +356,17 @@ export type PeoplePayload = {
   /** Slides whose faces haven't been looked for yet (or were before an edit). */
   pending: number;
   people: Person[];
+  /** Ages for dating (desktop app): turned on, downloaded, and how many dated faces calibrate them. */
+  ages?: { enabled: boolean; model: boolean; model_mb: number; calibrated: number; bias: number; sigma: number };
 };
+
+/** A place on the map with its slides (`GET /api/atlas`). */
+export type AtlasPlace = Omit<Place, "id"> & {
+  id: string;
+  slides: { sid: string; gid: string; tray: string; index: number; date: string; key: string; people: string[] }[];
+};
+
+export type AtlasPayload = { places: AtlasPlace[]; slides: number };
 
 /** An Immich album to pull photos back in from (`GET /api/immich/albums`). */
 export type ImmichAlbum = { id: string; name: string; count: number; thumb: string | null };
