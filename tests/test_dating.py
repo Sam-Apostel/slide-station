@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import math
 
+import numpy as np
+
 import pytest
 from conftest import CONFIG, new_tray
 from test_people import ANN, BOB, face
@@ -271,6 +273,41 @@ def test_ages_added_to_faces_found_before(api, tmp_path, aged, monkeypatch):
     stored = people.load_faces(sid)[gid]["faces"]
     assert [f["id"] for f in stored] == ids and [f["age"] for f in stored] == [41.0, 12.0]
     assert not wf.faces_pending([sid])
+
+    # aged by a model since replaced: every face is aged again, ids untouched
+    people.update_faces(sid, lambda d: d[gid].update(ages_by="vit-utkface"))
+    assert wf.faces_pending([sid]) == [(sid, gid)]
+    ages += [[38.0, 9.0]]
+    assert wf.find_faces(sid, gid)
+    entry = people.load_faces(sid)[gid]
+    assert [f["id"] for f in entry["faces"]] == ids and [f["age"] for f in entry["faces"]] == [38.0, 9.0]
+    assert entry["ages_by"] == people.AGE_BY and not wf.faces_pending([sid])
+
+
+def test_age_input():
+    """MiVOLO's input: the face and the body below it, each letterboxed to 384 px, stacked."""
+    rgb = np.zeros((400, 600, 3), np.float32)
+    rgb[100:140, 300:330] = 1.0  # the face: 30 x 40 px at (300, 100)
+    face, body = people.age_crops(rgb, [0.5, 0.25, 0.05, 0.1])
+    assert face.shape == (40, 30, 3) and face.min() == 1.0
+    assert body.shape == (272, 90, 3)  # 3 faces wide, from 0.3 faces above to 6.5 below
+    x = people.age_input(rgb, [0.5, 0.25, 0.05, 0.1])
+    assert x.shape == (6, 384, 384) and x.dtype == np.float32
+    white = (1 - np.array([0.485, 0.456, 0.406])) / [0.229, 0.224, 0.225]
+    black = -np.array([0.485, 0.456, 0.406]) / [0.229, 0.224, 0.225]
+    # the face fills the height, centred, black on both sides
+    assert np.allclose(x[:3, 192, 192], white, atol=1e-3) and np.allclose(x[:3, 192, 5], black, atol=1e-3)
+    # near the picture's edge the body is clipped, never empty
+    assert min(people.age_crops(rgb, [0.0, 0.9, 0.05, 0.1])[1].shape[:2]) >= 1
+
+
+def test_new_age_model_replaces_the_old(monkeypatch, tmp_path):
+    monkeypatch.setattr(people, "models_dir", lambda: tmp_path)
+    (tmp_path / "age_vit_utkface.onnx").write_bytes(b"old")
+    monkeypatch.setattr(people, "_download", lambda url, sha, dest, mb, what, progress=None: dest.write_bytes(b"new") and dest)
+    assert people.download_age_model().name == people.AGE_NAME == "mivolo_v2_age.onnx"
+    assert sorted(f.name for f in tmp_path.iterdir()) == ["mivolo_v2_age.onnx"]
+    assert people.AGE_URL.endswith("/mivolo_v2_age.onnx") and "/resolve/" in people.AGE_URL
 
 
 def test_merge_keeps_birthday(api, tmp_path, aged, monkeypatch):

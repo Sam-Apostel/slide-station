@@ -17,7 +17,7 @@ similar.scenes) is one moment: its people are pooled and all its slides take the
 dated slides around it (store.slide_dates). The result is offered as a date suggestion (source
 `people`) through the same plumbing as the film-stock guesses (filmstock.views): only for slides
 without their own date, never outside the film stock's era, and only when it tells more than the
-estimate already there (they contradict it, or are surer than it). Birthdays are also a hard floor: a slide can't be older than anyone on it.
+estimate already there (they contradict it, or are surer than it and put it outside its range). Birthdays are also a hard floor: a slide can't be older than anyone on it.
 """
 from __future__ import annotations
 
@@ -497,8 +497,8 @@ def tray_view(sid: str, d: dict, dates: list[dict], pdata: dict | None = None, f
             against = int(prior[0])  # the slides around it say otherwise
         y, sd = _combine(parts)
         v["year"] = (round(y, 2), round(sd, 2))
-        if prior and against is None and base[1] >= prior[1]:
-            continue  # the people agree with the estimate already there and know less: nothing to add
+        if prior and against is None and (base[1] >= prior[1] or abs(base[0] - prior[0]) <= prior[1]):
+            continue  # the people agree with the estimate already there, and know less or say what it says
         by = mine[2] if mine else []
         v["suggestion"] = _suggest(d, g, dates[i], y, sd, v, by, against, anchor is sib)
     return views

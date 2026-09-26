@@ -51,8 +51,8 @@ Left:
 | **Captions in the browser version** | Florence-2 is 276 MB per browser and well over 10 s a slide in single-threaded WebAssembly; worth it with WebGPU, or a smaller captioner. | The last suggestion the no-install version lacks. |
 | **Mount OCR** | The mount itself isn't in the scan: photograph or scan the mounts (or a scanner that images the frame edge), then OCR handwritten dates / lab stamps ("KODAK · JUN 74") into the date suggestion. | Still the single best dating signal. |
 | **Landmarks** | CLIP zero-shot over a landmark list was too overconfident to ship; needs a calibration set of real slides (or a retrieval index) before it can suggest places honestly. | Immich map view for places without signs. |
-| **Ages in the browser version** | The age model is 329 MB (ViT-B/16, fp32): an int8 export (~90 MB) would make it reasonable in the page. | Dating by birthdays without the desktop app. |
-| **Age model on real slides** | The age model is trained on modern photos (UTKFace) and has only been checked on a handful; the calibration against dated slides corrects its bias, but its spread on faded, grainy slides is unknown. | Whether ±20 % holds, or the prior should be wider. |
+| **Ages in the browser version** | The age model (MiVOLO v2) is 118 MB fp32: an fp16 or int8 export would make it reasonable in the page. | Dating by birthdays without the desktop app. |
+| **Bodies for ages** | MiVOLO reads the body below the face from a fixed box; a person detector (as MiVOLO's own pipeline has) would cut the right body when people stand close together. | Fewer children read older because an adult is in their body box. |
 | **Era cues** | Florence rarely says anything datable; a model or prompt that does (cars, clothes, signage). | Dates for trays without dated slides. |
 
 ## 2. Round-trip with Immich

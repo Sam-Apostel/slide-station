@@ -7,7 +7,9 @@ session.json in faces.json (derived data, never written into the session itself)
 clusters with an optional name and birthday - live in the library's people.json.
 
 Ages: with the age model downloaded (opt-in, `ages_enabled`), every face also gets the age it looks
-(`age`, years), which dating.py turns into a date for the slide once the person has a birthday.
+(`age`, years; MiVOLO v2 on the face and the body below it), which dating.py turns into a date for
+the slide once the person has a birthday. A slide's entry says which model aged it (`ages_by`):
+faces aged by a model since replaced are aged again.
 """
 from __future__ import annotations
 
@@ -29,14 +31,18 @@ MODEL_URL = "https://huggingface.co/opencv/face_recognition_sface/resolve/main/"
 MODEL_SHA256 = "0ba9fbfa01b5270c96627c4ef784da859931e02f04419c829e83484087c34e79"
 MODEL_MB = 39
 
-AGE_NAME = "age_vit_utkface.onnx"
-# a ViT-B/16 with an age regression head, trained on UTKFace (ages 0-116, so children too, which
-# date a slide best); Apache-2.0 weights, ONNX export by onnx-community, pinned to a revision
-AGE_URL = ("https://huggingface.co/onnx-community/age-gender-prediction-ONNX/resolve/"
-           "6c138f6454d37dd55e5d4648e23e1ec23844e705/onnx/model.onnx")
-AGE_SHA256 = "0c35c868ea8ffba6d5fe727c1a6b82d9da600e690342d58ca268270560e28304"
-AGE_MB = 329
-AGE_SIZE = 224  # its input: a 224 px square around the face, ImageNet mean / std
+AGE_NAME = "mivolo_v2_age.onnx"
+# MiVOLO v2 (Kuprashevich & Tolstykh, Apache-2.0): a face crop and the body below it, 384 px each,
+# stacked as 6 channels -> the age. Our ONNX export of its age output (PyTorch has no place in the
+# app), on the owner's Hugging Face at a pinned commit. On faded, grainy slides of children it is off
+# by ~2 years where the ViT trained on UTKFace it replaced was off by 13 (a girl of 7 "looked" 63)
+AGE_URL = ("https://huggingface.co/Sam-Apostel/mivolo-v2-age-onnx/resolve/"
+           "8eb4cd8f5dd4bd28df2c9a43b24bc54d6d139d36/mivolo_v2_age.onnx")
+AGE_SHA256 = "2db5e05be33b3f120518a86f29a4a65eb0a01c2967219b8787a7dead9b796951"
+AGE_MB = 118
+AGE_SIZE = 384  # each crop: letterboxed to 384 px square, ImageNet mean / std
+AGE_BY = "mivolo2"  # faces.json entries say which model aged them: older ages are redone
+OLD_AGE_NAMES = ("age_vit_utkface.onnx",)  # models replaced, deleted once the new one is in
 
 SAME_PERSON = 0.363  # SFace's recommended cosine-similarity threshold for "same identity"
 MIN_SCORE = 0.7  # the detector confidence a face needs (as for the rotation vote)
@@ -71,7 +77,10 @@ def age_ready() -> bool:
 
 
 def download_age_model(progress=None) -> Path:
-    return _download(AGE_URL, AGE_SHA256, age_file(), AGE_MB, "age model", progress)
+    out = _download(AGE_URL, AGE_SHA256, age_file(), AGE_MB, "age model", progress)
+    for name in OLD_AGE_NAMES:  # the model it replaces (329 MB) is no use any more
+        (models_dir() / name).unlink(missing_ok=True)
+    return out
 
 
 def _download(url: str, sha256: str, dest: Path, mb: int, what: str, progress=None) -> Path:
@@ -133,6 +142,43 @@ _ager = None
 _ager_lock = threading.Lock()
 
 
+def _letterbox(a: np.ndarray, size: int = AGE_SIZE) -> np.ndarray:
+    """A crop scaled to fit a size x size square, centred on black (MiVOLO's class_letterbox)."""
+    import cv2
+
+    h, w = a.shape[:2]
+    r = min(size / h, size / w)
+    nw, nh = int(round(w * r)), int(round(h * r))
+    if (nw, nh) != (w, h):
+        a = cv2.resize(a, (nw, nh), interpolation=cv2.INTER_LINEAR)
+    dw, dh = (size - nw) / 2, (size - nh) / 2
+    return cv2.copyMakeBorder(a, int(round(dh - 0.1)), int(round(dh + 0.1)), int(round(dw - 0.1)),
+                              int(round(dw + 0.1)), cv2.BORDER_CONSTANT, value=(0, 0, 0))
+
+
+def age_crops(rgb: np.ndarray, box: list[float]) -> tuple[np.ndarray, np.ndarray]:
+    """The face (its box) and the body below it (3 faces wide, from just above the head to 6.5 faces
+    down: a child's body says as much about their age as their face), clipped to the picture."""
+    h, w = rgb.shape[:2]
+    x, y, bw, bh = box[0] * w, box[1] * h, box[2] * w, box[3] * h
+    cx = x + bw / 2
+
+    def cut(x0, y0, x1, y1):
+        x0, y0, x1, y1 = int(max(0, x0)), int(max(0, y0)), int(min(w, x1)), int(min(h, y1))
+        return rgb[y0:max(y1, y0 + 1), x0:max(x1, x0 + 1)]
+
+    return cut(x, y, x + bw, y + bh), cut(cx - 1.5 * bw, y - 0.3 * bh, cx + 1.5 * bw, y + 6.5 * bh)
+
+
+def age_input(rgb: np.ndarray, box: list[float]) -> np.ndarray:
+    """MiVOLO's input for one face: face and body letterboxed, 0..1, ImageNet mean / std, (6, 384, 384)."""
+    parts = []
+    for c in age_crops(rgb, box):
+        a = _letterbox((np.clip(c, 0, 1) * 255).astype(np.uint8)).astype(np.float32) / 255
+        parts.append(((a - [0.485, 0.456, 0.406]) / [0.229, 0.224, 0.225]).transpose(2, 0, 1))
+    return np.concatenate(parts).astype(np.float32)
+
+
 def estimate_ages(rgb: np.ndarray, boxes: list[list[float]]) -> list[float]:
     """The age (years) each face looks, boxes as stored (0..1 of the upright picture). The one
     function tests replace, like embed_faces."""
@@ -141,13 +187,15 @@ def estimate_ages(rgb: np.ndarray, boxes: list[list[float]]) -> list[float]:
     global _ager
     if not boxes:
         return []
+    out = []
     with _ager_lock:
         if _ager is None:
             _ager = ort.InferenceSession(str(age_file()), providers=["CPUExecutionProvider"])
-        x = np.stack([face_crop(rgb, b, AGE_SIZE) for b in boxes]).astype(np.float32)
-        x = (np.clip(x, 0, 1) - [0.485, 0.456, 0.406]) / [0.229, 0.224, 0.225]
-        out = _ager.run(None, {_ager.get_inputs()[0].name: x.transpose(0, 3, 1, 2).astype(np.float32)})[0]
-    return [round(float(np.clip(a, 0, 100)), 1) for a in out[:, 0]]
+        name = _ager.get_inputs()[0].name
+        for b in boxes:  # the export takes one face at a time
+            a = float(np.ravel(_ager.run(None, {name: age_input(rgb, b)[None]})[0])[0])
+            out.append(round(float(np.clip(a, 0, 100)), 1))
+    return out
 
 
 # --------------------------------------------------------------------------- faces per tray
@@ -195,8 +243,10 @@ def stale(g: dict, entry: dict | None) -> bool:
 
 
 def unaged(entry: dict | None) -> bool:
-    """Faces on the slide without an age yet (found before the age model was there)."""
-    return bool(entry) and any("age" not in f for f in entry.get("faces", []))
+    """Faces on the slide without an age yet (found before the age model was there), or aged by a
+    model since replaced (AGE_BY)."""
+    faces = (entry or {}).get("faces", [])
+    return bool(faces) and (entry.get("ages_by") != AGE_BY or any("age" not in f for f in faces))
 
 
 def record(sid: str, g: dict, rgb: np.ndarray, ages: bool = False) -> list[dict]:
@@ -227,22 +277,28 @@ def record(sid: str, g: dict, rgb: np.ndarray, ages: bool = False) -> list[dict]
             used.add(match)
             faces.append({"id": match, "box": f["box"], "score": f["score"], "emb": _pack(f["emb"]),
                           **({"age": f["age"]} if "age" in f else {})})
-        d[gid] = {"key": key, "rot": g["rotation"], "mirror": bool(g.get("mirror")), "faces": faces}
+        d[gid] = {"key": key, "rot": g["rotation"], "mirror": bool(g.get("mirror")), "faces": faces,
+                  **({"ages_by": AGE_BY} if ages else {})}
 
     update_faces(sid, commit)
     return found
 
 
 def add_ages(sid: str, gid: str, rgb: np.ndarray) -> None:
-    """Give the faces already found on a slide their ages (rgb = the same upright blend)."""
+    """Give the faces already found on a slide their ages (rgb = the same upright blend): the ones
+    without, or all of them when another model aged them (ids untouched)."""
     entry = load_faces(sid).get(gid) or {}
-    todo = [f for f in entry.get("faces", []) if "age" not in f]
+    redo = entry.get("ages_by") != AGE_BY
+    todo = [f for f in entry.get("faces", []) if redo or "age" not in f]
     ages = dict(zip((f["id"] for f in todo), estimate_ages(rgb, [f["box"] for f in todo])))
 
     def commit(d: dict):
-        for f in (d.get(gid) or {}).get("faces", []):
-            if f["id"] in ages and "age" not in f:
+        e = d.get(gid) or {}
+        for f in e.get("faces", []):
+            if f["id"] in ages:
                 f["age"] = ages[f["id"]]
+        if e and all("age" in f for f in e.get("faces", [])):
+            e["ages_by"] = AGE_BY
 
     update_faces(sid, commit)
 

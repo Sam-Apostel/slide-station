@@ -41,11 +41,11 @@ folder. It is never bundled.
 ## Age estimation model (dates from people) — downloaded, not in the repo
 
 When "Date slides by the ages of the people on them" is turned on (desktop / server app), the app
-downloads a ViT-B/16 age and gender model, Apache 2.0 licence
-(<https://huggingface.co/abhilash88/age-gender-prediction>), as the ONNX export by onnx-community
-(<https://huggingface.co/onnx-community/age-gender-prediction-ONNX>, a pinned revision) into the
-library's `models/` folder; only its age output is used. It was trained on the UTKFace dataset, whose
-images are for non-commercial research. Nothing of it is committed or bundled.
+downloads MiVOLO v2 (Maksim Kuprashevich, Irina Tolstykh et al., "MiVOLO: Multi-input Transformer for
+Age and Gender Estimation", <https://huggingface.co/iitolstykh/mivolo_v2>, Apache 2.0 licence) as
+this project's ONNX export of its age output (<https://huggingface.co/Sam-Apostel/mivolo-v2-age-onnx>,
+a pinned commit; same weights, same licence) into the library's `models/` folder. Nothing of it is
+committed or bundled.
 
 ## Map — Leaflet and OpenStreetMap
 
