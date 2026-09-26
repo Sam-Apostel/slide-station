@@ -547,10 +547,15 @@ function morph(src: Float32Array, w: number, h: number, r: number, max: boolean)
   return out;
 }
 
+const DUST_MARK = 0.05; // top-hat from which a pixel belongs to a mark (its whole extent, rim included)
+const DUST_GRAIN = 0.03; // ... and from which it counts towards texture
+
 /**
- * Dust specks and thin scratches (imaging.dust_mask): small marks a morphological opening /
- * closing takes away, with more contrast than `amount` asks for, not part of texture, grown by a
- * pixel. The arithmetic is float32 like numpy's, so the mask is the same pixel for pixel.
+ * Dust specks and thin scratches (imaging.dust_mask): marks a morphological opening / closing takes
+ * away, 8-connected, found the same whatever `amount` is. Dust when small (at most r (2 + 6 amount)
+ * across) or a scratch (longer, at most r min(1, 2 amount) wide on average), faint no more than `amount` allows,
+ * and not touching texture; grown by a pixel. The arithmetic is float32 like numpy's, so the mask
+ * is the same pixel for pixel.
  */
 export function dustMask(a: RGB, amount: number): { mask: Uint8Array; r: number } {
   const { width: w, height: h } = a;
@@ -562,31 +567,59 @@ export function dustMask(a: RGB, amount: number): { mask: Uint8Array; r: number 
   const r = Math.max(1, Math.trunc((3 * Math.max(w, h)) / DUST_EDGE + 0.5));
   const opened = morph(morph(lum, w, h, r, false), w, h, r, true);
   const closed = morph(morph(lum, w, h, r, true), w, h, r, false);
-  const thr = f(0.25 - 0.19 * amount);
-  const m = new Uint8Array(w * h);
-  for (let i = 0; i < w * h; i++) m[i] = Math.max(f(lum[i] - opened[i]), f(closed[i] - lum[i])) > thr ? 1 : 0;
-  // texture, not dust: more than a fifth of the (8r + 1)² neighbourhood responds
+  const hat = new Float32Array(w * h);
+  for (let i = 0; i < w * h; i++) hat[i] = Math.max(f(lum[i] - opened[i]), f(closed[i] - lum[i]));
+  const [markThr, grainThr, strongThr] = [f(DUST_MARK), f(DUST_GRAIN), f(0.3 - 0.24 * amount)];
+  // texture: more than a fifth of the (8r + 1)² neighbourhood responds at all
   const ii = new Int32Array((w + 1) * (h + 1));
   for (let y = 0; y < h; y++) {
     let row = 0;
     for (let x = 0; x < w; x++) {
-      row += m[y * w + x];
+      row += hat[y * w + x] > grainThr ? 1 : 0;
       ii[(y + 1) * (w + 1) + x + 1] = ii[y * (w + 1) + x + 1] + row;
     }
   }
   const rad = 4 * r;
-  const kept = new Uint8Array(w * h);
-  for (let y = 0; y < h; y++) {
-    const ya = Math.max(0, y - rad);
-    const yb = Math.min(h, y + rad + 1);
-    for (let x = 0; x < w; x++) {
-      if (!m[y * w + x]) continue;
-      const xa = Math.max(0, x - rad);
-      const xb = Math.min(w, x + rad + 1);
-      const cnt = ii[yb * (w + 1) + xb] - ii[ya * (w + 1) + xb] - ii[yb * (w + 1) + xa] + ii[ya * (w + 1) + xa];
-      if (cnt * 5 <= (yb - ya) * (xb - xa)) kept[y * w + x] = 1;
+  const textured = (i: number) => {
+    const y = Math.trunc(i / w);
+    const x = i - y * w;
+    const [ya, yb, xa, xb] = [Math.max(0, y - rad), Math.min(h, y + rad + 1), Math.max(0, x - rad), Math.min(w, x + rad + 1)];
+    const cnt = ii[yb * (w + 1) + xb] - ii[ya * (w + 1) + xb] - ii[yb * (w + 1) + xa] + ii[ya * (w + 1) + xa];
+    return cnt * 5 > (yb - ya) * (xb - xa);
+  };
+  // the marks: 8-connected shapes, found by flood fill; their size, extent, strength, texture
+  const label = new Int32Array(w * h);
+  const shapes: { area: number; x0: number; x1: number; y0: number; y1: number; strong: boolean; textured: boolean }[] = [];
+  const stack: number[] = [];
+  for (let i = 0; i < w * h; i++) {
+    if (label[i] || !(hat[i] > markThr)) continue;
+    const s = { area: 0, x0: w, x1: 0, y0: h, y1: 0, strong: false, textured: false };
+    shapes.push(s);
+    label[i] = shapes.length;
+    stack.push(i);
+    while (stack.length) {
+      const j = stack.pop()!;
+      const [y, x] = [Math.trunc(j / w), j % w];
+      s.area++;
+      [s.x0, s.x1, s.y0, s.y1] = [Math.min(s.x0, x), Math.max(s.x1, x), Math.min(s.y0, y), Math.max(s.y1, y)];
+      if (hat[j] > strongThr) s.strong = true;
+      if (!s.textured && textured(j)) s.textured = true;
+      for (let yy = Math.max(0, y - 1); yy <= Math.min(h - 1, y + 1); yy++)
+        for (let xx = Math.max(0, x - 1); xx <= Math.min(w - 1, x + 1); xx++) {
+          const k = yy * w + xx;
+          if (!label[k] && hat[k] > markThr) {
+            label[k] = shapes.length;
+            stack.push(k);
+          }
+        }
     }
   }
+  const keep = shapes.map(({ area, x0, x1, y0, y1, strong, textured }) => {
+    const ext = Math.max(x1 - x0 + 1, y1 - y0 + 1);
+    return strong && !textured && (ext <= r * (2 + 6 * amount) || area <= r * ext * Math.min(1, 2 * amount));
+  });
+  const kept = new Uint8Array(w * h);
+  for (let i = 0; i < w * h; i++) if (label[i] && keep[label[i] - 1]) kept[i] = 1;
   // grown by a pixel: a 3×3 max, along rows then down columns
   const across = new Uint8Array(w * h);
   for (let y = 0; y < h; y++)

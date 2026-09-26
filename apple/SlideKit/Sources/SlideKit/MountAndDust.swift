@@ -207,9 +207,14 @@ extension Develop {
         return out
     }
 
-    /// Dust specks and thin scratches (Python: `dust_mask`): small marks a morphological opening /
-    /// closing takes away, with more contrast than `amount` asks for, not part of texture (more
-    /// than a fifth of the neighbourhood marked), grown by a pixel. Float arithmetic like numpy's.
+    static let dustMark: Float = 0.05    // top-hat from which a pixel belongs to a mark (its whole extent, rim included)
+    static let dustGrain: Float = 0.03   // ... and from which it counts towards texture
+
+    /// Dust specks and thin scratches (Python: `dust_mask`): marks a morphological opening /
+    /// closing takes away, 8-connected, found the same whatever `amount` is. Dust when small (at
+    /// most r (2 + 6 amount) across) or a scratch (longer, at most r min(1, 2 amount) wide on
+    /// average), faint no more than `amount` allows, and not touching texture; grown by a pixel.
+    /// Float arithmetic like numpy's.
     public static func dustMask(_ a: RGBImage, amount: Double) -> (mask: [UInt8], r: Int) {
         let w = a.width, h = a.height
         let c0: Float = 0.299, c1: Float = 0.587, c2: Float = 0.114
@@ -222,28 +227,52 @@ extension Develop {
         let r = max(1, Int(3 * Double(max(w, h)) / Double(dustEdge) + 0.5))
         let opened = morph(morph(lum, w, h, r, max: false), w, h, r, max: true)
         let closed = morph(morph(lum, w, h, r, max: true), w, h, r, max: false)
-        let thr = Float(0.25 - 0.19 * amount)
-        var m = [UInt8](repeating: 0, count: w * h)
-        for i in 0..<(w * h) {
-            let top = lum[i] - opened[i], bottom = closed[i] - lum[i]
-            m[i] = max(top, bottom) > thr ? 1 : 0
-        }
-        // texture, not dust: more than a fifth of the (8r + 1)² neighbourhood responds
+        var hat = [Float](repeating: 0, count: w * h)
+        for i in 0..<(w * h) { hat[i] = max(lum[i] - opened[i], closed[i] - lum[i]) }
+        let strongThr = Float(0.3 - 0.24 * amount)
+        // texture: more than a fifth of the (8r + 1)² neighbourhood responds at all
         var ii = [Int](repeating: 0, count: (w + 1) * (h + 1))
         for y in 0..<h {
             var row = 0
-            for x in 0..<w { row += Int(m[y * w + x]); ii[(y + 1) * (w + 1) + x + 1] = ii[y * (w + 1) + x + 1] + row }
+            for x in 0..<w { row += hat[y * w + x] > dustGrain ? 1 : 0; ii[(y + 1) * (w + 1) + x + 1] = ii[y * (w + 1) + x + 1] + row }
         }
         let rad = 4 * r
-        var kept = [UInt8](repeating: 0, count: w * h)
-        for y in 0..<h {
-            let ya = max(0, y - rad), yb = min(h, y + rad + 1)
-            for x in 0..<w where m[y * w + x] != 0 {
-                let xa = max(0, x - rad), xb = min(w, x + rad + 1)
-                let cnt = ii[yb * (w + 1) + xb] - ii[ya * (w + 1) + xb] - ii[yb * (w + 1) + xa] + ii[ya * (w + 1) + xa]
-                if cnt * 5 <= (yb - ya) * (xb - xa) { kept[y * w + x] = 1 }
-            }
+        func textured(_ y: Int, _ x: Int) -> Bool {
+            let ya = max(0, y - rad), yb = min(h, y + rad + 1), xa = max(0, x - rad), xb = min(w, x + rad + 1)
+            let cnt = ii[yb * (w + 1) + xb] - ii[ya * (w + 1) + xb] - ii[yb * (w + 1) + xa] + ii[ya * (w + 1) + xa]
+            return cnt * 5 > (yb - ya) * (xb - xa)
         }
+        // the marks: 8-connected shapes, by flood fill: their size, extent, strength, texture
+        struct Shape { var area = 0, x0 = Int.max, x1 = 0, y0 = Int.max, y1 = 0, strong = false, textured = false }
+        var label = [Int](repeating: 0, count: w * h)
+        var shapes: [Shape] = []
+        var stack: [Int] = []
+        for i in 0..<(w * h) where label[i] == 0 && hat[i] > dustMark {
+            var s = Shape()
+            shapes.append(s)
+            label[i] = shapes.count
+            stack.append(i)
+            while let j = stack.popLast() {
+                let y = j / w, x = j % w
+                s.area += 1
+                s.x0 = min(s.x0, x); s.x1 = max(s.x1, x); s.y0 = min(s.y0, y); s.y1 = max(s.y1, y)
+                if hat[j] > strongThr { s.strong = true }
+                if !s.textured && textured(y, x) { s.textured = true }
+                for yy in max(0, y - 1)...min(h - 1, y + 1) {
+                    for xx in max(0, x - 1)...min(w - 1, x + 1) {
+                        let k = yy * w + xx
+                        if label[k] == 0 && hat[k] > dustMark { label[k] = shapes.count; stack.append(k) }
+                    }
+                }
+            }
+            shapes[shapes.count - 1] = s
+        }
+        let keep = shapes.map { s -> Bool in
+            let ext = max(s.x1 - s.x0 + 1, s.y1 - s.y0 + 1)
+            return s.strong && !s.textured && (Double(ext) <= Double(r) * (2 + 6 * amount) || Double(s.area) <= Double(r * ext) * min(1, 2 * amount))
+        }
+        var kept = [UInt8](repeating: 0, count: w * h)
+        for i in 0..<(w * h) where label[i] != 0 && keep[label[i] - 1] { kept[i] = 1 }
         var mask = [UInt8](repeating: 0, count: w * h)
         for y in 0..<h {
             for x in 0..<w {
