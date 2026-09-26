@@ -583,6 +583,18 @@ export function useSlideStation() {
     }
   };
 
+  /** Say who a face on the open tray is: a person, "new" (called `name`; a name someone has is
+   *  them), or null (not whoever it's with now). The tray comes back with the dates redone. */
+  const assignFace = async (face: string, person: string | null, name = "") => {
+    try {
+      applyPayload(await api<SessionPayload>("POST", "/api/people/faces/assign", { face, person, name }));
+      return true;
+    } catch (e) {
+      fail(e);
+      return false;
+    }
+  };
+
   /**
    * A look-alike suggestion of the tray (by id). Accepting: duplicates keep `keep` (default the best)
    * and skip the rest, split cuts the stack, merge joins the two slides.
@@ -969,6 +981,7 @@ export function useSlideStation() {
     decide,
     decideSimilar,
     decideLookalike,
+    assignFace,
     checkLookalikes,
     propagate,
     setTags,

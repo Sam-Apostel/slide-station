@@ -9,6 +9,7 @@ import { imageSrc, previewUrl, scanThumbUrl, useImageSrc, type Group, type Sessi
 import { cn } from "@/lib/utils";
 import { STATUS_DOT, STATUS_LABEL, STATUS_TEXT } from "@/components/filmstrip";
 import { Loupe, ZoomView } from "@/components/zoom";
+import { FaceOnPhoto } from "@/components/slide-people";
 
 /** Loads the wanted preview off-screen and only swaps it in once decoded, so browsing never flashes. */
 function usePreloadedImage(url: string | null, warm: string | null) {
@@ -98,6 +99,7 @@ export function Stage({
   loupe,
   onLoupe,
   onGrid,
+  face,
 }: {
   session: SessionPayload;
   sessionId: string;
@@ -131,6 +133,8 @@ export function Stage({
   onLoupe: (on: boolean) => void;
   /** Switch to the batch review grid. */
   onGrid: () => void;
+  /** The face (id) picked or hovered in the inspector's People section: outlined on the photo. */
+  face?: string | null;
 }) {
   const g: Group | undefined = session.groups[sel];
   const next = session.groups[sel + 1];
@@ -362,6 +366,10 @@ export function Stage({
         {cropping && shown && (
           <CropOverlay img={imgEl} rect={rect} ratio={aspect.ratio} onChange={setRect} />
         )}
+        {face && shown && g && !cropping && !zooming && !comparing && !before && !localOn && (() => {
+          const f = g.faces?.find((x) => x.id === face);
+          return f ? <FaceOnPhoto img={imgEl} g={g} face={f} /> : null;
+        })()}
         {localOn && shown && g && (
           <React.Fragment key={g.id}>{localOverlay!(imgEl)}</React.Fragment>
         )}
