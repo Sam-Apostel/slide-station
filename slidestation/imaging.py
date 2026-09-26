@@ -482,12 +482,9 @@ def rotate_box(box: list, rot: int) -> list:
     return box
 
 
-def mount_crop(a: np.ndarray, p: Params, box: list) -> list | None:
-    """The crop that trims to the mount's window once the photo is straightened by p.angle.
-
-    `a` is the (turned) scan the slide develops from and `box` its mount sides (rotate_box). Each
-    side's middle goes through the same trim and straighten as develop(), and the crop sits
-    MOUNT_INSET inside it; sides not found stay at the frame's edge."""
+def straightened_point(a: np.ndarray, p: Params):
+    """Where a point of `a` ends up after develop()'s trim and straighten: place(x, y), continuous
+    pixel coordinates of `a`, answers 0..1 of the straightened (uncropped) frame."""
     h, w = a.shape[:2]
     t0, b0, l0, r0 = trim_bounds(auto_restore(a, p.strength)) if p.trim else (0, h, 0, w)
     fw, fh = r0 - l0, b0 - t0
@@ -496,10 +493,35 @@ def mount_crop(a: np.ndarray, p: Params, box: list) -> list | None:
     cs, sn = np.cos(th), np.sin(th)
 
     def place(x: float, y: float) -> tuple[float, float]:
-        """A point (continuous coordinates of `a`) in 0..1 of the straightened frame."""
         dx, dy = x - 0.5 - l0 - fw / 2, y - 0.5 - t0 - fh / 2  # pixel-index coordinates, as warpAffine
         return (fw / 2 + scale * (cs * dx - sn * dy) + 0.5) / fw, (fh / 2 + scale * (sn * dx + cs * dy) + 0.5) / fh
 
+    return place
+
+
+def developed_boxes(a: np.ndarray, p: Params, boxes: list[list[float]]) -> list[list[float]]:
+    """Boxes [l, t, w, h] in 0..1 of `a` (the turned scan) as [x1, y1, x2, y2] in 0..1 of what
+    develop(a, p) makes of it: trimmed, straightened and cropped. They may reach past the edges."""
+    h, w = a.shape[:2]
+    place = straightened_point(a, p)
+    cl, ct, cr, cb = p.crop or (0.0, 0.0, 1.0, 1.0)
+    out = []
+    for l, t, bw, bh in boxes:
+        pts = [place(x * w, y * h) for x in (l, l + bw) for y in (t, t + bh)]
+        xs = [(u - cl) / (cr - cl) for u, _ in pts]
+        ys = [(v - ct) / (cb - ct) for _, v in pts]
+        out.append([min(xs), min(ys), max(xs), max(ys)])
+    return out
+
+
+def mount_crop(a: np.ndarray, p: Params, box: list) -> list | None:
+    """The crop that trims to the mount's window once the photo is straightened by p.angle.
+
+    `a` is the (turned) scan the slide develops from and `box` its mount sides (rotate_box). Each
+    side's middle goes through the same trim and straighten as develop(), and the crop sits
+    MOUNT_INSET inside it; sides not found stay at the frame's edge."""
+    h, w = a.shape[:2]
+    place = straightened_point(a, p)
     l, t, r, b = box
     out = [0.0, 0.0, 1.0, 1.0]
     if l is not None:

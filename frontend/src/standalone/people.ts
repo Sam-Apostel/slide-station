@@ -25,7 +25,9 @@ export const MATCH = 0.8; // a face found again (after the slide was turned) kee
 export type Found = { box: number[]; score: number; emb: Float32Array };
 export type StoredFace = { id: string; box: number[]; score: number; emb: string };
 export type FacesFile = Record<string, { key: string; rot: number; mirror?: boolean; faces: StoredFace[] }>;
-export type Person = { name: string; faces: string[]; birthday?: string };
+/** immich: the Immich person they were synced with and the name both had then. */
+export type Person = { name: string; faces: string[]; birthday?: string; immich?: ImmichLink };
+export type ImmichLink = { id: string; name: string };
 export type PeopleFile = { people: Record<string, Person>; rejected: Record<string, string[]>; next: number };
 
 /** What a slide's faces were found on: its blended scans, turned upright (people.face_key). */
@@ -167,7 +169,7 @@ export function refresh(d: PeopleFile, faces: Map<string, Float32Array>): { d: P
   );
   const people: Record<string, Person> = {};
   pids.forEach((p, i) => {
-    if (groups[i].length || d.people[p].name || d.people[p].birthday) people[p] = { ...d.people[p], faces: groups[i].map((x) => ids[x]) };
+    if (groups[i].length || d.people[p].name || d.people[p].birthday || d.people[p].immich) people[p] = { ...d.people[p], faces: groups[i].map((x) => ids[x]) };
   });
   let next = d.next;
   for (const g of groups.slice(pids.length)) people[`p${next++}`] = { name: "", faces: g.map((x) => ids[x]) };
@@ -186,6 +188,7 @@ function mergeInto(d: PeopleFile, into: string, others: string[]) {
     target.faces.push(...gone.faces);
     target.name = target.name || gone.name || "";
     if (!target.birthday && gone.birthday) target.birthday = gone.birthday;
+    if (!target.immich && gone.immich) target.immich = gone.immich;
     for (const [f, ps] of Object.entries(d.rejected))
       d.rejected[f] = [...new Set(ps.map((x) => (x === p ? into : x)))].sort();
   }
@@ -239,23 +242,11 @@ export function removeFaces(d0: PeopleFile, pid: string, faces: string[]): Peopl
   return d;
 }
 
-/** The Immich tag for a named person ("/" would nest tags, so it becomes "-"). */
-export const tagName = (name: string) => "People/" + name.replace(/\//g, "-").trim();
-
-/** The named people on each slide: "sid/gid" -> [names]. */
-export function slideNames(d: PeopleFile): Map<string, string[]> {
-  const out = new Map<string, string[]>();
-  for (const p of Object.values(d.people)) {
-    if (!p.name) continue;
-    for (const f of p.faces) {
-      const [sid, gid] = f.split("/");
-      const k = `${sid}/${gid}`;
-      const names = out.get(k) ?? [];
-      if (!names.includes(p.name)) names.push(p.name);
-      out.set(k, names);
-    }
-  }
-  return out;
+/** Remember the Immich person each of these people was synced with (people.set_links). */
+export function setLinks(d0: PeopleFile, links: Record<string, ImmichLink>): PeopleFile {
+  const d = clone(d0);
+  for (const [pid, link] of Object.entries(links)) if (pid in d.people) d.people[pid].immich = link;
+  return d;
 }
 
 // ------------------------------------------------------------------ alignment (FaceRecognizerSF.alignCrop)

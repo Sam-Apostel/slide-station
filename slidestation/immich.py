@@ -266,6 +266,96 @@ class Immich:
         r = self.client.request("DELETE", f"{self.base}/stacks/{stack_id}")
         if r.status_code not in (400, 403, 404, 405):  # 403: stack.delete missing, Immich merges instead
             self._check(r)
+    # ------------------------------------------------------------------ people & faces
+    NO_PEOPLE_PERMISSION = ("The API key can't manage people (403): give it person.read, person.create, "
+                            "person.update, person.merge, face.read, face.create, face.update and face.delete.")
+
+    def _people_check(self, r: httpx.Response) -> httpx.Response:
+        if r.status_code == 403:
+            raise ImmichError(self.NO_PEOPLE_PERMISSION)
+        return self._check(r)
+
+    def people(self) -> list[dict]:
+        """Everyone Immich knows, hidden people too: [{"id", "name", "birthDate", ...}]."""
+        out: list[dict] = []
+        for page in range(1, 1000):
+            r = self.client.get(self.base + "/people", params={"withHidden": "true", "page": page, "size": 1000})
+            j = self._people_check(r).json()
+            out += j.get("people", [])
+            if not j.get("hasNextPage"):
+                break
+        return out
+
+    def faces(self, asset_id: str) -> list[dict]:
+        """The faces on an asset: [{"id", "boundingBoxX1".."Y2", "imageWidth", "imageHeight",
+        "person": {"id", "name"} | None, "sourceType"}]."""
+        return self._people_check(self.client.get(self.base + "/faces", params={"id": asset_id})).json()
+
+    def create_person(self, name: str, birth_date: str | None = None) -> dict:
+        body = {"name": name, **({"birthDate": birth_date} if birth_date else {})}
+        return self._people_check(self.client.post(self.base + "/people", json=body)).json()
+
+    def update_person(self, person_id: str, **fields) -> None:
+        """`PUT /people/{id}`: name, birthDate (YYYY-MM-DD), isHidden…"""
+        self._people_check(self.client.put(f"{self.base}/people/{person_id}", json=fields))
+
+    def merge_people(self, into: str, others: list[str]) -> None:
+        """Merge people into `into`, which keeps its name and birthday. `POST /people/merge` since
+        v3.2.1 (the first id is kept); `POST /people/{id}/merge` before (deprecated since)."""
+        if not others:
+            return
+        r = self.client.post(self.base + "/people/merge", json={"ids": [into, *others]})
+        if r.status_code in (404, 405):
+            r = self.client.post(f"{self.base}/people/{into}/merge", json={"ids": others})
+        self._people_check(r)
+
+    def assign_face(self, face_id: str, person_id: str) -> None:
+        """Put a face on a person (`PUT /faces/{person id}` with the face's id in the body)."""
+        self._people_check(self.client.put(f"{self.base}/faces/{person_id}", json={"id": face_id}))
+
+    def create_face(self, asset_id: str, person_id: str, box: list[float], width: int, height: int) -> None:
+        """A face Immich's own detection didn't find: box [x1, y1, x2, y2] in 0..1 of the asset,
+        width x height its size in pixels (v1.127+; a "manual" face, which re-detection leaves alone)."""
+        x1, y1 = max(0.0, box[0]), max(0.0, box[1])
+        x2, y2 = min(1.0, box[2]), min(1.0, box[3])
+        body = {"assetId": asset_id, "personId": person_id, "imageWidth": width, "imageHeight": height,
+                "x": round(x1 * width), "y": round(y1 * height),
+                "width": max(1, round((x2 - x1) * width)), "height": max(1, round((y2 - y1) * height))}
+        r = self.client.post(self.base + "/faces", json=body)
+        if r.status_code in (404, 405):
+            raise ImmichError("this Immich can't add faces by hand; update it to v1.127 or later")
+        self._people_check(r)
+
+    def delete_face(self, face_id: str) -> None:
+        r = self.client.request("DELETE", f"{self.base}/faces/{face_id}", json={"force": False})
+        if r.status_code not in (400, 404):  # gone already
+            self._people_check(r)
+
+    def remove_tag_everywhere(self, prefix: str, asset_ids: list[str]) -> int:
+        """Take tags whose value starts with `prefix` off these assets, and delete those left on
+        nothing (then their parent, if it's empty too). Returns how many tags were taken off."""
+        r = self.client.get(self.base + "/tags")
+        if r.status_code in (403, 404, 405):
+            return 0
+        tags = self._check(r).json()
+        mine = [t for t in tags if (t.get("value") or "").startswith(prefix)]
+        for t in mine:
+            for i in range(0, len(asset_ids), 200):
+                q = self.client.request("DELETE", f"{self.base}/tags/{t['id']}/assets", json={"ids": asset_ids[i: i + 200]})
+                if q.status_code == 403:
+                    raise ImmichError("The API key can't take the People tags off (403): give it tag.asset.")
+                self._check(q)
+        parents = {t.get("parentId") for t in mine}
+        gone: set[str] = set()
+        for t in mine + [t for t in tags if t["id"] in parents]:
+            if any(x.get("parentId") == t["id"] and x["id"] not in gone for x in tags):
+                continue  # a parent with tags still under it
+            page = self.client.post(self.base + "/search/metadata", json={"tagIds": [t["id"]], "size": 1})
+            if page.status_code == 200 and not page.json().get("assets", {}).get("items"):
+                if self.client.request("DELETE", f"{self.base}/tags/{t['id']}").status_code < 400:
+                    gone.add(t["id"])  # (a key without tag.delete leaves the empty tag)
+        return len(mine)
+
     # ------------------------------------------------------------------ tags
     tags_supported: bool | None = None  # None until tried; False on a server without the tags API
     NO_TAG_PERMISSION = "The API key can't tag photos (403): give it tag.create and tag.asset to send names."
