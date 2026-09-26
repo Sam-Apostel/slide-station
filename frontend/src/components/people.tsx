@@ -549,7 +549,7 @@ function PeopleOverview({
               )}
             </div>
           )}
-          <AgesNote data={data} onSettings={onSettings} />
+          <AgesNote data={data} onSettings={onSettings} onFind={onFind} searching={searching} />
           {!data.people.length && <p className="py-6 text-[12px] text-muted-foreground">No faces found yet.</p>}
           <FaceGrid title="Named" people={named} onPerson={onPerson} />
           <FaceGrid title="Who are they?" people={unnamed} onPerson={onPerson} />
@@ -598,7 +598,18 @@ function FaceGrid({ title, people, onPerson }: { title: string; people: Person[]
 }
 
 /** What the ages do for dating, and how well they're checked (desktop app: `data.ages`). */
-function AgesNote({ data, onSettings }: { data: PeoplePayload; onSettings: () => void }) {
+function AgesNote({
+  data,
+  onSettings,
+  onFind,
+  searching,
+}: {
+  data: PeoplePayload;
+  onSettings: () => void;
+  /** The face search, which downloads the age model first. */
+  onFind: () => void;
+  searching: boolean;
+}) {
   const a = data.ages;
   if (!a) return null;
   const birthdays = data.people.filter((p) => p.birthday).length;
@@ -613,7 +624,20 @@ function AgesNote({ data, onSettings }: { data: PeoplePayload; onSettings: () =>
         (a {a.model_mb} MB model, once).
       </>
     );
-  else if (!a.model) text = "The age model is downloaded with the next face search.";
+  else if (!a.model)
+    // nothing may be waiting for a face search (faces aged by an earlier model only count once the
+    // new one is here), so the note starts it itself
+    text = searching ? (
+      "The age model is being downloaded — progress is at the top."
+    ) : (
+      <>
+        The age model ({a.model_mb} MB) isn't downloaded yet.{" "}
+        <Button variant="link" className="h-auto p-0 text-[12px]" onClick={onFind}>
+          Download it
+        </Button>{" "}
+        and every face gets its age.
+      </>
+    );
   else if (!birthdays) text = "Give someone a birthday and their slides get a suggested year (Details → Date).";
   else if (!a.calibrated)
     text = `${plural(birthdays, "birthday")}. Date a few slides (or their trays) with them on it and the ages get checked against those.`;
