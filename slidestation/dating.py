@@ -3,7 +3,8 @@
 Every face gets an age from the age model (people.estimate_ages). Once the person it belongs to has
 a birthday (People & Places), birthday + age is a year. The model has its own habits (it guesses
 most adults a few years too old, some people always look younger than they are), so it is
-**calibrated on the slides you dated yourself**: there the real age is known, and the difference
+**calibrated on the slides you dated yourself** (and, at half the weight, the ones in a tray you
+dated: a tray is one stretch of time): there the real age is known, and the difference
 between real and guessed age (in log(1 + age), where the error is about proportional to the age)
 gives a correction for everyone (`bias`) and, as more of their slides are dated, for each person.
 With nothing dated it falls back to the model as it is, with a wide spread. Someone without a
@@ -32,12 +33,15 @@ SOURCE = "people"
 
 PRIOR_N = 3  # the calibration's bias starts at 0 as if from this many slides
 PERSON_N = 4  # a person's own correction, shrunk towards the common one like this
+TRAY_WEIGHT = 0.5  # a face on a slide dated only by its tray teaches the calibration this much
 PRIOR_SIGMA = 0.2  # the model's spread in log(1 + age) before any dated slide: ±20 %, ±6 y at 30
 MIN_SD = 0.5  # years: nobody's age is known better than this from a face
 NEAR = 12  # slides either side whose people count for this one
 AGREE = 2.5  # two estimates this many (combined) SDs apart contradict: one of them is wrong
 DRIFT = (0.5, 0.1)  # a neighbour's year counts as ± (a + b · distance) years less certain
 MAX_SD = 8.0  # years: a vaguer guess isn't offered
+MISNAMED = 6  # years: a face that looks this far from the person's age then (and AGREE SDs) isn't them…
+WEAK_FIT = 0.35  # …if the slide is dated by hand, or it's this unlike (cosine) the average of their other faces
 
 
 def years(t: datetime) -> float:
@@ -64,9 +68,12 @@ _slides: dict[str, tuple[int, dict]] = {}
 
 def library_slides() -> dict[str, dict]:
     """Every tray's slides as far as people and places go, re-read only for trays that changed:
-    {sid: {"name", "groups": {gid: {"index", "date", "own_from", "place", "key", "skip"}}}}.
+    {sid: {"name", "date" (the tray's, (year, SD) | None), "groups": {gid: {"index", "date", "own_from", "place", "key", "skip", "when"}}}}.
     `own_from` = the slide's own date came from accepting a people suggestion (so the calibration
-    doesn't learn from its own guesses)."""
+    doesn't learn from its own guesses). `when` = (year, SD) the slide goes with without the people:
+    its own date or the ordinary estimate (store.slide_dates, _prior), None when there's neither."""
+    from .store import slide_dates
+
     out = {}
     with _slides_lock:
         for f in sorted((library() / "sessions").glob("*/session.json")):
@@ -76,16 +83,21 @@ def library_slides() -> dict[str, dict]:
                 hit = _slides.get(sid)
                 if not hit or hit[0] != mt:
                     d = json.loads(f.read_text())
+                    groups = d.get("groups", [])
+                    dates = slide_dates(d)
                     gs = {}
-                    for i, g in enumerate(d.get("groups", [])):
+                    for i, g in enumerate(groups):
                         ins = (g.get("insights") or {}).get("date") or {}
+                        own_from = SOURCE if ins.get("source") == SOURCE and ins.get("state") == "accepted" \
+                            and ins.get("value") == g.get("date") else ""
+                        own = _span(g.get("date", ""))
                         gs[g["id"]] = {
                             "index": i, "date": g.get("date", ""), "place": g.get("place"),
-                            "key": render_key(g), "skip": bool(g.get("skip")),
-                            "own_from": SOURCE if ins.get("source") == SOURCE and ins.get("state") == "accepted"
-                            and ins.get("value") == g.get("date") else "",
+                            "key": render_key(g), "skip": bool(g.get("skip")), "own_from": own_from,
+                            "when": None if own_from else (own[0], max(0.25, own[1])) if own
+                            else _prior(dates[i], i, groups),
                         }
-                    hit = (mt, {"name": d.get("name", ""), "groups": gs})
+                    hit = (mt, {"name": d.get("name", ""), "date": _span(d.get("date", "")), "groups": gs})
                     _slides[sid] = hit
             except (OSError, ValueError, KeyError):
                 continue
@@ -100,18 +112,40 @@ def _ln(a: float) -> float:
     return math.log1p(max(a, 0.0))
 
 
-def calibrate(samples: list[tuple[str, float, float]]) -> dict:
-    """samples = (person, guessed age, real age) on dated slides -> {"bias", "sigma", "n", "people"}:
-    real ≈ exp(log1p(guess) + bias + people[p]) - 1, spread sigma in that log space."""
-    r = [(p, _ln(real) - _ln(guess)) for p, guess, real in samples]
-    n = len(r)
-    bias = sum(x for _, x in r) / (n + PRIOR_N)
-    sigma = math.sqrt((sum((x - bias) ** 2 for _, x in r) + PRIOR_N * PRIOR_SIGMA ** 2) / (n + PRIOR_N))
-    per: dict[str, list[float]] = {}
-    for p, x in r:
-        per.setdefault(p, []).append(x - bias)
-    return {"bias": bias, "sigma": sigma, "n": n,
-            "people": {p: sum(xs) / (len(xs) + PERSON_N) for p, xs in per.items()}}
+def _wmedian(xs: list[tuple[float, float]]) -> float:
+    """The weighted median of (value, weight) pairs (0 for none)."""
+    xs = sorted(xs)
+    half, acc = sum(w for _, w in xs) / 2, 0.0
+    for i, (x, w) in enumerate(xs):
+        acc += w
+        if acc > half + 1e-9:
+            return x
+        if abs(acc - half) <= 1e-9:  # exactly half: between this one and the next
+            return (x + xs[i + 1][0]) / 2 if i + 1 < len(xs) else x
+    return 0.0
+
+
+def calibrate(samples: list[tuple]) -> dict:
+    """samples = (person, guessed age, real age[, weight]) on dated slides -> {"bias", "sigma", "n",
+    "people"}: real ≈ exp(log1p(guess) + bias + people[p]) - 1, spread sigma in that log space - what
+    is left after both corrections (someone the model always sees older is corrected, not vague).
+    Medians, not means: a mask, a misnamed face or a slide from another year in a dated tray is
+    one wild sample, and it mustn't move everyone's correction or widen everyone's spread. The
+    common correction is the typical *person's*, each counting at most once: a child on fifty dated
+    slides whom the model sees twice their age says nothing about how old their mother looks.
+    n = the faces it learned from."""
+    r = [(s[0], _ln(s[2]) - _ln(s[1]), s[3] if len(s) > 3 else 1.0) for s in samples]
+    w = sum(x[2] for x in r)
+    per: dict[str, list[tuple[float, float]]] = {}
+    for p, x, wi in r:
+        per.setdefault(p, []).append((x, wi))
+    weight = {p: sum(wi for _, wi in xs) for p, xs in per.items()}
+    k = sum(min(v, 1.0) for v in weight.values())  # people, each at most one
+    bias = _wmedian([(_wmedian(xs), min(weight[p], 1.0)) for p, xs in per.items()]) * k / (k + PRIOR_N)
+    own = {p: _wmedian([(x - bias, wi) for x, wi in xs]) * weight[p] / (weight[p] + PERSON_N) for p, xs in per.items()}
+    spread = 1.4826 * _wmedian([(abs(x - bias - own[p]), wi) for p, x, wi in r])  # the MAD, as an SD
+    sigma = math.sqrt((w * spread ** 2 + PRIOR_N * PRIOR_SIGMA ** 2) / (w + PRIOR_N))
+    return {"bias": bias, "sigma": sigma, "n": len(r), "people": own}
 
 
 def corrected(age: float, pid: str, cal: dict) -> tuple[float, float]:
@@ -120,9 +154,10 @@ def corrected(age: float, pid: str, cal: dict) -> tuple[float, float]:
     return max(a, 0.0), max(MIN_SD, cal["sigma"] * (1 + a))
 
 
-def samples(pdata: dict, faces: dict, slides: dict) -> list[tuple[str, float, float]]:
-    """(person, guessed age, real age) for every aged face of someone with a birthday on a slide
-    with its own date (not one taken from a people suggestion)."""
+def samples(pdata: dict, faces: dict, slides: dict) -> list[tuple[str, float, float, float]]:
+    """(person, guessed age, real age, weight) for every aged face of someone with a birthday on a
+    slide with its own date (not one taken from a people suggestion), or else in a tray with a date
+    (TRAY_WEIGHT: most of a tray is from when it says, not all)."""
     out = []
     for pid, p in pdata["people"].items():
         born = _span(p.get("birthday", ""))
@@ -132,10 +167,15 @@ def samples(pdata: dict, faces: dict, slides: dict) -> list[tuple[str, float, fl
             x = faces.get(f)
             if not x or "age" not in x:
                 continue
-            s = (slides.get(x["sid"]) or {}).get("groups", {}).get(x["gid"])
-            when = _span(s["date"]) if s and not s["own_from"] else None
+            t = slides.get(x["sid"]) or {}
+            s = t.get("groups", {}).get(x["gid"])
+            if not s or s["own_from"]:
+                continue
+            when, weight = _span(s["date"]), 1.0
+            if not when and not s["date"]:
+                when, weight = t.get("date"), TRAY_WEIGHT
             if when and 0 <= when[0] - born[0] <= 110:
-                out.append((pid, float(x["age"]), when[0] - born[0]))
+                out.append((pid, float(x["age"]), when[0] - born[0], weight))
     return out
 
 
@@ -160,12 +200,57 @@ def implied_births(pdata: dict, faces: dict, slides: dict, cal: dict) -> dict[st
     return {pid: _consensus(parts)[0] for pid, parts in per.items()}
 
 
+def suspects(pdata: dict, faces: dict, slides: dict, cal: dict, born: dict) -> dict[str, dict]:
+    """Faces probably put with the wrong person: the age they look is far from the age that person
+    was when the slide was taken (their birth year and the date the slide goes with without the
+    people: its own, or the dated slides around it, or the tray's) - more than AGREE combined SDs
+    and at least MISNAMED years. That alone could as well be a wrong date (trays aren't always in
+    order, and that is what the people's dates are for), so it takes one more thing: the slide is
+    dated by hand, or the face is a weak match for the person (WEAK_FIT). In a real tray labelled
+    1977, "Tom (born 1968)" looking 37 matched his other faces at 0.19 (someone else); on a tray
+    labelled 1971 he looked 13-27 at 0.46-0.60 (him, on slides from later). Faces the user put
+    with them by hand are never doubted. {face id: {"pid", "looks", "age" (what they'd be), "year"}}."""
+    import numpy as np
+
+    out = {}
+    for pid, p in pdata["people"].items():
+        b = born.get(pid)
+        if not b:
+            continue
+        sure = set(p.get("sure", ()))
+        mine = [f for f in p["faces"] if f in faces]
+        total = np.sum([faces[f]["emb"] for f in mine], 0) if len(mine) > 2 else None
+        for f in p["faces"]:
+            x = faces.get(f)
+            if f in sure or not x or "age" not in x:
+                continue
+            s = (slides.get(x["sid"]) or {}).get("groups", {}).get(x["gid"])
+            when = s and s["when"]
+            if not when:
+                continue
+            looks, sd = corrected(x["age"], pid, cal)
+            then = when[0] - b[0]
+            off = abs(looks - then)
+            if off < MISNAMED or off <= AGREE * math.hypot(sd, when[1], b[1]):
+                continue
+            weak = False
+            if total is not None:  # the others' average direction, without this face
+                rest = total - x["emb"]
+                weak = float(x["emb"] @ rest) / (float(np.linalg.norm(rest)) or 1) < WEAK_FIT
+            if weak or (s["date"] and not s["own_from"]):
+                out[f] = {"pid": pid, "looks": round(looks), "age": max(0, round(then)), "year": int(when[0])}
+    return out
+
+
 _model_cache: tuple | None = None
 
 
-def model(pdata: dict | None = None, faces: dict | None = None) -> tuple[dict, dict[str, tuple[float, float, bool]]]:
-    """The library's calibration and everyone's birth year {pid: (year, SD, given)} — their birthday,
-    else implied by their dated slides — recomputed when people.json, a faces.json or a session changed."""
+def model(pdata: dict | None = None, faces: dict | None = None) -> tuple[dict, dict[str, tuple[float, float, bool]], dict]:
+    """The library's calibration, everyone's birth year {pid: (year, SD, given)} — their birthday,
+    else implied by their dated slides — and the faces whose age doesn't count: {face: suspects'
+    entry, or None for the user's `ages_off`}, recomputed
+    when people.json, a faces.json or a session changed. A suspect face teaches neither the
+    calibration nor a birth year: they're looked for first with the model uncalibrated, then again."""
     global _model_cache
     pdata = pdata or people.load_people()
     faces = faces if faces is not None else people.all_faces()
@@ -176,11 +261,17 @@ def model(pdata: dict | None = None, faces: dict | None = None) -> tuple[dict, d
              tuple(sorted((k, v[0]) for k, v in people._face_cache.items())))
     if _model_cache and _model_cache[0] == stamp:
         return _model_cache[1]
-    cal = calibrate(samples(pdata, faces, slides))
-    born = {pid: (*b, True) for pid, p in pdata["people"].items() if (b := _span(p.get("birthday", "")))}
-    born.update({pid: (*b, False) for pid, b in implied_births(pdata, faces, slides, cal).items()})
-    _model_cache = (stamp, (cal, born))
-    return cal, born
+    given = {pid: (*b, True) for pid, p in pdata["people"].items() if (b := _span(p.get("birthday", "")))}
+    # found with the model as it is: a misnamed face on a dated slide would widen the calibration
+    # enough to hide itself
+    off = {f: None for f in pdata.get("ages_off", ())}  # ages the user said are wrong: no flag, no date
+    odd = {**suspects(pdata, faces, slides, calibrate([]), given), **off}
+    clean = {k: v for k, v in faces.items() if k not in odd} if odd else faces
+    cal = calibrate(samples(pdata, clean, slides))
+    born = {**given, **{pid: (*b, False) for pid, b in implied_births(pdata, clean, slides, cal).items()}}
+    odd = {**suspects(pdata, faces, slides, cal, born), **off}
+    _model_cache = (stamp, (cal, born, odd))
+    return cal, born, odd
 
 
 def calibration(pdata: dict | None = None, faces: dict | None = None) -> dict:
@@ -191,23 +282,54 @@ def calibration(pdata: dict | None = None, faces: dict | None = None) -> dict:
 # --------------------------------------------------------------------------- per tray
 
 
-def _on_slides(sid: str, pdata: dict, faces: dict) -> dict[str, list[dict]]:
+def _on_slides(sid: str, pdata: dict, faces: dict, odd: dict | None = None) -> dict[str, list[dict]]:
     """The recognised people on each slide of one tray: {gid: [{"pid", "name", "label", "born", "age"?}]},
-    one entry per person (their clearest face)."""
+    one entry per person (their clearest face). A face that doesn't fit its person (`odd`, suspects)
+    gives no age: it's probably someone else."""
     best: dict[tuple[str, str], dict] = {}
+    odd = odd or {}
     for pid, p in pdata["people"].items():
         for f in p["faces"]:
             x = faces.get(f)
             if not x or x["sid"] != sid:
                 continue
             k = (x["gid"], pid)
-            if k not in best or x.get("score", 0) > best[k]["score"]:
+            rank = (f not in odd, x.get("score", 0))
+            if k not in best or rank > best[k]["rank"]:
                 best[k] = {"pid": pid, "name": p.get("name", ""), "label": people.label(pid, p),
-                           "born": p.get("birthday", ""), "score": x.get("score", 0),
-                           **({"age": x["age"]} if "age" in x else {})}
+                           "born": p.get("birthday", ""), "score": x.get("score", 0), "rank": rank,
+                           **({"age": x["age"]} if "age" in x and f not in odd else {})}
     out: dict[str, list[dict]] = {}
     for (gid, _), e in sorted(best.items(), key=lambda kv: -kv[1]["score"]):
         out.setdefault(gid, []).append(e)
+    return out
+
+
+def slide_faces(sid: str, groups: list[dict], pdata: dict, faces: dict, cal: dict, odd: dict) -> dict[str, list[dict]]:
+    """Every face on each slide of a tray, left to right, for correcting who is who on the slide:
+    {gid: [{"id", "url", "box" (0..1 of the slide as it's turned now; None when the face was found
+    turned otherwise), "person", "label", "named", "age" (looks, corrected; None when the user said it's wrong), "odd" (suspects: {"age",
+    "year"}, they'd be `age` in `year`) | None}]}."""
+    owner = {f: pid for pid, p in pdata["people"].items() for f in p["faces"]}
+    entries = people.load_faces(sid)
+    out: dict[str, list[dict]] = {}
+    for g in groups:
+        e = entries.get(g["id"]) or {}
+        upright = e.get("rot", 0) == g["rotation"] and bool(e.get("mirror")) == bool(g.get("mirror"))
+        rows = []
+        for x in sorted(e.get("faces", []), key=lambda x: x["box"][0]):
+            f, pid = x["id"], owner.get(x["id"])
+            p = pdata["people"].get(pid) if pid else None
+            o = odd.get(f)
+            rows.append({
+                "id": f, "url": f"/api/people/faces/{f}.jpg?v={render_key(g)}",
+                "box": x["box"] if upright else None, "person": pid, "label": people.label(pid, p) if p else "",
+                "named": bool(p and p.get("name")),
+                "age": round(corrected(x["age"], pid or "", cal)[0]) if "age" in x and not (f in odd and not o) else None,
+                "odd": {"age": o["age"], "year": o["year"]} if o else None,
+            })
+        if rows:
+            out[g["id"]] = rows
     return out
 
 
@@ -231,7 +353,7 @@ def _consensus(parts: list[tuple[float, float]]) -> tuple[tuple[float, float] | 
 
 def _prior(e: dict, i: int, groups: list[dict]) -> tuple[float, float] | None:
     """The ordinary estimate (store.slide_dates) as (year, SD): between two dated slides it is good
-    to a quarter of their gap; the nearest one's or the tray's date much less."""
+    to a quarter of their gap; the nearest one's or the tray's date less."""
     v = _span(e.get("value", "")) if e.get("source") in ("between", "near", "tray") else None
     if not v:
         return None
@@ -240,7 +362,7 @@ def _prior(e: dict, i: int, groups: list[dict]) -> tuple[float, float] | None:
         return v[0], max(0.5, abs(a[0] - b[0]) / 4)
     if e["source"] == "near":
         return v[0], 1.5 + 0.1 * abs(i - e["from"][0])
-    return v[0], 3.0
+    return v[0], 1.5  # what's written on a tray: most of it is from then (a few slides may not be)
 
 
 _events_cache: dict[str, tuple] = {}
@@ -281,14 +403,15 @@ def _say(ps: dict[str, tuple]) -> tuple[tuple[float, float], frozenset, list[str
 
 
 def tray_view(sid: str, d: dict, dates: list[dict], pdata: dict | None = None, faces: dict | None = None) -> list[dict]:
-    """Per slide of a tray {"people": [{"id", "name", "age" (corrected, or None)}], "year": (value, SD)
-    | None, "floor": year | None, "suggestion": entry | None}."""
+    """Per slide of a tray {"people": [{"id", "name", "age" (corrected, or None)}], "faces": every face
+    on it (slide_faces), "year": (value, SD) | None, "floor": year | None, "suggestion": entry | None}."""
     pdata = pdata or people.load_people()
     faces = faces if faces is not None else people.all_faces()
     groups = d["groups"]
     n = len(groups)
-    on = _on_slides(sid, pdata, faces)
-    cal, born = model(pdata, faces)
+    cal, born, odd = model(pdata, faces)
+    on = _on_slides(sid, pdata, faces, odd)
+    every = slide_faces(sid, groups, pdata, faces, cal, odd)
     # the year each person on a slide puts it in: {pid: (year, age SD, birth SD, age, label)}
     per: list[dict[str, tuple]] = []
     views = []
@@ -305,7 +428,7 @@ def tray_view(sid: str, d: dict, dates: list[dict], pdata: dict | None = None, f
             if e["name"] or e["born"]:
                 ppl.append({"id": e["pid"], "name": e["name"], "age": None if age is None else round(age)})
         per.append(mine)
-        views.append({"people": ppl, "floor": floor, "year": None, "suggestion": None})
+        views.append({"people": ppl, "faces": every.get(g["id"], []), "floor": floor, "year": None, "suggestion": None})
 
     # an event (a scene of look-alike slides) is one moment: its people are pooled - each person
     # once, at the median of the years their faces there say (a mask or a turned head that looks
@@ -416,7 +539,7 @@ def views(sid: str, d: dict, dates: list[dict], pdata: dict | None = None,
         ppl = tray_view(sid, d, dates, pdata, faces)
     except Exception as e:  # dating is extra: never let it break a tray
         print("dating:", e)
-        return live, [{"people": [], "floor": None, "year": None, "suggestion": None} for _ in d["groups"]]
+        return live, [{"people": [], "faces": [], "floor": None, "year": None, "suggestion": None} for _ in d["groups"]]
     for g, x, p in zip(d["groups"], live, ppl):
         if p["suggestion"]:
             x["date"] = filmstock._merged((g.get("insights") or {}).get("date"), p["suggestion"])
@@ -457,13 +580,13 @@ def atlas() -> dict:
 def person(pid: str, pdata: dict | None = None) -> dict:
     """One person's page in People & Places: every slide they're on (their clearest face there),
     the date it goes with, the age they look on it (corrected) and the age they were then (from
-    their birthday), its place, and who they're seen with. KeyError: no such person."""
+    their birthday), its place, who they're seen with, and the faces that are probably someone else (`odd`). KeyError: no such person."""
     from .store import Session, slide_dates
 
     pdata = pdata or people.load_people()
     p = pdata["people"][pid]
     faces = people.all_faces()
-    cal = calibration(pdata, faces)
+    cal, _, odd = model(pdata, faces)
     born = _span(p.get("birthday", ""))
     best: dict[tuple[str, str], tuple[str, dict]] = {}
     for f in p["faces"]:
@@ -506,6 +629,8 @@ def person(pid: str, pdata: dict | None = None) -> dict:
                 "age": round(when[0] - born[0], 1) if when and born else None,  # from the birthday
                 "date": est["value"], "date_source": est["source"], "place": g.get("place"),
                 "skip": bool(g.get("skip")), "locked": bool(g.get("locked")),
+                # the face looks far from their age then: probably someone else (suspects)
+                "odd": {"age": odd[f]["age"], "year": odd[f]["year"]} if odd.get(f) else None,
             })
     slides.sort(key=lambda s: (not s["date"], s["date"], s["tray"], s["index"]))
     with_ = sorted(({"id": q, "name": pdata["people"][q].get("name", ""), "slides": n} for q, n in together.items()

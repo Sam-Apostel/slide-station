@@ -1377,6 +1377,16 @@ Opt-in (`people_enabled`, Settings → "Recognise people"), desktop / server app
   `POST …/{pid}/remove {"faces": [...]}` takes faces out and remembers they're not that person (the
   clustering never puts them back there; they join someone else or stand alone).
   `GET /api/people/faces/{sid}/{gid}/{n}.jpg?v=<key>` cuts the face from the proxy.
+- **Who is who on the slide** (inspector section "People", `components/slide-people.tsx`): every face
+  on the slide (payload `faces`, `dating.slide_faces`: id, url, box, person, label, age, `odd`), left
+  to right; hovering or picking one outlines it on the photo (`FaceOnPhoto`: the box through
+  `PictureView`, ignoring the trim — near enough to point). A picked face gets "Not <name>", a search
+  of everyone named or with a birthday (`GET /api/people/names`) and "Someone new: “…”".
+  `POST /api/people/faces/assign {"face", "person": pid | "new" | null, "name"}` (`people.assign`)
+  answers the tray's payload: the face leaves whoever it was with (remembered in `rejected`), joins
+  its person and is `sure` there (`people[pid].sure`: the age check never doubts it); "new" with a
+  name someone has is them. Only while people are on (`people_enabled`); not ported to the browser
+  version (its payload has no `faces`).
 - **Immich:** it has no API to attach faces or people to an uploaded asset that works across
   versions, so names go as **tags** `People/<name>` (`/` in a name becomes `-`):
   `Immich.tag_assets(values, asset_ids)` upserts the tags (`PUT /api/tags`, hierarchical values,
@@ -1875,9 +1885,15 @@ photo) 22–24, Messi (~23) 27–29 — it guesses adults older, which the calib
 
 **The date** (`dating.tray_view`, computed per payload; no file):
 - A face of someone with a birthday gives `born + age`. Ages are corrected by a **calibration on the
-  slides dated by hand** (`calibrate`): residuals r = log1p(real) − log1p(guess) (error ∝ age),
-  common bias = Σr / (n + 3), spread from those with a prior of 0.2 (3 pseudo-slides), and a
-  per-person bias shrunk with 4 pseudo-slides. SD in years = sigma × (1 + age), at least 0.5, plus
+  slides dated by hand** (`calibrate`) — and, at half the weight (`TRAY_WEIGHT`), on the slides of
+  a tray with a date (a tray is one stretch of time; in the owner's "Box 5 - Tray 1", labelled 1977,
+  the model saw Tom, 8, as 11–50): residuals r = log1p(real) − log1p(guess) (error ∝ age). **Medians,
+  not means** (`_wmedian`): a mask, a misnamed face or a slide from another year is one wild sample.
+  The common bias is the median of each *person's* median residual (each person counts at most
+  once), shrunk by k / (k + 3) with k the people: a child on many slides whom the model sees
+  twice their age says nothing about their mother. Each person's own correction is the median of
+  the rest, shrunk with 4 pseudo-slides; the spread is the MAD left after both, with a prior of
+  0.2 (3 pseudo-slides). SD in years = sigma × (1 + age), at least 0.5, plus
   the birthday's own spread (a year-only birthday is ±0.29). A slide whose own date came from
   accepting a people suggestion (`insights.date` source `people`, accepted, same value) is left out,
   so the calibration never learns from its own guesses. Cached on people.json's and every
@@ -1899,10 +1915,23 @@ photo) 22–24, Messi (~23) 27–29 — it guesses adults older, which the calib
   but only the nearest slide of each *set of people*, and none whose people are all on this slide
   (someone who looks older does so on every slide: repeating them isn't new evidence). The
   ordinary estimate (`store.slide_dates`: between → SD a quarter of the gap, ≥ 0.5; near → 1.5 +
-  0.1 × distance; tray → 3) joins too. **Anything more than 2.5 combined SDs from the anchor is left
+  0.1 × distance; tray → 1.5) joins too. **Anything more than 2.5 combined SDs from the anchor is left
   out**, not averaged: in a real run, Lena (~1974) and Messi (~2015) interleaved in a tray dated
   1972 had averaged to a meaningless 1982; now each slide says its own person's year, and the text
   says "the dated slides around it say 1972".
+- **Misnamed faces** (`suspects`): a face whose corrected age is more than 2.5 combined SDs and at
+  least 6 years from its person's age when the slide was taken (their birth year, and the slide's
+  date *without* the people: own, else `_prior` of the ordinary estimate — `library_slides` keeps it
+  as `when`). That alone could as well be a wrong date (trays aren't in order; that's what the
+  people's dates are for), so it also takes the slide being dated by hand, or the face being a weak
+  match for them: cosine < 0.35 to the average of their other faces (3+). In the owner's library,
+  "Tom (born 1968)" looking 37 in a tray labelled 1977 matched at 0.19, while his faces looking
+  13–27 in a tray labelled 1971 matched at 0.46–0.60 (him, slides from later). A suspect gives no
+  age (no date, no calibration sample, no implied birth year); they're found first with the neutral
+  calibration (a misnamed face on a dated slide would widen the calibration enough to hide
+  itself), then again. Shown as `odd` {age, year} on the slide's faces and the person's page cards.
+  "It is <name>" on a marked face keeps the name and records the age as wrong (`people.json`
+  `ages_off`: no mark, no date); "Not <name>" takes it out.
 - Payload per slide: `people` [{id, name, age}] (named or with a birthday), `people_year` [year,
   SD], `born_floor` (the latest birth year on it: the UI warns when the date or estimate is older).
 - **Suggestion**: `{value: "YYYY", source: "people", confidence: 0.9 − 0.08 × SD (0.3..0.9), text:

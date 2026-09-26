@@ -110,6 +110,8 @@ function SlideStationApp() {
   const openSettings = (pane?: SettingsPane) => (setSettingsPane(pane), setSettingsOpen(true));
   const [helpOpen, setHelpOpen] = React.useState(false);
   const [peopleOpen, setPeopleOpen] = React.useState(false);
+  /** The face picked or hovered in the inspector's People section, outlined on the photo. */
+  const [face, setFace] = React.useState<string | null>(null);
   const [paletteOpen, setPaletteOpen] = React.useState(false);
   const [dateRangeOpen, setDateRangeOpen] = React.useState(false);
   const [immichOpen, setImmichOpen] = React.useState(false);
@@ -511,6 +513,7 @@ function SlideStationApp() {
                   loupe={loupe}
                   onLoupe={setLoupe}
                   onGrid={views.toggleGrid}
+                  face={face}
                 />
               )}
             </ResizablePanel>
@@ -547,6 +550,8 @@ function SlideStationApp() {
                     onPresets={views.presets}
                     onDevelopLike={views.developLike}
                     onAccepted={offerNeighbours}
+                    face={face}
+                    onFace={setFace}
                     onStockRange={(stock) =>
                       setOffer({ kind: "stock", value: stock, from: app.sel, to: session.groups.length - 1 })
                     }

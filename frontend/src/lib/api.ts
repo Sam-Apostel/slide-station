@@ -205,11 +205,34 @@ export type Group = {
   };
   /** The named people on it (or with a birthday); age: as it looks, corrected (null without the age model). */
   people?: { id: string; name: string; age: number | null }[];
+  /** Every face found on it, left to right, named or not (with recognising people on). */
+  faces?: SlideFace[];
   /** The year its people put it in, [year, SD in years] (dating.py); null when nobody with a birthday is near. */
   people_year?: [number, number] | null;
   /** The birth year of the youngest person on it with a birthday: it can't be older. */
   born_floor?: number | null;
 };
+
+/** A face on a slide and who it is (dating.slide_faces). */
+export type SlideFace = {
+  id: string;
+  url: string;
+  /** [x, y, w, h] in 0..1 of the slide turned as it is now, before trim, straighten and crop; null
+   *  when the face was found with the slide turned otherwise (it's looked at again soon). */
+  box: [number, number, number, number] | null;
+  /** Their person (named or not); null: nobody yet. */
+  person: string | null;
+  /** Their name, or "Person 12". */
+  label: string;
+  named: boolean;
+  /** The age it looks (corrected); null without the age model. */
+  age: number | null;
+  /** Probably someone else: `label` would be `age` in `year` (dating.suspects). */
+  odd: { age: number; year: number } | null;
+};
+
+/** Who a face can be (`GET /api/people/names`): everyone named or with a birthday. */
+export type PersonName = { id: string; name: string; label: string; cover: string | null; faces: number };
 
 /** Which of the two trays in a box: they stand side by side. */
 export type Side = "left" | "right";
@@ -433,6 +456,8 @@ export type PersonPage = {
     place: Place | null;
     skip: boolean;
     locked: boolean;
+    /** Their face here looks far from their age then: probably someone else (they'd be `age` in `year`). */
+    odd?: { age: number; year: number } | null;
   })[];
   /** Who they're on slides with, most first. */
   with: { id: string; name: string; slides: number }[];
