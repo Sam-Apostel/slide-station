@@ -142,6 +142,26 @@ def test_nobody_before_their_birth(api, tmp_path, aged, monkeypatch):
     assert g["born_floor"] == 1990 and int(g["insights"]["date"]["value"]) >= 1990
 
 
+def test_a_vague_face_leaves_the_trays_date(api, tmp_path, aged, monkeypatch):
+    """The tray says 1977; Ann (born 1946) looks 28 (≈ 1974 ± 6): that agrees with 1977 and knows
+    less, so it offers nothing - but a child's face, as sure as a year, still does."""
+    faces, ages = aged
+    faces += [[face(ANN)], [], [], [], [], [], [], [], [], [], [], [], [], [], [], [], [], [], [], [], [], [],
+              [], [], [], [], [face(BOB)]]
+    ages += [[28.0], [1.0]]
+    sid, d = new_tray(api, tmp_path / "scans", slides=27)
+    monkeypatch.setattr(wf, "active_session", None)
+    out = api.get("/api/people").json()
+    ann, bob = (_who(out, sid, d["groups"][i]["id"]) for i in (0, 26))
+    api.patch(f"/api/people/{ann['id']}", json={"birthday": "1946-06-23"})
+    api.patch(f"/api/people/{bob['id']}", json={"birthday": "1974-03-01"})
+    api.patch(f"/api/sessions/{sid}", json={"date": "1977"})
+    gs = api.get(f"/api/sessions/{sid}").json()["groups"]
+    assert gs[0]["people_year"][0] < 1977 and (gs[0]["insights"].get("date") or {}).get("source") != "people"
+    assert gs[0]["date_est"]["value"] == "1977"
+    assert gs[26]["insights"]["date"]["source"] == "people" and gs[26]["insights"]["date"]["value"] == "1975"
+
+
 def test_ages_added_to_faces_found_before(api, tmp_path, aged, monkeypatch):
     faces, ages = aged
     store.save_config({**CONFIG, "people_enabled": True})  # ages off while importing
