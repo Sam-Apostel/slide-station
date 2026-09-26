@@ -487,8 +487,11 @@ export function mirrorBox(box: (number | null)[]): (number | null)[] {
   return [r === null ? null : round(1 - r, 4), t, l === null ? null : round(1 - l, 4), b];
 }
 
-/** The crop that trims to the mount's window once straightened by p.angle (imaging.mount_crop). */
-export function mountCrop(a: RGB, p: Params, box: (number | null)[]): [number, number, number, number] | null {
+/**
+ * Where a point of `a` ends up after develop()'s trim and straighten (imaging.straightened_point):
+ * place(x, y), continuous pixel coordinates of `a`, answers 0..1 of the straightened (uncropped) frame.
+ */
+export function straightenedPoint(a: RGB, p: Params): (x: number, y: number) => [number, number] {
   const { width: w, height: h } = a;
   const [t0, b0, l0, r0] = p.trim ? trimBounds(autoRestore(a, p.strength)) : [0, h, 0, w];
   const fw = r0 - l0;
@@ -497,11 +500,34 @@ export function mountCrop(a: RGB, p: Params, box: (number | null)[]): [number, n
   const scale = Math.cos(Math.abs(th)) + (Math.sin(Math.abs(th)) * Math.max(fw, fh)) / Math.min(fw, fh);
   const cs = Math.cos(th);
   const sn = Math.sin(th);
-  const place = (x: number, y: number) => {
+  return (x: number, y: number) => {
     const dx = x - 0.5 - l0 - fw / 2; // pixel-index coordinates, as the straighten
     const dy = y - 0.5 - t0 - fh / 2;
     return [(fw / 2 + scale * (cs * dx - sn * dy) + 0.5) / fw, (fh / 2 + scale * (sn * dx + cs * dy) + 0.5) / fh];
   };
+}
+
+/**
+ * Boxes [l, t, w, h] in 0..1 of `a` (the turned scan) as [x1, y1, x2, y2] in 0..1 of what
+ * develop(a, p) makes of it: trimmed, straightened and cropped (imaging.developed_boxes). They may
+ * reach past the edges.
+ */
+export function developedBoxes(a: RGB, p: Params, boxes: number[][]): number[][] {
+  const { width: w, height: h } = a;
+  const place = straightenedPoint(a, p);
+  const [cl, ct, cr, cb] = p.crop ?? [0, 0, 1, 1];
+  return boxes.map(([l, t, bw, bh]) => {
+    const pts = [l, l + bw].flatMap((x) => [t, t + bh].map((y) => place(x * w, y * h)));
+    const xs = pts.map(([u]) => (u - cl) / (cr - cl));
+    const ys = pts.map(([, v]) => (v - ct) / (cb - ct));
+    return [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)];
+  });
+}
+
+/** The crop that trims to the mount's window once straightened by p.angle (imaging.mount_crop). */
+export function mountCrop(a: RGB, p: Params, box: (number | null)[]): [number, number, number, number] | null {
+  const { width: w, height: h } = a;
+  const place = straightenedPoint(a, p);
   const [l, t, r, b] = box;
   const out = [0, 0, 1, 1];
   if (l !== null) out[0] = place(l * w, h / 2)[0] + MOUNT_INSET;

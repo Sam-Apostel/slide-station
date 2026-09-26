@@ -32,6 +32,7 @@ import {
   type Quality,
 } from "./imaging";
 import { Immich, ImmichError, NotIndexed, Unsupported, type Asset } from "./immich";
+import { sync as syncPeople, type Slide } from "./immichPeople";
 import { dot, LABELS_KEY, MODEL_ID, promptBatch, tagSuggestions, TAGS, Tokenizer, type Learned } from "./clip";
 import { cleanStock, effective, label, Labels, views } from "./filmstock";
 import {
@@ -63,9 +64,7 @@ import {
   cleanBirthday,
   setBirthday,
   SFACE,
-  slideNames,
   stale,
-  tagName,
   type FacesFile,
   type PeopleFile,
 } from "./people";
@@ -1376,40 +1375,58 @@ async function scanPeople(job: Job) {
   job.message = `Looked for faces on ${todo.length} slides: ${Object.keys(d.people).length} people (${named} named)`;
 }
 
-/** Named people as Immich tags (People/<name>) on uploaded slides {gid: asset} of one tray. */
-async function tagPeople(c: Immich, sid: string, slides: Map<string, string>, names: Map<string, string[]>) {
-  const byName = new Map<string, string[]>();
-  for (const [gid, asset] of slides)
-    for (const name of names.get(`${sid}/${gid}`) ?? []) byName.set(name, [...(byName.get(name) ?? []), asset]);
-  const done = new Set<string>();
-  for (const [name, assets] of [...byName].sort((a, b) => (a[0] < b[0] ? -1 : 1)))
-    if (await c.tagAssets([tagName(name)], assets)) assets.forEach((a) => done.add(a));
-  return done.size;
+/** A slide's faces as boxes [x1, y1, x2, y2] in 0..1 of the uploaded (developed) slide (workflow.uploaded_faces). */
+async function uploadedFaces(d: SessionData, g: GroupData): Promise<[string, number[]][]> {
+  const entry = (await loadFaces(d.id))[g.id];
+  if (!entry?.faces?.length || stale(g, entry)) return [];
+  const boxes = await jobs.call(
+    "developedBoxes",
+    {
+      src: await fusedSrc(d, g, jobs),
+      rotation: g.rotation,
+      mirror: !!g.mirror,
+      params: g.params,
+      boxes: entry.faces.map((f) => f.box),
+    },
+    -1,
+  );
+  return entry.faces.map((f, i) => [f.id, boxes[i]]);
 }
 
-/** The job: the names of the people on every slide already in Immich, as tags (workflow.tag_people). */
-async function tagPeopleJob(job: Job) {
-  const names = slideNames((await refreshPeople()).d);
+/** The job: our people as Immich people on every slide already uploaded, and Immich's names back
+ *  here (workflow.sync_people, immichPeople.ts). */
+async function syncPeopleJob(job: Job) {
+  await refreshPeople();
   const c = immichClient();
   job.message = `Connecting to Immich ${await c.version()}`;
-  const sids = [...new Set([...names.keys()].map((k) => k.split("/")[0]))].sort();
-  [job.total, job.done] = [sids.length, 0];
-  let tagged = 0;
-  for (const sid of sids) {
+  const slides: Slide[] = [];
+  for (const t of await listSessions()) {
     let d: SessionData;
     try {
-      d = await loadSession(sid);
+      d = await loadSession(t.id);
     } catch {
       continue;
     }
-    const slides = new Map(d.groups.filter((g) => g.immich && !g.skip).map((g) => [g.id, g.immich!.asset_id]));
-    tagged += await tagPeople(c, sid, slides, names);
-    job.done++;
+    for (const g of d.groups)
+      if (g.immich && !g.skip)
+        slides.push({ sid: d.id, gid: g.id, asset: g.immich.asset_id, faces: await uploadedFaces(d, g) });
   }
-  job.message =
-    c.tagsSupported === false
-      ? "This Immich server has no tags API: names were not sent"
-      : `Tagged ${tagged} slides in Immich with the people on them`;
+  const store = {
+    load: () => queued(loadPeople),
+    edit: async (fn: (d: PeopleFile) => PeopleFile | null) => {
+      try {
+        return (await refreshPeople(fn)).d;
+      } catch (e) {
+        if (e instanceof HttpError && e.status === 404) return null; // no such person (joined someone already)
+        throw e;
+      }
+    },
+  };
+  const rep = await syncPeople(c, slides, store, (msg, done, total) => {
+    job.message = msg;
+    if (total !== undefined) [job.done, job.total] = [done ?? 0, total];
+  });
+  job.message = rep.message();
 }
 
 /** A job: the tray's uploaded slides not checked yet or not indexed at the last check (all: every one). */
@@ -2557,21 +2574,6 @@ async function finishSession(
   }
   job.message = "Putting the tray in its album";
   const placeNote = await placeTray(client!, cfg, sid, album);
-  let peopleTagged = 0;
-  let peopleProblem = "";
-  if (cfg.people_enabled && sent.length) {
-    // named people go along as tags (People/<name>)
-    try {
-      const g2a = new Map(
-        (await loadSession(sid)).groups
-          .filter((g) => sent.includes(g.id) && g.immich)
-          .map((g) => [g.id, g.immich!.asset_id]),
-      );
-      peopleTagged = await tagPeople(client!, sid, g2a, slideNames((await refreshPeople()).d));
-    } catch (e) {
-      peopleProblem = e instanceof Error ? e.message : String(e);
-    }
-  }
   // photos in Immich that look like what just went up
   const lookNote = cfg.lookalike_enabled && sent.length ? await lookalikesQuietly(client!, sid, sent, job) : "";
   if (!cfg.keep_originals) await dropLocalOriginals(sid);
@@ -2587,8 +2589,6 @@ async function finishSession(
       : "") +
     (lost.length ? `; ${lost.length} skipped: their original scans were deleted after the last upload` : "") +
     tagNote +
-    (peopleTagged ? `; ${peopleTagged} tagged with the people on them` : "") +
-    (peopleProblem ? `; names not sent: ${peopleProblem}` : "") +
     lookNote +
     placeNote;
 }
@@ -3271,11 +3271,12 @@ export async function handle(method: string, url: string, body: Body = {}): Prom
     startJob("faces", null, scanPeople);
     return { ok: true };
   }
-  if (is("POST", /^\/api\/people\/tag$/)) {
+  if (is("POST", /^\/api\/people\/sync$/)) {
+    // line our people up with Immich's on every slide already uploaded, names going both ways
     const cfg = loadConfig();
     if (!cfg.immich_url || !cfg.immich_key)
       throw new HttpError(400, "Set your Immich URL and API key in Settings first.");
-    startJob("tag", null, tagPeopleJob);
+    startJob("people", null, syncPeopleJob);
     return { ok: true };
   }
   if ((m = is("PATCH", /^\/api\/people\/([^/]+)$/))) {

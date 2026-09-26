@@ -342,6 +342,24 @@ const ops = {
     return im.mountCrop(oriented(await load(src), rotation, mirror), params, box);
   },
 
+  /** Face boxes [l, t, w, h] of the turned slide where they land on the developed one, as
+   *  [x1, y1, x2, y2] (imaging.developed_boxes: the faces on the upload, for Immich's people). */
+  async developedBoxes({
+    src,
+    rotation,
+    mirror,
+    params,
+    boxes,
+  }: {
+    src: Src;
+    rotation: number;
+    mirror?: boolean;
+    params: Params;
+    boxes: number[][];
+  }) {
+    return im.developedBoxes(oriented(await load(src), rotation, mirror), params, boxes);
+  },
+
   async render(a: { src: Src; rotation: number; mirror?: boolean; params: Params; size: number; before: boolean; uncropped: boolean }) {
     let img = await load(a.src);
     if (a.size <= 400) img = fitting(img, 480); // develop on a smaller image for thumbnails

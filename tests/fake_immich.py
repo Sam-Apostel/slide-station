@@ -11,7 +11,10 @@ changes them; latitude / longitude validated like v3.2's UpdateAssetDto, no reve
 paged by `PAGE`), bulk-upload-check, originals, thumbnails (not previews: the locked-slide test
 relies on the local fallback) and stacks (`STACKS = False` answers 404, like servers before them).
 Smart search by image ranks assets by a crude 8x8 thumbnail distance (Immich uses CLIP; neither
-gives scores); metadata search also filters by takenAfter / takenBefore.
+gives scores); metadata search also filters by takenAfter / takenBefore and tagIds. People and
+faces: `DB["people"]` {id: {"id", "name", "birthDate"}}, `DB["faces"]` {id: {"id", "assetId", "box"
+[x1, y1, x2, y2] in 0..1, "personId", "sourceType"}}, answered at 1000 x 750 like Immich's preview;
+merging, reassigning, manual faces (v1.127+) and deleting as v3.2.
 """
 import base64
 import hashlib
@@ -102,7 +105,7 @@ def asset_dto(aid: str) -> dict:
     a = DB["assets"][aid]
     st = a.get("stack")
     return {
-        "id": aid, "type": a.get("type", "IMAGE"), "originalFileName": a["name"], "originalMimeType": a.get("mime"),
+        "id": aid, "createdAt": a.get("created_at", "2020-01-01T00:00:00.000Z"), "width": 1000, "height": 750, "type": a.get("type", "IMAGE"), "originalFileName": a["name"], "originalMimeType": a.get("mime"),
         "checksum": base64.b64encode(bytes.fromhex(a["sha1"])).decode(), "isFavorite": a.get("favorite", False),
         "isTrashed": a.get("trashed", False), "localDateTime": a.get("local", ""),
         "fileCreatedAt": a["fields"].get("fileCreatedAt", a.get("local", "")),
@@ -196,6 +199,8 @@ async def search(req: Request, x_api_key: str = Header(None)):
     body = await req.json()
     if "albumIds" in body:
         ids = [x for a in body.get("albumIds", []) for x in DB["albums"].get(a, {"assets": []})["assets"]]
+    elif "tagIds" in body:
+        ids = [x for t in DB.setdefault("tags", {}).values() if t["id"] in body["tagIds"] for x in t["assets"]]
     else:  # the look-alike check's date window
         after, before = body.get("takenAfter", "")[:19], body.get("takenBefore", "9999")[:19]
         ids = [k for k, a in DB["assets"].items() if after <= a.get("local", "")[:19] <= before]
@@ -465,6 +470,138 @@ async def untag(tid: str, req: Request, x_api_key: str = Header(None)):
     out = [{"id": i, "success": i in tag["assets"]} for i in ids]
     tag["assets"] = [a for a in tag["assets"] if a not in ids]
     return out
+
+
+@app.delete("/api/tags/{tid}")
+def delete_tag(tid: str, x_api_key: str = Header(None)):
+    """Deletes the tag and the tags under it, as Immich does."""
+    auth(x_api_key)
+    tags = DB.setdefault("tags", {})
+    gone = {tid}
+    while True:
+        more = {t["id"] for t in tags.values() if t.get("parentId") in gone} - gone
+        if not more:
+            break
+        gone |= more
+    for k in [k for k, t in tags.items() if t["id"] in gone]:
+        del tags[k]
+    return Response(status_code=204)
+
+
+# ------------------------------------------------------------------ people & faces
+W, H = 1000, 750  # the preview size faces are answered in
+
+
+def add_person(name: str = "", birth: str | None = None) -> str:
+    pid = str(uuid.uuid4())
+    DB.setdefault("people", {})[pid] = {"id": pid, "name": name, "birthDate": birth, "isHidden": False}
+    return pid
+
+
+def add_face(asset: str, box: list[float], person: str | None = None, source: str = "machine-learning") -> str:
+    fid = str(uuid.uuid4())
+    DB.setdefault("faces", {})[fid] = {"id": fid, "assetId": asset, "box": box, "personId": person, "sourceType": source}
+    return fid
+
+
+def _person(pid: str) -> dict:
+    if pid not in DB.setdefault("people", {}):
+        raise HTTPException(400, "Not found or no person.read access")
+    return DB["people"][pid]
+
+
+@app.get("/api/people")
+def list_people(page: int = 1, size: int = 500, withHidden: str = "false", x_api_key: str = Header(None)):
+    auth(x_api_key)
+    everyone = list(DB.setdefault("people", {}).values())
+    chunk = everyone[(page - 1) * size: page * size]
+    return {"people": chunk, "total": len(everyone), "hidden": 0, "hasNextPage": page * size < len(everyone)}
+
+
+@app.post("/api/people")
+async def create_person(req: Request, x_api_key: str = Header(None)):
+    auth(x_api_key)
+    body = await req.json()
+    return _person(add_person(body.get("name", ""), body.get("birthDate")))
+
+
+@app.put("/api/people/{pid}")
+async def update_person(pid: str, req: Request, x_api_key: str = Header(None)):
+    auth(x_api_key)
+    p = _person(pid)
+    p.update({k: v for k, v in (await req.json()).items() if k in ("name", "birthDate", "isHidden")})
+    return p
+
+
+def _merge(into: str, ids: list[str]) -> list[dict]:
+    target = _person(into)
+    for pid in ids:
+        gone = DB["people"].pop(pid)
+        target["name"] = target["name"] or gone["name"]
+        target["birthDate"] = target["birthDate"] or gone["birthDate"]
+        for f in DB.setdefault("faces", {}).values():
+            if f["personId"] == pid:
+                f["personId"] = into
+    return [{"id": pid, "success": True} for pid in ids]
+
+
+@app.post("/api/people/merge")
+async def merge_people(req: Request, x_api_key: str = Header(None)):
+    """v3.2.1+: the first of `ids` is kept."""
+    auth(x_api_key)
+    if MAJOR < 3:
+        raise HTTPException(404, "Cannot POST /api/people/merge")
+    ids = (await req.json())["ids"]
+    return _merge(ids[0], ids[1:])
+
+
+@app.post("/api/people/{pid}/merge")
+async def merge_person(pid: str, req: Request, x_api_key: str = Header(None)):
+    auth(x_api_key)
+    return _merge(pid, (await req.json())["ids"])
+
+
+def face_dto(f: dict) -> dict:
+    p = DB.setdefault("people", {}).get(f["personId"])
+    x1, y1, x2, y2 = f["box"]
+    return {"id": f["id"], "imageWidth": W, "imageHeight": H, "sourceType": f["sourceType"],
+            "boundingBoxX1": round(x1 * W), "boundingBoxY1": round(y1 * H),
+            "boundingBoxX2": round(x2 * W), "boundingBoxY2": round(y2 * H), "person": dict(p) if p else None}
+
+
+@app.get("/api/faces")
+def faces(id: str, x_api_key: str = Header(None)):
+    auth(x_api_key)
+    _asset(id)
+    return [face_dto(f) for f in DB.setdefault("faces", {}).values() if f["assetId"] == id]
+
+
+@app.put("/api/faces/{pid}")
+async def reassign_face(pid: str, req: Request, x_api_key: str = Header(None)):
+    """The path is the person, the body the face."""
+    auth(x_api_key)
+    DB["faces"][(await req.json())["id"]]["personId"] = _person(pid)["id"]
+    return DB["people"][pid]
+
+
+@app.post("/api/faces")
+async def create_face(req: Request, x_api_key: str = Header(None)):
+    auth(x_api_key)
+    b = await req.json()
+    _asset(b["assetId"])
+    _person(b["personId"])
+    w, h = b["imageWidth"], b["imageHeight"]
+    add_face(b["assetId"], [b["x"] / w, b["y"] / h, (b["x"] + b["width"]) / w, (b["y"] + b["height"]) / h],
+             b["personId"], "manual")
+    return Response(status_code=201)
+
+
+@app.delete("/api/faces/{fid}")
+def delete_face(fid: str, x_api_key: str = Header(None)):
+    auth(x_api_key)
+    if DB.setdefault("faces", {}).pop(fid, None) is None:
+        raise HTTPException(400, "Not found or no face.delete access")
+    return Response(status_code=204)
 
 
 @app.get("/debug")

@@ -388,11 +388,18 @@ people icon in the top bar, or ⌘K) to name each person once, tick two groups t
 person and merge them, or take a wrong face out of a group (hover it, ×); naming a group with a
 name someone already has merges them too. Everything runs on your computer.
 
-Immich gets the names as **tags** `People/<name>` on the uploaded slides (Immich's API can't
-reliably assign its own faces and people to an uploaded photo across versions, so tags are the
-dependable way; they show under Tags and are searchable). The API key then also needs `tag.create`
-and `tag.asset`. Slides uploaded before you named someone: **Send names to Immich** in the People
-dialog. Names are only ever added, never removed from Immich.
+**Sync with Immich** in the People dialog puts your people on Immich's own **People** page, and
+brings names you gave there back. Immich finds the faces on the uploaded slides itself; the sync
+lines its faces up with ours, names the matching Immich person (or creates one), moves each face
+onto the right person, merges Immich's unnamed groups that only hold one person's faces, adds the
+faces Immich missed by hand, and fills in birthdays either way. An unnamed person here whose faces
+Immich mostly has under one name takes that name. Where the two disagree (a face or a person named
+differently on each side) nothing is changed: the sync lists it for you to fix. It's safe to run
+again any time, e.g. after naming someone or once Immich has looked at a fresh upload (it skips
+slides Immich hasn't looked for faces on yet). Needs Immich v1.127 or later and an API key with
+`person.read`, `person.create`, `person.update`, `person.merge`, `face.read`, `face.create`,
+`face.update` and `face.delete`. Earlier versions sent the names as `People/<name>` tags; the sync
+takes those off again.
 
 ## Scanning tips
 

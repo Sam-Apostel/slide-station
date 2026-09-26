@@ -462,8 +462,6 @@ def people_cases() -> dict:
     finally:
         people.all_faces, people.load_people, people.save_people = orig
     out["steps"] = steps
-    out["names"] = {"/".join(k): v for k, v in people.slide_names(state["file"]).items()}
-    out["tag"] = [people.tag_name(n) for n in ("Ann", "A/B", " C ")]
 
     # alignCrop: the similarity transform to SFace's template and the 112 x 112 warp (the network
     # itself isn't needed for it: any ONNX file loads)

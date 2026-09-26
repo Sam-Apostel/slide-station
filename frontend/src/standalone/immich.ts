@@ -2,6 +2,7 @@
 // v3 field rules. Immich only allows cross-origin requests in development builds, so this works
 // when Slide Station is served from the same origin as Immich, or when the reverse proxy in front
 // of Immich adds CORS headers for this page (docs: README "Slide Station in the browser").
+import { pyRound } from "./clip";
 
 export class ImmichError extends Error {}
 /** Immich hasn't computed this asset's CLIP embedding yet (its machine learning runs after upload). */
@@ -25,7 +26,12 @@ export type Asset = {
   isTrashed?: boolean;
   localDateTime?: string;
   fileCreatedAt?: string;
+  createdAt?: string; // when it was uploaded to Immich
+  width?: number | null;
+  height?: number | null;
   exifInfo?: {
+    exifImageWidth?: number | null;
+    exifImageHeight?: number | null;
     description?: string | null;
     latitude?: number | null;
     longitude?: number | null;
@@ -33,6 +39,22 @@ export type Asset = {
     state?: string | null;
     country?: string | null;
   } | null;
+};
+
+/** An Immich person (PersonResponseDto, the fields used). */
+export type ImmichPerson = { id: string; name?: string; birthDate?: string | null; isHidden?: boolean };
+
+/** A face on an asset (AssetFaceResponseDto): its box in pixels of an imageWidth × imageHeight picture. */
+export type ImmichFace = {
+  id: string;
+  boundingBoxX1: number;
+  boundingBoxY1: number;
+  boundingBoxX2: number;
+  boundingBoxY2: number;
+  imageWidth: number;
+  imageHeight: number;
+  person?: { id: string; name?: string } | null;
+  sourceType?: string;
 };
 
 type Found = Record<string, { asset_id: string; trashed: boolean }>;
@@ -353,6 +375,112 @@ export class Immich {
   async deleteStack(id: string) {
     const r = await this.raw("DELETE", `/stacks/${id}`);
     if (![400, 403, 404, 405].includes(r.status)) await this.check(r, "DELETE", "/stacks/{id}");
+  }
+
+  // ---------------------------------------------------------------- people & faces
+
+  static NO_PEOPLE_PERMISSION =
+    "The API key can't manage people (403): give it person.read, person.create, " +
+    "person.update, person.merge, face.read, face.create, face.update and face.delete.";
+
+  private async peopleCheck(r: Response, method: string, path: string): Promise<Response> {
+    if (r.status === 403) throw new ImmichError(Immich.NO_PEOPLE_PERMISSION);
+    return this.check(r, method, path);
+  }
+
+  /** Everyone Immich knows, hidden people too (immich.people). */
+  async people(): Promise<ImmichPerson[]> {
+    const out: ImmichPerson[] = [];
+    for (let page = 1; page < 1000; page++) {
+      const r = await this.raw("GET", `/people?withHidden=true&page=${page}&size=1000`);
+      const j = await (await this.peopleCheck(r, "GET", "/people")).json();
+      out.push(...(j.people ?? []));
+      if (!j.hasNextPage) break;
+    }
+    return out;
+  }
+
+  /** The faces on an asset (immich.faces). */
+  async faces(asset: string): Promise<ImmichFace[]> {
+    return (await this.peopleCheck(await this.raw("GET", `/faces?id=${asset}`), "GET", "/faces")).json();
+  }
+
+  async createPerson(name: string, birthDate?: string | null): Promise<ImmichPerson> {
+    const body = { name, ...(birthDate ? { birthDate } : {}) };
+    return (await this.peopleCheck(await this.raw("POST", "/people", body), "POST", "/people")).json();
+  }
+
+  /** `PUT /people/{id}`: name, birthDate (YYYY-MM-DD), isHidden… */
+  async updatePerson(id: string, fields: Record<string, unknown>) {
+    await this.peopleCheck(await this.raw("PUT", `/people/${id}`, fields), "PUT", "/people/{id}");
+  }
+
+  /** Merge people into `into`, which keeps its name and birthday (immich.merge_people). `POST
+   *  /people/merge` since v3.2.1 (the first id is kept); `POST /people/{id}/merge` before (deprecated since). */
+  async mergePeople(into: string, others: string[]) {
+    if (!others.length) return;
+    let r = await this.raw("POST", "/people/merge", { ids: [into, ...others] });
+    if (r.status === 404 || r.status === 405) r = await this.raw("POST", `/people/${into}/merge`, { ids: others });
+    await this.peopleCheck(r, "POST", "/people/merge");
+  }
+
+  /** Put a face on a person (`PUT /faces/{person id}` with the face's id in the body). */
+  async assignFace(face: string, person: string) {
+    await this.peopleCheck(await this.raw("PUT", `/faces/${person}`, { id: face }), "PUT", "/faces/{id}");
+  }
+
+  /** A face Immich's own detection didn't find: box [x1, y1, x2, y2] in 0..1 of the asset, width ×
+   *  height its size in pixels (v1.127+; a "manual" face, which re-detection leaves alone). */
+  async createFace(asset: string, person: string, box: number[], width: number, height: number) {
+    const [x1, y1] = [Math.max(0, box[0]), Math.max(0, box[1])];
+    const [x2, y2] = [Math.min(1, box[2]), Math.min(1, box[3])];
+    const body = {
+      assetId: asset,
+      personId: person,
+      imageWidth: width,
+      imageHeight: height,
+      x: pyRound(x1 * width),
+      y: pyRound(y1 * height),
+      width: Math.max(1, pyRound((x2 - x1) * width)),
+      height: Math.max(1, pyRound((y2 - y1) * height)),
+    };
+    const r = await this.raw("POST", "/faces", body);
+    if (r.status === 404 || r.status === 405)
+      throw new ImmichError("this Immich can't add faces by hand; update it to v1.127 or later");
+    await this.peopleCheck(r, "POST", "/faces");
+  }
+
+  async deleteFace(id: string) {
+    const r = await this.raw("DELETE", `/faces/${id}`, { force: false });
+    if (r.status !== 400 && r.status !== 404) await this.peopleCheck(r, "DELETE", "/faces/{id}"); // gone already
+  }
+
+  /**
+   * Take tags whose value starts with `prefix` off these assets, and delete those left on nothing
+   * (then their parent, if it's empty too) (immich.remove_tag_everywhere). Returns how many tags were
+   * taken off.
+   */
+  async removeTagEverywhere(prefix: string, assets: string[]): Promise<number> {
+    const r = await this.raw("GET", "/tags");
+    if ([403, 404, 405].includes(r.status)) return 0;
+    type Tag = { id: string; value?: string; parentId?: string | null };
+    const tags: Tag[] = await (await this.check(r, "GET", "/tags")).json();
+    const mine = tags.filter((t) => (t.value || "").startsWith(prefix));
+    for (const t of mine)
+      for (let i = 0; i < assets.length; i += 200) {
+        const q = await this.raw("DELETE", `/tags/${t.id}/assets`, { ids: assets.slice(i, i + 200) });
+        if (q.status === 403) throw new ImmichError("The API key can't take the People tags off (403): give it tag.asset.");
+        await this.check(q, "DELETE", "/tags/{id}/assets");
+      }
+    const parents = new Set(mine.map((t) => t.parentId));
+    const gone = new Set<string>();
+    for (const t of [...mine, ...tags.filter((x) => parents.has(x.id))]) {
+      if (tags.some((x) => x.parentId === t.id && !gone.has(x.id))) continue; // a parent with tags still under it
+      const page = await this.raw("POST", "/search/metadata", { tagIds: [t.id], size: 1 });
+      if (page.status === 200 && !(await page.json()).assets?.items?.length)
+        if ((await this.raw("DELETE", `/tags/${t.id}`)).status < 400) gone.add(t.id); // (a key without tag.delete leaves the empty tag)
+    }
+    return mine.length;
   }
 }
 

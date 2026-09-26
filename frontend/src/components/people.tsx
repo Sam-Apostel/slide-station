@@ -244,7 +244,7 @@ export function PeoplePlaces({
         onPerson={(pid) => setNav({ tab: "people", person: pid })}
         onSettings={onSettings}
         onFind={() => start("/api/people/scan", "Looking for faces on every slide")}
-        onTag={() => start("/api/people/tag", "Sending the names to Immich")}
+        onSync={() => start("/api/people/sync", "Syncing people with Immich")}
       />
     );
   }
@@ -475,7 +475,7 @@ function PeopleOverview({
   onPerson,
   onSettings,
   onFind,
-  onTag,
+  onSync,
 }: {
   data: PeoplePayload | null;
   searching: boolean;
@@ -483,7 +483,7 @@ function PeopleOverview({
   onPerson: (pid: string) => void;
   onSettings: () => void;
   onFind: () => void;
-  onTag: () => void;
+  onSync: () => void;
 }) {
   if (!data) return <Loading />;
   const named = data.people.filter((p) => p.name);
@@ -494,14 +494,15 @@ function PeopleOverview({
         <div className="min-w-0 flex-1">
           <h1 className="text-[15px] font-medium">People</h1>
           <p className="mt-0.5 max-w-[640px] text-[12px] text-muted-foreground">
-            Faces on your slides, grouped by likeness across every tray. Name someone once — Immich gets the names as
-            tags (People/&lt;name&gt;). A birthday lets the ages on their faces date the slides they're on.
+            Faces on your slides, grouped by likeness across every tray. Name someone once — syncing puts them on
+            Immich's People page, and names you gave there come back here. A birthday lets the ages on their faces
+            date the slides they're on.
           </p>
         </div>
-        {data.enabled && named.length > 0 && (
-          <Tip label="Tags the slides already in Immich with the names on them">
-            <Button variant="outline" size="sm" onClick={onTag}>
-              Send names to Immich
+        {data.enabled && data.people.length > 0 && (
+          <Tip label="Names the faces on the slides already in Immich, and brings names given in Immich back here">
+            <Button variant="outline" size="sm" onClick={onSync}>
+              Sync with Immich
             </Button>
           </Tip>
         )}
