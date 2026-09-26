@@ -1,5 +1,5 @@
 import * as React from "react";
-import { Columns2, LayoutGrid, Lock, Redo2, Scissors, Search, Undo2, ZoomIn } from "lucide-react";
+import { ArrowLeft, Columns2, LayoutGrid, Lock, Redo2, Scissors, Search, Undo2, X, ZoomIn } from "lucide-react";
 import { isMac } from "@/lib/desktop";
 import { Tip } from "@/components/tip";
 import { CropBar, CropOverlay, FULL, fitAspect, maxAspect, moveRect, resizeRect, type Rect } from "@/components/crop";
@@ -100,6 +100,7 @@ export function Stage({
   onLoupe,
   onGrid,
   face,
+  back,
 }: {
   session: SessionPayload;
   sessionId: string;
@@ -135,6 +136,8 @@ export function Stage({
   onGrid: () => void;
   /** The face (id) picked or hovered in the inspector's People section: outlined on the photo. */
   face?: string | null;
+  /** Came here from a page in People & Places: the way back to it. */
+  back?: { label: string; onBack: () => void; onDismiss: () => void };
 }) {
   const g: Group | undefined = session.groups[sel];
   const next = session.groups[sel + 1];
@@ -386,6 +389,30 @@ export function Stage({
           </span>
         )}
         {loading && <Spinner data-testid="preview-loading" className="absolute right-5 bottom-5 text-primary" />}
+        {back && !before && !cropping && (
+          <div className="absolute top-3 left-3 z-20 flex max-w-[calc(100%-24px)] items-center rounded-full border border-(--ss-line) bg-(--ss-panel)/90 text-[12px] shadow-md backdrop-blur">
+            <Tip label="Back to where this slide was opened in People & Places">
+              <button
+                type="button"
+                onClick={back.onBack}
+                className="flex min-w-0 items-center gap-1.5 rounded-l-full py-1 pr-2 pl-2.5 hover:bg-(--ss-panel-2)"
+              >
+                <ArrowLeft className="size-3.5 shrink-0" aria-hidden />
+                <span className="truncate">{back.label}</span>
+              </button>
+            </Tip>
+            <Tip label="Stay in this tray">
+              <button
+                type="button"
+                onClick={back.onDismiss}
+                aria-label="Stay in this tray"
+                className="rounded-r-full py-1 pr-2.5 pl-1 text-muted-foreground hover:text-foreground"
+              >
+                <X className="size-3.5" aria-hidden />
+              </button>
+            </Tip>
+          </div>
+        )}
       </div>
 
       {g && cropping && (

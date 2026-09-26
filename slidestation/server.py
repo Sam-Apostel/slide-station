@@ -1596,14 +1596,14 @@ def people_remove(pid: str, body: dict = Body(...)):
     return _people_edit(people.remove_faces, pid, [str(x) for x in body.get("faces", [])])
 
 
-@app.post("/api/people/tag")
-def people_tag():
-    """Send the names to Immich as tags (People/<name>) on every slide already uploaded."""
+@app.post("/api/people/sync")
+def people_sync():
+    """Line our people up with Immich's on every slide already uploaded, names going both ways."""
     cfg = load_config()
     if not cfg.get("immich_url") or not cfg.get("immich_key"):
         return _err(RuntimeError("Set your Immich URL and API key in Settings first."))
     try:
-        wf.start_job("tag", None, wf.tag_people)
+        wf.start_job("people", None, wf.sync_people)
     except RuntimeError as e:
         return _err(e, 409)
     return {"ok": True}

@@ -39,8 +39,6 @@ import {
   removeFaces,
   rename,
   similarityTransform,
-  slideNames,
-  tagName,
   warpAffine,
   type PeopleFile,
 } from "./people";
@@ -269,8 +267,6 @@ describe("people, as people.py", () => {
       }
       expect(d).toEqual(s.out);
     }
-    expect(Object.fromEntries(slideNames(d))).toEqual(f.names);
-    expect(["Ann", "A/B", " C "].map(tagName)).toEqual(f.tag);
   });
 
   it("alignCrop: the similarity transform and the warp to 112 × 112", () => {

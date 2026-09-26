@@ -33,6 +33,8 @@ import { cn } from "@/lib/utils";
 
 type Tab = "people" | "places";
 type Nav = { tab: Tab; person?: string; place?: string };
+/** Where a slide was opened from: the tray view offers the way back to it (App.tsx). */
+export type PeopleSpot = { nav: Nav; label: string; scroll: number };
 type Sort = "name" | "slides" | "birthday";
 const LIST = 200; // sidebar rows before "show more"
 const slideId = (s: { sid: string; gid: string }) => `${s.sid}/${s.gid}`;
@@ -42,6 +44,7 @@ const placeKey = (p: Place) => `${p.name ?? ""}@${p.lat.toFixed(3)},${p.lon.toFi
 export function PeoplePlaces({
   job,
   initialTab = "people",
+  from,
   onClose,
   onSettings,
   onOpenSlide,
@@ -50,16 +53,18 @@ export function PeoplePlaces({
   /** The running job: people reload when a face search finishes. */
   job: Job | null;
   initialTab?: Tab;
+  /** Open on this page again, scrolled as it was left. */
+  from?: PeopleSpot;
   onClose: () => void;
   onSettings: () => void;
-  /** Go to a slide (closes the view). */
-  onOpenSlide: (sid: string, gid: string) => void;
+  /** Go to a slide (closes the view), remembering the page it was opened from. */
+  onOpenSlide: (sid: string, gid: string, from: PeopleSpot) => void;
   /** Slides of these trays got a place here: the open tray reloads. */
   onPlaced: (sids: string[]) => void;
 }) {
   const [data, setData] = React.useState<PeoplePayload | null>(null);
   const [atlas, setAtlas] = React.useState<AtlasPayload | null>(null);
-  const [nav, setNav] = React.useState<Nav>({ tab: initialTab });
+  const [nav, setNav] = React.useState<Nav>(from?.nav ?? { tab: initialTab });
   const [page, setPage] = React.useState<PersonPage | null>(null);
   const [picked, setPicked] = React.useState<Set<string>>(new Set()); // slides, "sid/gid"
   const [placing, setPlacing] = React.useState(false);
@@ -176,9 +181,21 @@ export function PeoplePlaces({
     [atlas],
   );
   const open = (sid: string, gid: string) => {
+    const label = nav.person
+      ? personLabel(page ?? { id: nav.person })
+      : (allPlaces.find((p) => p.id === nav.place)?.name ?? "People & Places");
+    const scroll = document.querySelector("[data-ss-atlas] [data-ss-scroll]")?.scrollTop ?? 0;
     onClose();
-    onOpenSlide(sid, gid);
+    onOpenSlide(sid, gid, { nav, label, scroll });
   };
+  // back from a slide: scrolled to where it was opened, once the page is there to scroll
+  const restore = React.useRef(from?.scroll ?? 0);
+  React.useLayoutEffect(() => {
+    const el = restore.current && document.querySelector("[data-ss-atlas] [data-ss-scroll]");
+    if (!el || el.scrollHeight <= el.clientHeight) return;
+    el.scrollTop = restore.current;
+    restore.current = 0;
+  });
   const selection = {
     picked,
     toggle: (id: string) =>
@@ -245,7 +262,7 @@ export function PeoplePlaces({
         onPerson={(pid) => setNav({ tab: "people", person: pid })}
         onSettings={onSettings}
         onFind={() => start("/api/people/scan", "Looking for faces on every slide")}
-        onTag={() => start("/api/people/tag", "Sending the names to Immich")}
+        onSync={() => start("/api/people/sync", "Syncing people with Immich")}
       />
     );
   }
@@ -476,7 +493,7 @@ function PeopleOverview({
   onPerson,
   onSettings,
   onFind,
-  onTag,
+  onSync,
 }: {
   data: PeoplePayload | null;
   searching: boolean;
@@ -484,7 +501,7 @@ function PeopleOverview({
   onPerson: (pid: string) => void;
   onSettings: () => void;
   onFind: () => void;
-  onTag: () => void;
+  onSync: () => void;
 }) {
   if (!data) return <Loading />;
   const named = data.people.filter((p) => p.name);
@@ -495,14 +512,15 @@ function PeopleOverview({
         <div className="min-w-0 flex-1">
           <h1 className="text-[15px] font-medium">People</h1>
           <p className="mt-0.5 max-w-[640px] text-[12px] text-muted-foreground">
-            Faces on your slides, grouped by likeness across every tray. Name someone once — Immich gets the names as
-            tags (People/&lt;name&gt;). A birthday lets the ages on their faces date the slides they're on.
+            Faces on your slides, grouped by likeness across every tray. Name someone once — syncing puts them on
+            Immich's People page, and names you gave there come back here. A birthday lets the ages on their faces
+            date the slides they're on.
           </p>
         </div>
-        {data.enabled && named.length > 0 && (
-          <Tip label="Tags the slides already in Immich with the names on them">
-            <Button variant="outline" size="sm" onClick={onTag}>
-              Send names to Immich
+        {data.enabled && data.people.length > 0 && (
+          <Tip label="Names the faces on the slides already in Immich, and brings names given in Immich back here">
+            <Button variant="outline" size="sm" onClick={onSync}>
+              Sync with Immich
             </Button>
           </Tip>
         )}
@@ -903,7 +921,7 @@ function PersonView({
           onUnplace={onUnplace}
           unplaced={unplaced}
         />
-        <div className="min-h-0 flex-1 overflow-y-auto px-6 pb-6">
+        <div data-ss-scroll className="min-h-0 flex-1 overflow-y-auto px-6 pb-6">
           {at && (
             <p className="pt-3 text-[12px] text-muted-foreground">
               At {mine.find((p) => p.id === at)?.name}{" "}
@@ -1060,7 +1078,10 @@ function PlaceView({
           )}
         </header>
         <PlaceBar selection={selection} placing={placing} onPlacing={onPlacing} onUnplace={onUnplace} unplaced={[]} />
-        <ul className="grid min-h-0 flex-1 auto-rows-min grid-cols-[repeat(auto-fill,minmax(168px,1fr))] gap-3 overflow-y-auto px-6 py-4">
+        <ul
+          data-ss-scroll
+          className="grid min-h-0 flex-1 auto-rows-min grid-cols-[repeat(auto-fill,minmax(168px,1fr))] gap-3 overflow-y-auto px-6 py-4"
+        >
           {place.slides.map((s) => (
             <SlideCard
               key={slideId(s)}

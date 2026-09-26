@@ -121,19 +121,10 @@ def test_people_across_a_tray(api, tmp_path, faces_on, immich_db, monkeypatch):
     r = api.get(ann["faces"][0]["url"])
     assert r.status_code == 200 and r.headers["content-type"] == "image/jpeg"
 
-    # name them; Bob's slides and Ann's go to Immich as People/<name> tags
+    # name them
     out = api.patch(f"/api/people/{ann['id']}", json={"name": "  Ann  Smith "}).json()
     assert out["people"][0]["name"] == "Ann Smith"
     api.patch(f"/api/people/{bob['id']}", json={"name": "Bob/Robert"})
-    api.post(f"/api/sessions/{sid}/finish", json={})
-    job = wait_job(api)
-    assert "3 tagged with the people on them" in job["message"], job["message"]
-    s = Session(sid)
-    asset = {g["id"]: g["immich"]["asset_id"] for g in s.data["groups"]}
-    tags = immich_db["tags"]
-    assert tags["People/Ann Smith"]["assets"] == sorted([asset[gids[0]], asset[gids[1]]])
-    assert tags["People/Bob-Robert"]["assets"] == sorted([asset[gids[1]], asset[gids[2]]])
-    assert tags["People/Ann Smith"]["parentId"] == tags["People"]["id"]
 
     # a face that isn't Ann: out, and it doesn't come back to her
     wrong = f"{sid}/{gids[1]}/0"
@@ -213,18 +204,80 @@ def test_scan_job_and_old_immich(api, tmp_path, faces_on, immich_db, monkeypatch
     ann = next(p for p in out["people"] if any(f["id"].startswith(sid) for f in p["faces"]))
     api.patch(f"/api/people/{ann['id']}", json={"name": "Ann"})
 
-    # a server without the tags API: uploads work, names are skipped
-    monkeypatch.setattr(fake_immich, "TAGS", False)
+    assert api.get("/api/people").json()["people"][0]["name"] == "Ann"
+
+
+def test_sync_with_immich(api, tmp_path, faces_on, immich_db, monkeypatch):
+    """Our people onto Immich's People page and Immich's names back, face by face."""
+    # slides 1-4: Ann; Ann and Bob; Bob and Ann; Ann
+    faces_on += [[face(ANN)], [face(ANN), face(BOB, 0.6)], [face(BOB, 0.6), face(ANN)], [face(ANN)]]
+    sid, d = tray_without_helper(api, tmp_path, monkeypatch)
+    gids = [g["id"] for g in d["groups"]]
+    ann = next(p for p in api.get("/api/people").json()["people"] if p["faces"][0]["id"] == f"{sid}/{gids[0]}/0")
+    api.patch(f"/api/people/{ann['id']}", json={"name": "Ann Smith"})
     api.post(f"/api/sessions/{sid}/finish", json={})
-    job = wait_job(api)
-    assert "4 slides uploaded" in job["message"] and "tagged" not in job["message"]
-    # and "send names" afterwards, once it has tags
-    monkeypatch.setattr(fake_immich, "TAGS", True)
-    immich_db["tags"] = {}
-    assert api.post("/api/people/tag").json() == {"ok": True}
-    assert "Tagged" in wait_job(api)["message"]  # (every uploaded tray: the scan saw Ann everywhere)
-    mine = [g["immich"]["asset_id"] for g in Session(sid).data["groups"]]
-    assert set(mine) <= set(immich_db["tags"]["People/Ann"]["assets"])
+    wait_job(api)
+    s = Session(sid)
+    asset = [g["immich"]["asset_id"] for g in s.data["groups"]]
+    # where our faces are on the uploaded slides, and Immich's own faces there (a little off, as its detector is)
+    at = {fid: [v + 0.01 for v in box] for g in s.data["groups"] for fid, box in wf.uploaded_faces(s, g)}
+    face_of = lambda i, n: at[f"{sid}/{gids[i]}/{n}"]  # noqa: E731
+    fi = fake_immich
+    same_name = fi.add_person("ann smith")  # typed in Immich, in other letters
+    lumped = fi.add_person()  # Immich's unnamed group of Ann, on two slides
+    robert = fi.add_person("Robert", "1950-02-03")
+    fi.add_face(asset[0], face_of(0, 0), lumped)
+    fi.add_face(asset[1], face_of(1, 0), lumped)
+    fi.add_face(asset[1], face_of(1, 1), robert)
+    fi.add_face(asset[2], face_of(2, 0), robert)  # (Ann on slide 3: Immich didn't find her)
+    loose = fi.add_face(asset[3], face_of(3, 0))  # found, not grouped
+    elsewhere = fi.add_face(fi.add_asset(b"another photo"), [0.1, 0.1, 0.3, 0.3], lumped)  # not a slide
+    # names as tags, as earlier versions sent them
+    fi.DB["tags"]["People/Ann Smith"] = {"id": "t-ann", "name": "Ann Smith", "value": "People/Ann Smith",
+                                         "parentId": "t-people", "assets": [asset[0], asset[1]]}
+    fi.DB["tags"]["People"] = {"id": "t-people", "name": "People", "value": "People", "parentId": None, "assets": []}
+
+    assert api.post("/api/people/sync").json() == {"ok": True}
+    msg = wait_job(api)["message"]
+    assert "named 1 here from Immich (Robert)" in msg and "1 unnamed Immich people merged in" in msg, msg
+    assert "2 faces given their names (1 Immich hadn't found)" in msg and "the People tags taken off" in msg, msg
+    assert "1 birthdays shared" in msg and "left alone" not in msg, msg
+    ppl, faces = fi.DB["people"], fi.DB["faces"]
+    assert sorted((p["name"], p["birthDate"]) for p in ppl.values()) == [("Robert", "1950-02-03"), ("ann smith", None)]
+    on_ann = [f for f in faces.values() if f["personId"] == same_name]
+    assert sorted(f["assetId"] for f in on_ann if f["assetId"] in asset) == sorted([asset[0], asset[1], asset[2], asset[3]])
+    assert faces[loose]["personId"] == same_name and faces[elsewhere]["personId"] == same_name  # merged whole
+    manual = next(f for f in on_ann if f["sourceType"] == "manual")
+    assert manual["assetId"] == asset[2] and people_named(api) == {"Ann Smith": 4, "Robert": 2}
+    assert not [t for t in fi.DB["tags"] if t.startswith("People")]
+    bob = next(p for p in people.load_people()["people"].values() if p["name"] == "Robert")
+    assert bob["birthday"] == "1950-02-03" and bob["immich"] == {"id": robert, "name": "Robert"}
+
+    # again: nothing to do
+    api.post("/api/people/sync")
+    assert wait_job(api)["message"] == "People in Immich are up to date"
+
+    # Immich's detection finds the face added by hand after all: that face takes over, the double goes
+    found = fi.add_face(asset[2], [v - 0.005 for v in face_of(2, 1)])
+    # renamed here: Immich follows; renamed there: we follow
+    api.patch(f"/api/people/{ann['id']}", json={"name": "Ann Jones"})
+    ppl[robert]["name"] = "Bob"
+    api.post("/api/people/sync")
+    msg = wait_job(api)["message"]
+    assert "named 1 here from Immich (Bob)" in msg and "1 doubled faces removed" in msg, msg
+    assert manual["id"] not in faces and faces[found]["personId"] == same_name
+    assert ppl[same_name]["name"] == "Ann Jones" and people_named(api) == {"Ann Jones": 4, "Bob": 2}
+
+    # renamed on both sides: left alone and listed
+    api.patch(f"/api/people/{ann['id']}", json={"name": "Annie"})
+    ppl[same_name]["name"] = "Anna"
+    api.post("/api/people/sync")
+    assert "Named differently in Immich, left alone: Annie is Anna there" in wait_job(api)["message"]
+    assert ppl[same_name]["name"] == "Anna" and "Annie" in people_named(api)
+
+
+def people_named(api) -> dict[str, int]:
+    return {p["name"]: len(p["faces"]) for p in api.get("/api/people").json()["people"] if p["name"]}
 
 
 def test_model_download_is_checked(monkeypatch, tmp_path):

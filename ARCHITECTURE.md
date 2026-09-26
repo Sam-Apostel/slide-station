@@ -778,8 +778,7 @@ faces (`findFaces`), as `workflow._render_next` does.
   and OpenCV 5's float bilinear `warpAffine` (a level off on a few pixels) — then SFace (fp32) and a
   unit vector. `faces.json`, face ids kept across re-finds (`recordFaces`), `agglomerate` and
   `refresh` / `rename` / `merge` / `removeFaces` / `slideNames` as people.py, the People dialog and
-  routes (`/api/people…`, face crops through `image()`), names as `People/<name>` tags on upload
-  (`Immich.tagAssets`) and with "Send names to Immich". Faces are found during import (each slide as
+  routes (`/api/people…`, face crops through `image()`), and "Sync with Immich" as immich_people.py. Faces are found during import (each slide as
   it is committed), in the background and by "Find faces".
 - **Captions stay desktop-only**: 276 MB in every browser's storage, and Florence's vision encoder
   alone takes ~3 s a slide on two native threads (§5b); single-threaded WebAssembly (threads need a
@@ -802,7 +801,7 @@ faces (`findFaces`), as `workflow._render_next` does.
   and 31 signs give identical results.
 - People: 40 LFW photos (Hugging Face) on grey cards: the same 48 faces, boxes within 1e-4, SFace
   embeddings at cosine 1.0000, and the same 26 clusters; ~0.27 s a photo. In the app with the real
-  SFace: 16 photos imported with faces, named in the People dialog, `People/<name>` on 8 assets.
+  SFace: 16 photos imported with faces, named in the People dialog.
 
 **Tests.** `frontend/src/standalone/insights.test.ts` against `insights.fixture.json`, written by
 `tests/make_insights_fixture.py` (Python's own code on planted inputs: tokenizer, resize,
@@ -1370,7 +1369,8 @@ Opt-in (`people_enabled`, Settings → "Recognise people"), desktop / server app
   pairwise similarity of two groups is `sum_a · sum_b / (n_a n_b)`, so groups are just running
   sums). Existing people keep their faces and never merge with each other automatically (that's the
   user's call); new faces join them or form new people. `people.json` = `{"people": {pid: {"name",
-  "faces"}}, "rejected": {face: [pids]}, "next"}`. Unnamed people left without faces disappear; named
+  "faces", "birthday"?, "immich"?}}, "rejected": {face: [pids]}, "next"}`; `immich` = `{"id", "name"}`,
+  the Immich person last synced with and the name both had then (a merge keeps it). Unnamed people left without faces disappear; named
   ones stay.
 - **Editing** (People dialog, `components/people.tsx`): `PATCH /api/people/{pid}` names (a name
   another person already has merges the two), `POST …/{pid}/merge {"people": [...]}`,
@@ -1387,21 +1387,36 @@ Opt-in (`people_enabled`, Settings → "Recognise people"), desktop / server app
   its person and is `sure` there (`people[pid].sure`: the age check never doubts it); "new" with a
   name someone has is them. Only while people are on (`people_enabled`); not ported to the browser
   version (its payload has no `faces`).
-- **Immich:** it has no API to attach faces or people to an uploaded asset that works across
-  versions, so names go as **tags** `People/<name>` (`/` in a name becomes `-`):
-  `Immich.tag_assets(values, asset_ids)` upserts the tags (`PUT /api/tags`, hierarchical values,
-  answers the leaf tags) and tags assets (`PUT /api/tags/assets`); a server without the tags API
-  (404/405) is skipped, a key without `tag.create` / `tag.asset` gives a readable error. The upload
-  job tags what it just uploaded (a failure is reported in the job message, the upload still
-  succeeds); "Send names to Immich" (`POST /api/people/tag`, job `tag`) tags every slide already
-  there, e.g. after naming someone. Names are only ever added: removing a face doesn't untag.
-  `tag_assets` is deliberately generic so other tag sources (scene tags) can share it.
+- **Immich** (`immich_people.py`, "Sync with Immich" = `POST /api/people/sync`, job `people`): Immich
+  finds and groups faces on the uploaded slides itself; the sync lines the two up rather than
+  replacing either. Our boxes are on the turned scan, the upload is the developed slide, so
+  `imaging.developed_boxes` takes them through develop()'s trim, straighten (`straightened_point`,
+  shared with `mount_crop`) and crop; `match` pairs them with Immich's faces (`GET /faces?id=`,
+  pixels of `imageWidth` × `imageHeight`) by overlap, IoU ≥ 0.3, detected faces before manual ones.
+  On a real library 292 of 313 faces paired at IoU ≥ 0.5 (median 0.86); the rest Immich hadn't found.
+  Then, in order: names come back (a name changed in Immich since the last sync; an unnamed person
+  whose named Immich faces are ≥ 2 and ≥ ⅔ one name — `rename`, so they join our person of that
+  name); each named person gets an Immich person (the linked one, renamed if we renamed; else the one
+  of the same name, case aside; else an unnamed one holding only their slide faces; else
+  `POST /people`); other unnamed Immich people holding only their faces (≥ 2) are merged in whole
+  (`POST /people/merge`, v3.2.1+, else `POST /people/{id}/merge`), which brings their faces on
+  non-slide photos along; the remaining paired faces move one by one (`PUT /faces/{person}` with
+  `{"id": face}`); faces Immich didn't find are created (`POST /faces`, v1.127+, `sourceType`
+  "manual", which Immich's re-detection keeps) unless the asset has no faces and was uploaded in
+  the last hour (its face detection may be pending; job queues need an admin key); a manual face
+  lying on a detected one is deleted. Birthdays fill the empty side (a year or year-month here agrees
+  with any date in it). A name or birthday that differs on both sides, a face on a differently named
+  Immich person, or a person whose faces Immich mostly has under another name: left alone, listed in
+  the job message. Last, the `People/<name>` tags earlier versions sent come off our slides (and
+  empty ones are deleted). Uploading no longer sends names: Immich hasn't looked at a fresh upload.
 - **Browser version:** ported (§4c "Suggestion models in the browser"): the same faces.json and
   people.json. **Not ported:** the native app (Apple's Vision framework is the route there).
 - **Tests:** `tests/test_people.py` — clustering on synthetic vectors (identities, the threshold,
   fixed people, rejected faces) and the API with `embed_faces` replaced (faces per slide, ids kept
-  after turning, merged slides forgotten, naming / merging / removing, tags on upload incl. a server
-  without tags, the scan job, the model checksum). The real model was run once on 48 LFW photos of
+  after turning, merged slides forgotten, naming / merging / removing, the scan job, the model checksum) and
+  `test_sync_with_immich` against tests/fake_immich.py's people and faces (linking by name, merging
+  an unnamed group, a name coming back, a face added by hand and its double removed later, renames
+  either way, a rename on both sides left alone, the old tags removed). The real model was run once on 48 LFW photos of
   six people (Hugging Face, scratch only) imported as a tray: 52 faces, one clean cluster of 6–8
   faces per person, 6 faces on their own (mostly people in the background) and one two-face cluster
   mixing two of those.

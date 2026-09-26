@@ -23,7 +23,7 @@ from PIL import Image
 from . import imaging as im
 from .imaging import Params
 from . import filmstock, learning
-from . import people
+from . import immich_people, people
 from . import places
 from . import raw
 from . import tether
@@ -872,36 +872,39 @@ def scan_people(job: Job) -> None:
     job.message = f"Looked for faces on {len(todo)} slides: {len(d['people'])} people ({named} named)"
 
 
-def _tag_people(client: Immich, sid: str, slides: dict[str, str], names: dict) -> tuple[int, str]:
-    """Named people as Immich tags (People/<name>) on uploaded slides. (assets tagged, problem)"""
-    try:
-        return people.tag_uploaded(client, slides, names, sid), ""
-    except ImmichError as e:
-        return 0, str(e)
+def uploaded_faces(s: Session, g: dict) -> list[tuple[str, list[float]]]:
+    """A slide's faces as boxes [x1, y1, x2, y2] in 0..1 of the uploaded (developed) slide."""
+    entry = people.load_faces(s.id).get(g["id"]) or {}
+    if not entry.get("faces") or people.stale(g, entry):
+        return []
+    a = im.orient(fused_proxy(s, g), g["rotation"], g.get("mirror", False))
+    boxes = im.developed_boxes(a, Params.from_dict(g["params"]), [f["box"] for f in entry["faces"]])
+    return [(f["id"], b) for f, b in zip(entry["faces"], boxes)]
 
 
-def tag_people(job: Job) -> None:
-    """Put the names of the people on every slide already in Immich as tags."""
+def sync_people(job: Job) -> None:
+    """Our people as Immich people on every slide already uploaded, and Immich's names back here."""
     cfg = load_config()
-    names = people.slide_names(people.refresh())
+    people.refresh()
     client = Immich(cfg["immich_url"], cfg["immich_key"])
     try:
         job.message = f"Connecting to Immich {client.version()}"
-        sids = sorted({sid for sid, _ in names})
-        job.total, tagged = len(sids), 0
-        for sid in sids:
+        slides = []
+        for x in Session.list_all():
             try:
-                s = Session(sid)
-            except FileNotFoundError:
+                s = Session(x["id"])
+            except (FileNotFoundError, ValueError):
                 continue
-            slides = {g["id"]: g["immich"]["asset_id"] for g in s.data["groups"] if g.get("immich") and not g.get("skip")}
-            n, problem = _tag_people(client, sid, slides, names)
-            if problem:
-                raise RuntimeError(problem)
-            tagged += n
-            job.done += 1
-        job.message = f"Tagged {tagged} slides in Immich with the people on them" if client.tags_supported is not False \
-            else "This Immich server has no tags API: names were not sent"
+            for g in s.data["groups"]:
+                if g.get("immich") and not g.get("skip"):
+                    slides.append(immich_people.Slide(s.id, g["id"], g["immich"]["asset_id"], uploaded_faces(s, g)))
+
+        def progress(msg, done=None, total=None):
+            job.message = msg
+            if total is not None:
+                job.done, job.total = done, total
+
+        job.message = immich_people.sync(client, slides, progress).message()
     finally:
         client.close()
 
@@ -1168,9 +1171,6 @@ def finish_session(job: Job, sid: str, only_ready: bool = False) -> None:
                 tag_note = f"; tags not sent ({e})"
         job.message = "Putting the tray in its album"
         place_note = _place_tray(client, cfg, sid, album)
-        people_tagged, problem = 0, ""
-        if cfg.get("people_enabled") and sent:  # named people go along as tags (People/<name>)
-            people_tagged, problem = _tag_people(client, sid, sent, people.slide_names(people.refresh()))
         look_note = ""
         if cfg.get("lookalike_enabled") and sent:  # photos in Immich that look like what just went up
             look_note = _lookalikes_quietly(client, sid, list(sent), job)
@@ -1184,9 +1184,7 @@ def finish_session(job: Job, sid: str, only_ready: bool = False) -> None:
             f"; {duplicates} were in Immich already, not sent again" if duplicates else "") + (
             "; original scans not stacked: this Immich has no stacks, or the API key lacks stack.read / "
             "stack.create" if want_originals and uploaded and stacks and not stacks[0] else "") + (
-            f"; {len(lost)} skipped: their original scans were deleted after the last upload" if lost else "") + tag_note + (
-            f"; {people_tagged} tagged with the people on them" if people_tagged else "") + (
-            f"; names not sent: {problem}" if problem else "") + look_note + place_note
+            f"; {len(lost)} skipped: their original scans were deleted after the last upload" if lost else "") + tag_note + look_note + place_note
     finally:
         client.close()
 

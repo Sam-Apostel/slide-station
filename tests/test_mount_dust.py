@@ -137,6 +137,26 @@ def test_dust_leaves_detail_alone():
     assert np.abs(im.repair_dust(a, 1.0) - a).mean() < 1e-4
 
 
+@pytest.mark.parametrize("amount", [0.01, 0.3, 1.0])
+def test_dust_leaves_thin_picture_detail_alone(amount):
+    """Thin, contrasty picture detail — posts, letters, a roof's edge — isn't dust at any setting,
+    though it's what an opening takes away first: a little dust repair used to remove it and
+    nothing else."""
+    h, w = 1067, 1600
+    a = smooth(w, h)
+    a[200:600, 400:405] = 0.05  # a window post
+    a[700:705, 200:1400] = 0.95  # a long highlight along an edge
+    if amount < 0.1:  # a little dust repair leaves even a hairline alone
+        a[800:802, 200:1400] = 0.95
+    for i in range(8):  # a word: strokes a few px thick, close together
+        x = 900 + i * 14
+        a[300:320, x : x + 4] = 0.05
+        a[300:304, x : x + 10] = 0.05
+    assert np.abs(im.repair_dust(a, amount) - a).max() < 1e-6
+    d = dirty(a)
+    assert np.abs(im.repair_dust(d, amount) - a)[200:320, 400:1020].max(-1).mean() < 0.02
+
+
 def test_dust_off_is_a_no_op():
     a = dirty(smooth(400, 300))
     assert im.repair_dust(a, 0) is a

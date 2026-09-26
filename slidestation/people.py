@@ -324,10 +324,12 @@ def people_file() -> Path:
 
 
 def load_people() -> dict:
-    """{"people": {pid: {"name", "faces": [face ids], "birthday"?, "sure"?: [face ids]}}, "rejected": {face id: [pids]},
-    "next": int, "ages_off": [face ids]}. `sure`: faces the user put with them by hand (the age check never
-    doubts those). `ages_off`: faces the user said are who they're with although the age they look
-    doesn't fit (dating.suspects): the age model got those wrong, they date nothing."""
+    """{"people": {pid: {"name", "faces": [face ids], "birthday"?, "sure"?: [face ids], "immich"?}},
+    "rejected": {face id: [pids]}, "next": int, "ages_off": [face ids]}. `sure`: faces the user put with
+    them by hand (the age check never doubts those). `ages_off`: faces the user said are who they're
+    with although the age they look doesn't fit (dating.suspects): the age model got those wrong, they
+    date nothing. "immich": {"id", "name"}, the Immich person they were synced with and the name both
+    had then."""
     f = people_file()
     d = json.loads(f.read_text()) if f.exists() else {}
     return {"people": d.get("people", {}), "rejected": d.get("rejected", {}), "next": d.get("next", 1),
@@ -380,7 +382,7 @@ def refresh() -> dict:
         groups = agglomerate(emb, clusters, rejected)
         people = {}
         for p, g in zip(pids, groups):
-            if g or d["people"][p].get("name") or d["people"][p].get("birthday"):
+            if g or d["people"][p].get("name") or d["people"][p].get("birthday") or d["people"][p].get("immich"):
                 people[p] = {**d["people"][p], "faces": [ids[i] for i in g]}
                 if "sure" in people[p]:
                     people[p]["sure"] = [f for f in people[p]["sure"] if f in people[p]["faces"]]
@@ -458,6 +460,8 @@ def _merge(d: dict, into: str, others: list[str]) -> None:
         target["name"] = target.get("name") or gone.get("name", "")
         if not target.get("birthday") and gone.get("birthday"):
             target["birthday"] = gone["birthday"]
+        if not target.get("immich") and gone.get("immich"):
+            target["immich"] = gone["immich"]
         for f, ps in d["rejected"].items():
             d["rejected"][f] = sorted({into if x == p else x for x in ps})
 
@@ -533,37 +537,14 @@ def label(pid: str, p: dict) -> str:
     return p.get("name") or f"Person {pid.removeprefix('p')}"
 
 
-def tag_name(name: str) -> str:
-    """The Immich tag for a named person ("/" would nest tags, so it becomes "-")."""
-    return "People/" + name.replace("/", "-").strip()
+def set_links(links: dict[str, dict]) -> dict:
+    """Remember the Immich person each of these people was synced with: {pid: {"id", "name"}}."""
+    def fn(d):
+        for pid, link in links.items():
+            if pid in d["people"]:
+                d["people"][pid]["immich"] = link
 
-
-def slide_names(d: dict | None = None) -> dict[tuple[str, str], list[str]]:
-    """The named people on each slide: {(sid, gid): [names]}."""
-    d = d or load_people()
-    out: dict[tuple[str, str], list[str]] = {}
-    for p in d["people"].values():
-        if not p.get("name"):
-            continue
-        for f in p["faces"]:
-            sid, gid, _ = f.split("/")
-            names = out.setdefault((sid, gid), [])
-            if p["name"] not in names:
-                names.append(p["name"])
-    return out
-
-
-def tag_uploaded(client, slides: dict[str, list[str]], names: dict[tuple[str, str], list[str]], sid: str) -> int:
-    """Tag the uploaded slides {gid: asset id} of one tray with their people. Returns assets tagged."""
-    by_name: dict[str, list[str]] = {}
-    for gid, asset in slides.items():
-        for name in names.get((sid, gid), []):
-            by_name.setdefault(name, []).append(asset)
-    done = set()
-    for name, assets in sorted(by_name.items()):
-        if client.tag_assets([tag_name(name)], assets):
-            done.update(assets)
-    return len(done)
+    return _edit(fn)
 
 
 def face_crop(rgb: np.ndarray, box: list[float], size: int = 128) -> np.ndarray:
