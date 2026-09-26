@@ -554,20 +554,36 @@ def _box_count(m: np.ndarray, rad: int) -> tuple[np.ndarray, np.ndarray]:
     return cnt, (y1 - y0)[:, None] * (x1 - x0)[None, :]
 
 
+DUST_MARK = 0.05  # top-hat from which a pixel belongs to a mark (its whole extent, rim included)
+DUST_GRAIN = 0.03  # ... and from which it counts towards texture
+
+
 def dust_mask(a: np.ndarray, amount: float) -> tuple[np.ndarray, int]:
     """Dust specks and thin scratches: small bright or dark marks a morphological opening / closing
-    (a (2r + 1)² square, r scaled with the image) takes away — the top-hats — with more contrast
-    than `amount` asks for. Marks where more than a fifth of the neighbourhood responds are texture
-    (grass, grain, water), not dust, and stay. Grown by a pixel to catch each speck's soft rim.
+    (a (2r + 1)² square, r scaled with the image) takes away — the top-hats.
+
+    What is a mark doesn't depend on `amount`: 8-connected pixels with a top-hat over DUST_MARK.
+    A mark is dust when it is small — at most r (2 + 6 amount) across — or a scratch: longer, but
+    at most r min(1, 2 amount) wide on average, so a little dust repair leaves every line alone.
+    Anything else that thin is picture: letters, window posts, the edge of a roof. `amount` then asks how faint a mark may be (its strongest pixel's top-hat over
+    0.3 - 0.24 amount): a little takes only the plainest specks, more takes fainter and bigger
+    ones. Marks touching texture — where more than a fifth of the neighbourhood responds at all
+    (grass, leaves, faces, grain) — stay. Grown by a pixel to catch each speck's soft rim.
     Returns (mask, r)."""
     lum = a[..., 0] * np.float32(0.299) + a[..., 1] * np.float32(0.587) + a[..., 2] * np.float32(0.114)
     r = max(1, int(3 * max(lum.shape) / DUST_EDGE + 0.5))
     k = np.ones((2 * r + 1, 2 * r + 1), np.uint8)
     hat = np.maximum(lum - cv2.dilate(cv2.erode(lum, k), k), cv2.erode(cv2.dilate(lum, k), k) - lum)
-    m = hat > np.float32(0.25 - 0.19 * amount)
-    cnt, area = _box_count(m, 4 * r)
-    m &= cnt * 5 <= area
-    return cv2.dilate(m.astype(np.uint8), np.ones((3, 3), np.uint8)).astype(bool), r
+    cnt, area = _box_count(hat > np.float32(DUST_GRAIN), 4 * r)
+    n, labels, st, _ = cv2.connectedComponentsWithStats((hat > np.float32(DUST_MARK)).astype(np.uint8), connectivity=8)
+    ext = np.maximum(st[:, cv2.CC_STAT_WIDTH], st[:, cv2.CC_STAT_HEIGHT]).astype(np.int64)
+    size = st[:, cv2.CC_STAT_AREA].astype(np.int64)
+    strong, textured = np.zeros(n, bool), np.zeros(n, bool)
+    strong[labels[hat > np.float32(0.3 - 0.24 * amount)]] = True
+    textured[labels[cnt * 5 > area]] = True
+    keep = strong & ~textured & ((ext <= r * (2 + 6 * amount)) | (size <= r * ext * min(1.0, 2 * amount)))
+    keep[0] = False  # the background label
+    return cv2.dilate(keep[labels].astype(np.uint8), np.ones((3, 3), np.uint8)).astype(bool), r
 
 
 def repair_dust(a: np.ndarray, amount: float, inplace: bool = False) -> np.ndarray:

@@ -21,7 +21,7 @@ import { ReviewGrid } from "@/components/review-grid";
 import { DevelopLikeDialog, PresetsDialog } from "@/components/looks";
 import { PanelToggles, WindowTitlebar } from "@/components/window-titlebar";
 import { PropagateDialog, ReviewDialog, propagationOffer, type Offer } from "@/components/insights";
-import { PeoplePlaces } from "@/components/people";
+import { PeoplePlaces, type PeopleSpot } from "@/components/people";
 import { LOCAL_CLOSED, LocalOverlay, useLocalKeys, type LocalTool } from "@/components/local";
 import { useSlideStation, type SlideStation } from "@/hooks/use-slide-station";
 import { useDesktop, useFolderDrop, type DesktopHandlers } from "@/hooks/use-desktop";
@@ -110,6 +110,8 @@ function SlideStationApp() {
   const openSettings = (pane?: SettingsPane) => (setSettingsPane(pane), setSettingsOpen(true));
   const [helpOpen, setHelpOpen] = React.useState(false);
   const [peopleOpen, setPeopleOpen] = React.useState(false);
+  // the People & Places page a slide was opened from, to go back to (else it opens on the overview)
+  const [peopleFrom, setPeopleFrom] = React.useState<PeopleSpot | null>(null);
   const [paletteOpen, setPaletteOpen] = React.useState(false);
   const [dateRangeOpen, setDateRangeOpen] = React.useState(false);
   const [immichOpen, setImmichOpen] = React.useState(false);
@@ -292,7 +294,10 @@ function SlideStationApp() {
   };
 
   // People & Places (a view in place of the tray): the places need no model, so it's always there
-  const onPeople = state ? () => setPeopleOpen((v) => !v) : undefined;
+  const onPeople = state ? () => (setPeopleFrom(null), setPeopleOpen((v) => !v)) : undefined;
+  const backToPeople = peopleFrom
+    ? { label: peopleFrom.label, onBack: () => setPeopleOpen(true), onDismiss: () => setPeopleFrom(null) }
+    : undefined;
 
   const handlers: DesktopHandlers = {
     settings: () => openSettings(),
@@ -415,9 +420,11 @@ function SlideStationApp() {
         {state && peopleOpen ? (
           <PeoplePlaces
             job={state.job ?? null}
-            onClose={() => setPeopleOpen(false)}
+            from={peopleFrom ?? undefined}
+            onClose={() => (setPeopleOpen(false), setPeopleFrom(null))}
             onSettings={() => openSettings("smart")}
-            onOpenSlide={(sid, gid) => {
+            onOpenSlide={(sid, gid, from) => {
+              setPeopleFrom(from);
               setGrid(false);
               app.openSlide(sid, gid);
             }}
@@ -511,6 +518,7 @@ function SlideStationApp() {
                   loupe={loupe}
                   onLoupe={setLoupe}
                   onGrid={views.toggleGrid}
+                  back={backToPeople}
                 />
               )}
             </ResizablePanel>
