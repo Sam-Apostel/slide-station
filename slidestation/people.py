@@ -324,11 +324,16 @@ def people_file() -> Path:
 
 
 def load_people() -> dict:
-    """{"people": {pid: {"name", "faces": [face ids], "birthday"?, "immich"?}}, "rejected": {face id: [pids]},
-    "next": int}. "immich": {"id", "name"}, the Immich person they were synced with and the name both had then."""
+    """{"people": {pid: {"name", "faces": [face ids], "birthday"?, "sure"?: [face ids], "immich"?}},
+    "rejected": {face id: [pids]}, "next": int, "ages_off": [face ids]}. `sure`: faces the user put with
+    them by hand (the age check never doubts those). `ages_off`: faces the user said are who they're
+    with although the age they look doesn't fit (dating.suspects): the age model got those wrong, they
+    date nothing. "immich": {"id", "name"}, the Immich person they were synced with and the name both
+    had then."""
     f = people_file()
     d = json.loads(f.read_text()) if f.exists() else {}
-    return {"people": d.get("people", {}), "rejected": d.get("rejected", {}), "next": d.get("next", 1)}
+    return {"people": d.get("people", {}), "rejected": d.get("rejected", {}), "next": d.get("next", 1),
+            "ages_off": d.get("ages_off", [])}
 
 
 def save_people(d: dict) -> None:
@@ -379,11 +384,14 @@ def refresh() -> dict:
         for p, g in zip(pids, groups):
             if g or d["people"][p].get("name") or d["people"][p].get("birthday") or d["people"][p].get("immich"):
                 people[p] = {**d["people"][p], "faces": [ids[i] for i in g]}
+                if "sure" in people[p]:
+                    people[p]["sure"] = [f for f in people[p]["sure"] if f in people[p]["faces"]]
         for g in groups[len(pids):]:
             people[f"p{d['next']}"] = {"name": "", "faces": [ids[i] for i in g]}
             d["next"] += 1
         new = {"people": people, "next": d["next"],
-               "rejected": {f: [p for p in ps if p in people] for f, ps in d["rejected"].items() if f in index}}
+               "rejected": {f: [p for p in ps if p in people] for f, ps in d["rejected"].items() if f in index},
+               "ages_off": [f for f in d["ages_off"] if f in index]}
         if new != d:
             save_people(new)
         return new
@@ -447,6 +455,8 @@ def _merge(d: dict, into: str, others: list[str]) -> None:
             continue
         gone = d["people"].pop(p)
         target["faces"] += gone["faces"]
+        if gone.get("sure"):
+            target["sure"] = sorted(set(target.get("sure", [])) | set(gone["sure"]))
         target["name"] = target.get("name") or gone.get("name", "")
         if not target.get("birthday") and gone.get("birthday"):
             target["birthday"] = gone["birthday"]
@@ -470,9 +480,53 @@ def remove_faces(pid: str, face_ids: list[str]) -> dict:
     def fn(d):
         if pid not in d["people"]:
             raise KeyError(pid)
-        d["people"][pid]["faces"] = [f for f in d["people"][pid]["faces"] if f not in face_ids]
-        for f in face_ids:
-            d["rejected"][f] = sorted(set(d["rejected"].get(f, [])) | {pid})
+        _take_out(d, pid, face_ids)
+
+    return _edit(fn)
+
+
+def _take_out(d: dict, pid: str, face_ids: list[str]) -> None:
+    p = d["people"][pid]
+    p["faces"] = [f for f in p["faces"] if f not in face_ids]
+    if p.get("sure"):
+        p["sure"] = [f for f in p["sure"] if f not in face_ids]
+    for f in face_ids:
+        d["rejected"][f] = sorted(set(d["rejected"].get(f, [])) | {pid})
+
+
+def assign(face: str, to: str | None, name: str = "", age_off: bool = False) -> dict:
+    """Say who a face is: `to` = a person, "new" (someone not seen before, called `name`; a name
+    someone already has is them), or None (not the person it's with now, nobody in particular).
+    Whoever it was with is remembered as not it; the face is `sure` with its new person, so the age
+    check (dating.suspects) leaves it alone. The same person as now = "yes, it is them". `age_off`:
+    it is them although the age it looks doesn't fit - the age is wrong, it dates nothing."""
+    name = " ".join(str(name).split())[:80]
+
+    def fn(d):
+        now = next((p for p, v in d["people"].items() if face in v["faces"]), None)
+        target = to
+        if target == "new":
+            target = next((p for p, v in d["people"].items() if name and v.get("name", "").lower() == name.lower()), None)
+            if not target:
+                target = f"p{d['next']}"
+                d["next"] += 1
+                d["people"][target] = {"name": name, "faces": []}
+        elif target is not None and target not in d["people"]:
+            raise KeyError(target)
+        if now and now != target:
+            _take_out(d, now, [face])
+        off = set(d["ages_off"]) - {face}
+        d["ages_off"] = sorted(off | {face} if age_off and target == now else off)
+        if target:
+            p = d["people"][target]
+            if face not in p["faces"]:
+                p["faces"].append(face)
+            p["sure"] = sorted(set(p.get("sure", [])) | {face})
+            rej = [x for x in d["rejected"].get(face, []) if x != target]
+            if rej:
+                d["rejected"][face] = rej
+            else:
+                d["rejected"].pop(face, None)
 
     return _edit(fn)
 

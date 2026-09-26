@@ -41,6 +41,7 @@ import { LocalPanel, localNote, type LocalTool } from "@/components/local";
 import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select";
 import { InsightsPanel, StockField, SuggestionRow, TagsField, insightsNote } from "@/components/insights";
 import { PlaceField } from "@/components/place";
+import { SlidePeople, peopleNote } from "@/components/slide-people";
 import {
   BOX_SIZES,
   MOUNT_SUGGEST,
@@ -66,7 +67,7 @@ function rotationNote(rotation: number, reason: string) {
   return `${rotation}°`;
 }
 
-type SectionId = "rotation" | "curve" | "colour" | "local" | "details" | "insights" | "tray";
+type SectionId = "rotation" | "curve" | "colour" | "local" | "details" | "people" | "insights" | "tray";
 
 function storedSections(): Record<string, boolean> {
   try {
@@ -166,6 +167,8 @@ export function Inspector({
   onAccepted,
   onStockRange,
   insights,
+  face,
+  onFace,
 }: {
   app: SlideStation;
   session: SessionPayload;
@@ -206,6 +209,9 @@ export function Inspector({
     onReview: () => void;
     onSettings: () => void;
   };
+  /** The face picked or hovered in the People section (the stage outlines it). */
+  face: string | null;
+  onFace: (face: string | null) => void;
 }) {
   const { current: g, sel } = app;
   const sm = session.summary;
@@ -343,6 +349,12 @@ export function Inspector({
                 placesDownloading={placesDownloading}
               />
             </ProDisclosureGroup>
+
+            {!!g.faces?.length && (
+              <ProDisclosureGroup title="People" summary={peopleNote(g)} {...section("people")}>
+                <SlidePeople app={app} g={g} focus={face} onFocus={onFace} />
+              </ProDisclosureGroup>
+            )}
 
             {insights && (
               <ProDisclosureGroup title="Insights" summary={insightsNote(g, session)} {...section("insights")}>

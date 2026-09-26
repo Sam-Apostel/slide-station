@@ -13,6 +13,7 @@ import { Input } from "@/components/ui/input";
 import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select";
 import { Tip } from "@/components/tip";
 import { PreviewImg } from "@/components/filmstrip";
+import { oddText } from "@/components/slide-people";
 import { AtlasMap, placeAt, type MapPlace } from "@/components/atlas-map";
 import {
   api,
@@ -615,9 +616,9 @@ function AgesNote({ data, onSettings }: { data: PeoplePayload; onSettings: () =>
   else if (!a.model) text = "The age model is downloaded with the next face search.";
   else if (!birthdays) text = "Give someone a birthday and their slides get a suggested year (Details → Date).";
   else if (!a.calibrated)
-    text = `${plural(birthdays, "birthday")}. Date a few slides with them on it yourself and the ages get checked against those.`;
+    text = `${plural(birthdays, "birthday")}. Date a few slides (or their trays) with them on it and the ages get checked against those.`;
   else
-    text = `${plural(birthdays, "birthday")}. Ages checked against ${plural(a.calibrated, "face")} on slides you dated: within about ±${Math.round(a.sigma * 100)} %${
+    text = `${plural(birthdays, "birthday")}. Ages checked against ${plural(a.calibrated, "face")} on slides and trays you dated: within about ±${Math.round(a.sigma * 100)} %${
       Math.abs(a.bias) >= 0.02
         ? `, the model guessing ${a.bias < 0 ? "older" : "younger"} than people are by ~${Math.round(Math.abs(Math.expm1(a.bias)) * 100)} %`
         : ""
@@ -963,6 +964,13 @@ function PersonView({
                       </>,
                       s.place ? s.place.name : "No place",
                       `${s.tray} · ${s.index + 1}`,
+                      ...(s.odd
+                        ? [
+                            <span className="text-primary" title="Probably someone else: × if it isn't them">
+                              {oddText(personLabel(page), s.odd)}
+                            </span>,
+                          ]
+                        : []),
                     ]}
                   />
                 ))}

@@ -341,6 +341,7 @@ def _session_payload(s: Session) -> dict:
     st = statuses(d)
     # film stock and date guesses (no model, always on), the people's date guess where there is one
     live, ppl = dating.views(s.id, d, dates)
+    faces_on = bool(load_config().get("people_enabled"))
     for i, g in enumerate(d["groups"]):
         groups.append({
             **{k: g[k] for k in ("id", "scans", "excluded", "rotation", "rot_reason", "params", "skip")},
@@ -366,6 +367,9 @@ def _session_payload(s: Session) -> dict:
             # the named people on it (age: as it looks, corrected; None without the age model) and
             # the year they put it in [value, SD] (dating.py); None when nobody with a birthday is near
             "people": ppl[i]["people"],
+            # every face on it, left to right, with who it is (named or not) and whether its age says
+            # it's probably someone else (dating.slide_faces), for correcting who is who on the slide
+            "faces": ppl[i]["faces"] if faces_on else [],
             "people_year": ppl[i]["year"],
             "born_floor": ppl[i]["floor"],
             "active": active_scans(g),
@@ -1519,6 +1523,41 @@ def _people_edit(fn, *args):
         return _people_payload(fn(*args))
     except KeyError:
         raise HTTPException(404, "No such person (the list changed meanwhile?)")
+
+
+@app.get("/api/people/names")
+def people_names():
+    """Who a face on a slide can be (the slide view's picker): everyone named or with a birthday,
+    by name, with their clearest face."""
+    d = people.refresh()
+    faces = people.all_faces()
+    out = []
+    for pid, p in d["people"].items():
+        if not (p.get("name") or p.get("birthday")):
+            continue
+        fs = [f for f in p["faces"] if f in faces]
+        cover = max(fs, key=lambda f: faces[f].get("score", 0), default=None)
+        out.append({"id": pid, "name": p.get("name", ""), "label": people.label(pid, p),
+                    "cover": f"/api/people/faces/{cover}.jpg" if cover else None, "faces": len(fs)})
+    out.sort(key=lambda p: (not p["name"], p["label"].lower()))
+    return {"people": out}
+
+
+@app.post("/api/people/faces/assign")
+def people_assign(body: dict = Body(...)):
+    """Who the face `face` (id) is on its slide: `person` = an id, "new" (with `name`: someone new,
+    or the person who already has that name), or null (not whoever it's with now). Answers its
+    tray's payload, as the slide view shows it."""
+    face = str(body.get("face", ""))
+    to = body.get("person")
+    # "it is them" on a face marked as probably someone else: the age it looks is what's wrong
+    odd = dating.model()[2].get(face)
+    try:
+        people.assign(face, None if to is None else str(to), str(body.get("name", "")),
+                      age_off=bool(odd and odd["pid"] == to))
+    except KeyError:
+        raise HTTPException(404, "No such person (the list changed meanwhile?)")
+    return _session_payload(_session(face.split("/")[0]))
 
 
 @app.get("/api/people/{pid}")
