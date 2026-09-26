@@ -390,7 +390,7 @@ export type Config = {
   captions_enabled?: boolean;
   /** Faces → people (opt-in, downloads a face model). */
   people_enabled?: boolean;
-  /** The age each face looks, to date slides by birthdays (desktop app only; opt-in, a 329 MB model). */
+  /** The age each face looks, to date slides by birthdays (desktop app only; opt-in, a 118 MB model). */
   ages_enabled?: boolean;
   /** Look-alikes: prefer the shot where nobody blinked (opt-in, downloads a small face mesh model). */
   eyes_enabled?: boolean;

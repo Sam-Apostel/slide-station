@@ -1887,16 +1887,29 @@ on junk, via `people.clean_birthday`; can come with `name`) stores `people.json`
 `people[pid].birthday`; a birthday alone keeps an otherwise empty person (like a name), a merge
 keeps the first birthday.
 
-**Ages** (desktop / server app, opt-in `ages_enabled`, Settings under "Recognise people"): a ViT-B/16
-age regressor trained on UTKFace (0–116, so children, who date a slide best), ONNX from
-onnx-community at a pinned revision, 329 MB, checksummed and downloaded like SFace
-(`people._download`, generic now) by the face-search job when turned on. `people.estimate_ages(rgb,
-boxes)` (the function tests replace) crops each face like the People dialog does (`face_crop`, a
-square of 1.6× the box, 224 px), ImageNet mean / std, and keeps `faces.json` `faces[].age` (years,
-1 decimal). `record(…, ages=True)` ages new faces; faces found before (`people.unaged`) are aged in
-place by `add_ages` without detecting again (ids untouched) — `faces_pending` counts them, so the
-background helper and "Find faces" catch up. Checked by hand on two real photos: Lena (21 in the
-photo) 22–24, Messi (~23) 27–29 — it guesses adults older, which the calibration corrects.
+**Ages** (desktop / server app, opt-in `ages_enabled`, Settings under "Recognise people"): **MiVOLO v2**
+(Kuprashevich & Tolstykh, Apache-2.0), which reads the face *and* the body below it — a child's body
+says as much about their age as their face. Our ONNX export of its age output (opset 18, batch 1,
+input `faces_bodies` [1, 6, 384, 384]: face then body, each letterboxed to 384 px on black, RGB,
+ImageNet mean / std; output `age` [1, 1] years), 118 MB, hosted on the owner's Hugging Face
+(`Sam-Apostel/mivolo-v2-age-onnx`, a pinned commit; its model card says how it was exported),
+checksummed and downloaded like SFace (`people._download`) by the face-search job when turned on;
+the model it replaced (`OLD_AGE_NAMES`) is deleted then. `people.estimate_ages(rgb, boxes)` (the
+function tests replace) cuts `age_crops` — the face's box, and a body box 3 faces wide from 0.3
+above to 6.5 faces below it, clipped (MiVOLO's own pipeline finds bodies with YOLO; this is near
+enough) — and `age_input` prepares them as MiVOLO's image processor does (checked against PyTorch:
+≤ 0.01 y apart); ~0.1 s a face on a CPU. `faces.json` keeps `faces[].age` (years, 1 decimal) and,
+per slide, `ages_by` (`people.AGE_BY`): `record(…, ages=True)` ages new faces; faces found before,
+or aged by another model (`people.unaged`), are aged in place by `add_ages` without detecting again
+(ids untouched) — `faces_pending` counts them, so the background helper and "Find faces" catch up.
+
+Why MiVOLO: the ViT-B/16 trained on UTKFace it replaced (329 MB) was fed exactly as trained, but
+on the owner's slides — faded, grainy, children's faces 60–160 px across — it read everyone ~11
+years too old (a girl of 7 "looked" 63). On 20 faces of a tray labelled 1977 with birthdays (a
+holiday, checked by eye) it was off by 13.1 years on average and within 3 years for 15 %; MiVOLO:
+1.9 years, 85 % within 3. Levelling the eyes, the crop's margin, the developed look instead of the
+faded scan, full-resolution scans instead of the proxy, mirrored copies: none moved the old model
+by more than a year.
 
 **The date** (`dating.tray_view`, computed per payload; no file):
 - A face of someone with a birthday gives `born + age`. Ages are corrected by a **calibration on the
@@ -1952,7 +1965,10 @@ photo) 22–24, Messi (~23) 27–29 — it guesses adults older, which the calib
 - **Suggestion**: `{value: "YYYY", source: "people", confidence: 0.9 − 0.08 × SD (0.3..0.9), text:
   "Ann ≈ 30, Bob ≈ 7 (± 2 y)"}` for undated, not skipped slides with SD ≤ 8, lifted to
   `born_floor`, inside the film stock's era, and only when its year differs from the year the
-  slide already goes with. `dating.views` wraps `filmstock.views`: the people's guess replaces the
+  slide already goes with — and, where there is an estimate already (the ordinary one), only when
+  the people contradict it, or are surer than it *and* put the slide outside its range (more than its
+  SD away). A tray labelled 1977 whose children the model reads a year young was otherwise
+  "1976" on every slide; a toddler in it still dates their slide. `dating.views` wraps `filmstock.views`: the people's guess replaces the
   neighbours+stock one (it already includes that estimate) through `filmstock._merged`, which
   treats source `people` as a live guess like the stock ones; decide / review / "accept all" work
   unchanged. Nothing moves a slide's date or `meta_key` until accepted.
@@ -1962,7 +1978,7 @@ coordinates (3 decimals), with tray, index, own date, render key and the people 
 per place, area ∝ slides.
 
 **Browser version:** birthdays (`standalone/people.ts` `cleanBirthday` / `setBirthday`, the same
-people.json), the atlas and the person's page (`personPage`, no `looks`) are ported; ages are not (329 MB in every browser's storage, like
+people.json), the atlas and the person's page (`personPage`, no `looks`) are ported; ages are not (118 MB in every browser's storage, like
 captions), so the payload has no `people` / `people_year` there and nothing is dated by people.
 **Swift app:** not ported.
 

@@ -144,7 +144,7 @@ export function SettingsDialog({
     eyes_enabled: openEyes,
     ...(standalone ? {} : { captions_enabled: suggestCaptions }), // captions: the desktop app only
     people_enabled: people,
-    ...(standalone ? {} : { ages_enabled: ages }), // ages: the desktop app only (a 329 MB model)
+    ...(standalone ? {} : { ages_enabled: ages }), // ages: the desktop app only (a 118 MB model)
   };
   const saved = config && {
     immich_url: config.immich_url || "",
@@ -514,7 +514,7 @@ export function SettingsDialog({
                         checked={ages}
                         onChange={setAges}
                         title="Date slides by the ages of the people on them"
-                        badge={!config?.ages_enabled && <ModelBadge mb={329} />}
+                        badge={!config?.ages_enabled && <ModelBadge mb={118} />}
                         description="Estimates how old each face looks. With birthdays in People & Places, that suggests a year for undated slides — checked against the slides you dated yourself."
                       />
                     )}
