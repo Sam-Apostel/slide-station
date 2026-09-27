@@ -229,19 +229,26 @@ export function Inspector({
     <ProInspector className="size-full min-h-0 border-l border-border">
       <div className="min-h-0 flex-1 overflow-y-auto scrollbar-thin">
         {g?.locked && (
-          <div className="ss-locked" role="status">
+          <div className="ss-locked flex-wrap" role="status">
             <Lock className="size-4 shrink-0" aria-hidden />
             <div className="min-w-0 flex-1">
               <b>Locked — Immich has the final version</b>
               <span>The original scans were deleted after upload, so this slide can't be edited.</span>
             </div>
-            {onReimport && (
-              <Tip label="Import the scans again into this tray (the card or a folder) to edit it">
-                <ProButton onClick={onReimport}>
-                  <HardDriveDownload /> Re-import
+            <div className="flex basis-full flex-wrap gap-1.5 pl-[26px]">
+              <Tip label="Download it from Immich to edit it: its original scans if they're stacked there, otherwise the final version">
+                <ProButton disabled={busy} onClick={() => app.unlockFromImmich([g.id])}>
+                  <CloudDownload /> From Immich
                 </ProButton>
               </Tip>
-            )}
+              {onReimport && (
+                <Tip label="Import the scans again into this tray (the card or a folder) to edit it">
+                  <ProButton onClick={onReimport}>
+                    <HardDriveDownload /> Re-import
+                  </ProButton>
+                </Tip>
+              )}
+            </div>
           </div>
         )}
         {g && (
@@ -735,6 +742,12 @@ function SlideDetails({
       {g.from_immich && (
         <p className="text-[11px] text-muted-foreground">
           Pulled in from Immich: uploading it replaces that photo there (same albums, favourite kept).
+        </p>
+      )}
+      {g.from_final && (
+        <p className="text-[11px] text-muted-foreground">
+          Downloaded from Immich's final version (the original scans are gone): edits start from the photo
+          as it was uploaded, and uploading replaces it there.
         </p>
       )}
       {/* the browser version keeps a library's tags but can't send them yet: shown, not edited */}

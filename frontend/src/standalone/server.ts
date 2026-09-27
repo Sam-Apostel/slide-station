@@ -1487,7 +1487,8 @@ function localStep(prev: unknown[], next: unknown[]): string | null {
 
 const LOCKED =
   "This slide's original scans were deleted after it was uploaded, so it can't be edited " +
-  "(Immich has the final version). Re-import its scans into this tray to edit it again.";
+  "(Immich has the final version). Download it from Immich, or re-import its scans into this " +
+  "tray, to edit it again.";
 function editable(g: GroupData) {
   if (g.locked) throw new HttpError(409, LOCKED);
 }
@@ -1644,6 +1645,7 @@ async function payload(d: SessionData): Promise<SessionPayload> {
       auto_excluded: g.auto_excluded ?? {},
       locked: !!g.locked,
       from_immich: !!g.source_asset,
+      from_final: !!g.from_final,
       status: st[i],
       date: g.date ?? "",
       caption: g.caption ?? "",
@@ -2053,7 +2055,8 @@ export async function image(url: string, priority = 0): Promise<{ blob: Blob; fr
     const size = Math.min(Number(u.searchParams.get("size") || 1600), 2400);
     const before = u.searchParams.get("before") === "1";
     const uncropped = u.searchParams.get("uncropped") === "1";
-    const fresh = u.searchParams.get("v") === renderKey(g);
+    // a locked slide may show Immich's preview under the same key its own render has once unlocked
+    const fresh = u.searchParams.get("v") === renderKey(g) && !g.locked;
     if (g.locked && !before && g.immich && g.immich.key !== renderKey(g)) {
       const shown = await immichPreview(d, g);
       if (shown) return { blob: await ui.call("resize", { blob: shown, size }, priority), fresh };
@@ -2744,6 +2747,103 @@ async function pullIn(job: Job, sid: string, ids: string[]) {
     `Pulled in ${fresh.length} photos from Immich` +
     (skipped ? ` (${skipped} were in this tray already)` : "") +
     (unusable ? `; left out ${unusable} that aren't JPEG or PNG photos` : "");
+}
+
+/** A slide developed from its final version renders it as it is (develop's saturation starts at 1.1). */
+const AS_IS: Params = cleanParams({ strength: 0, trim: false, saturation: -0.1 });
+
+/**
+ * Make locked slides editable again from what Immich has (workflow.unlock_from_immich): their original
+ * scans where they're stacked in Immich (checked against the SHA-1 recorded at import), otherwise the
+ * uploaded photo itself as the slide's one scan, developed AS_IS, what it was developed from kept in
+ * `from_final`. Its render key is then Immich's, so it stays uploaded until edited.
+ */
+async function unlockFromImmich(job: Job, sid: string, gids: string[] | null) {
+  const client = immichClient();
+  const d0 = await loadSession(sid);
+  const todo = d0.groups.filter((g) => g.locked && g.immich?.asset_id && (!gids || gids.includes(g.id)));
+  job.total = todo.length;
+  job.message = `Downloading ${slidesWord(todo.length)} from Immich`;
+  let scansBack = 0;
+  let finals = 0;
+  let gone = 0;
+  for (const g of todo) {
+    job.done++;
+    const rec = g.immich!;
+    const lost: string[] = [];
+    for (const x of g.scans) if (d0.scans[x] && !(await lib.exists(originalPath(d0, x)))) lost.push(x);
+    const stacked = rec.originals ?? {};
+    const active = activeScans(g);
+    if (lost.every((x) => !active.includes(x) || x in stacked)) {
+      for (const x of lost) {
+        if (!(x in stacked)) continue; // a bracket left out of the blend that Immich doesn't have
+        const blob = await client.download(stacked[x]);
+        if ((await sha1Blob(blob)) !== d0.scans[x].sha1)
+          throw new Error(`The download of ${stacked[x]} from Immich did not verify - try again`);
+        await lib.write(originalPath(d0, x), blob);
+      }
+      scansBack++;
+      continue;
+    }
+    const aid = rec.asset_id;
+    const a = await client.asset(aid);
+    if (!a || a.isTrashed) {
+      gone++;
+      continue;
+    }
+    const blob = await client.download(aid);
+    const sha = await sha1Blob(blob);
+    const expected = b64Hex(a.checksum ?? "");
+    if (expected.length === 40 && expected !== sha) throw new Error(`The download of ${aid} from Immich did not verify - try again`);
+    const scanId = `final_${g.id}_${aid.replace(/-/g, "").slice(0, 6)}`;
+    const path = `${sessionDir(sid)}/originals/${scanId}.jpg`;
+    await lib.write(path, blob);
+    const record: Scan = {
+      file: `${scanId}.jpg`,
+      source: `immich:${aid}`,
+      source_root: "immich",
+      removable: false,
+      size: blob.size,
+      sha1: sha,
+      taken: d0.scans[active[0]]?.taken ?? "",
+      source_deleted: false,
+      immich_asset: aid,
+    };
+    const { r: done } = await update(sid, (f) => {
+      const fg = f.groups.find((x) => x.id === g.id);
+      if (!fg || !fg.locked || fg.immich?.asset_id !== aid) return false; // unlocked or uploaded again meanwhile
+      f.scans[scanId] = record;
+      fg.from_final = {
+        asset: aid,
+        scans: fg.scans,
+        excluded: fg.excluded,
+        rotation: fg.rotation,
+        mirror: !!fg.mirror,
+        params: fg.params,
+      };
+      Object.assign(fg, { scans: [scanId], excluded: [], rotation: 0, rot_reason: "", params: { ...AS_IS }, params_source: "", export: null });
+      for (const k of ["mirror", "mount", "feat", "auto_excluded", "history", "locked"] as const) delete fg[k];
+      fg.immich!.key = renderKey(fg);
+      return true;
+    });
+    if (!done) {
+      await lib.remove(path);
+      continue;
+    }
+    await makeProxies(sid, scanId, blob);
+    finals++;
+  }
+  await update(sid, syncLocks);
+  await update(sid, (f) =>
+    log(f, `Unlocked ${slidesWord(scansBack + finals)} from Immich (${scansBack} from their original scans, ${finals} from the final version)`),
+  );
+  const parts = [
+    scansBack && `${slidesWord(scansBack)} from the original scans stacked in Immich`,
+    finals && `${slidesWord(finals)} from the final version (edits start from the photo as uploaded)`,
+  ].filter(Boolean);
+  job.message =
+    (parts.length ? `Unlocked ${parts.join(" and ")}` : "Nothing unlocked") +
+    (gone ? `; ${slidesWord(gone)} no longer in Immich (or in its trash)` : "");
 }
 
 /** Captions and dates edited in Immich, back into the tray (workflow.pull_metadata). */
@@ -3639,6 +3739,17 @@ export async function handle(method: string, url: string, body: Body = {}): Prom
     );
     startJob("import", d.id, (job) => pullIn(job, d.id, ids));
     return { id: d.id };
+  }
+  if ((m = is("POST", /^\/api\/sessions\/([^/]+)\/unlock$/))) {
+    const sid = m[1];
+    const d = await loadSession(sid);
+    immichClient(); // no Immich set up: say so before starting
+    const gids = Array.isArray(body.groups) && body.groups.length ? body.groups.map(String) : null;
+    if (!d.groups.some((g) => g.locked && (!gids || gids.includes(g.id))))
+      throw new HttpError(400, "No locked slides to download.");
+    if (current && !current.finished) throw new HttpError(409, `Busy with ${current.kind} - wait for it to finish.`);
+    startJob("unlock", sid, (job) => unlockFromImmich(job, sid, gids));
+    return { ok: true };
   }
   if ((m = is("POST", /^\/api\/sessions\/([^/]+)\/pull$/))) {
     const { d, pulled } = await pullMetadata(m[1]);

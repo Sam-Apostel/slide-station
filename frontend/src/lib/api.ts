@@ -173,10 +173,13 @@ export type Group = {
   /** Scans the import left out of the blend, and why ("blurry" / "clipped"). */
   auto_excluded: Record<string, string>;
   /** The original scans were deleted after upload ("keep originals" off): read-only, Immich has the
-   *  final version. Re-importing the scans into the tray unlocks it. */
+   *  final version. Re-importing the scans, or downloading it back from Immich, unlocks it. */
   locked: boolean;
   /** Pulled in from an Immich album: its upload replaces that photo there. */
   from_immich?: boolean;
+  /** Unlocked from its final version in Immich (its original scans weren't there): edits start from
+   *  the photo as it was uploaded. */
+  from_final?: boolean;
   reviewed: boolean;
   skip: boolean;
   status: GroupStatus;
