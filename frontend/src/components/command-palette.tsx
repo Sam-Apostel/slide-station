@@ -114,6 +114,7 @@ export function CommandPalette({
   const count = session?.groups.length ?? 0;
   const src = state?.sources.find((x) => x.new > 0);
   const sm = session?.summary;
+  const lockedCount = session?.groups.filter((x) => x.locked).length ?? 0;
   // Controlled so every opening starts empty, even one during the closing animation.
   const [search, setSearch] = React.useState("");
   React.useEffect(() => {
@@ -234,6 +235,13 @@ export function CommandPalette({
           icon: <CloudDownload />,
           hidden: !session?.groups.some((x) => x.status === "uploaded" || x.status === "changed"),
           run: app.pullFromImmich,
+        },
+        {
+          id: "unlock-from-immich",
+          label: `Download ${plural(lockedCount, "locked slide")} from Immich to edit again`,
+          icon: <CloudDownload />,
+          hidden: !lockedCount || busy,
+          run: () => app.unlockFromImmich(),
         },
         {
           id: "review-insights",

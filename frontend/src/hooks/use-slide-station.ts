@@ -942,6 +942,19 @@ export function useSlideStation() {
     }
   };
 
+  /**
+   * Download locked slides back from Immich to edit them again (all of the tray's, or `groups`):
+   * their original scans where Immich has them stacked, otherwise the final version.
+   */
+  const unlockFromImmich = async (groups?: string[]) => {
+    try {
+      await api("POST", `/api/sessions/${ref.current.sessionId}/unlock`, groups ? { groups } : {});
+      refreshState();
+    } catch (e) {
+      fail(e);
+    }
+  };
+
   /** A new tray with photos from Immich as its scans, to develop them again. */
   const importFromImmich = async (assets: string[], body: { name: string; album: string }) => {
     try {
@@ -1041,6 +1054,7 @@ export function useSlideStation() {
     addSource,
     capture,
     pullFromImmich,
+    unlockFromImmich,
     importFromImmich,
     startCleanup,
     eject,
