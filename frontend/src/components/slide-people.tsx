@@ -1,5 +1,5 @@
 import * as React from "react";
-import { Check, EyeOff, TriangleAlert, UserPlus, UserX } from "lucide-react";
+import { Check, EyeOff, ScanFace, TriangleAlert, UserPlus, UserX, X } from "lucide-react";
 import { PreviewImg } from "@/components/filmstrip";
 import { ProButton } from "@/components/ui/pro-button";
 import { Input } from "@/components/ui/input";
@@ -14,7 +14,11 @@ export function peopleNote(g: Group) {
   const named = [...new Set(faces.filter((f) => f.named).map((f) => f.label))];
   const odd = faces.filter((f) => f.odd).length;
   return [
-    named.length ? named.slice(0, 2).join(", ") + (named.length > 2 ? ` +${named.length - 2}` : "") : `${faces.length} faces`,
+    named.length
+      ? named.slice(0, 2).join(", ") + (named.length > 2 ? ` +${named.length - 2}` : "")
+      : faces.length
+        ? `${faces.length} face${faces.length === 1 ? "" : "s"}`
+        : "Nobody found",
     odd && `${odd} to check`,
   ]
     .filter(Boolean)
@@ -30,25 +34,35 @@ export const oddText = (label: string, odd: { age: number; year: number }, looks
  * new, "not them", or ignore them). Faces whose age doesn't fit their person (dating.suspects) are
  * marked, with "not them" / "it is them". A crowd's strangers can be ignored all at once: their faces
  * leave every slide (People & Places lists them to bring back). `onFocus` tells the stage which face
- * to outline on the photo.
+ * to outline on the photo. Someone the face finder missed can be marked on the photo (`onMark` arms
+ * the stage; `marked`: the face that made, picked to say who it is).
  */
 export function SlidePeople({
   app,
   g,
   focus,
   onFocus,
+  marking,
+  onMark,
+  marked,
 }: {
   app: SlideStation;
   g: Group;
   focus: string | null;
   onFocus: (face: string | null) => void;
+  marking: boolean;
+  onMark: () => void;
+  marked: string | null;
 }) {
   const faces = g.faces ?? [];
   const [picked, setPicked] = React.useState<string | null>(null);
   const [hover, setHover] = React.useState<string | null>(null);
   const face = faces.find((f) => f.id === picked) ?? null;
-  // another slide, or the face moved on: nothing picked
+  // another slide, or the face moved on: nothing picked; a face just marked: that one
   React.useEffect(() => setPicked(null), [g.id]);
+  React.useEffect(() => {
+    if (marked) setPicked(marked);
+  }, [marked]);
   const shown = hover ?? face?.id ?? null;
   React.useEffect(() => {
     if (shown !== focus) onFocus(shown);
@@ -65,6 +79,7 @@ export function SlidePeople({
 
   return (
     <div className="flex flex-col gap-2 px-3 pt-2.5 pb-3">
+      {!faces.length && !marking && <p className="text-[11px] text-muted-foreground">No faces found on this slide.</p>}
       <ul className="flex flex-wrap gap-x-2 gap-y-2" aria-label="Faces on this slide">
         {faces.map((f) => (
           <li key={f.id}>
@@ -116,53 +131,77 @@ export function SlidePeople({
           key={face.id}
           face={face}
           onAssign={(p, n) => assign(face, p, n)}
+          onUnmark={async () => (await app.unmarkFace(face.id)) && setPicked(null)}
           onIgnore={() => ignore([face.id])}
         />
       )}
-      {!face && unnamed.length >= 2 && (
-        <div>
+      <div className="flex flex-wrap items-center gap-2">
+        <ProButton aria-pressed={marking} onClick={onMark} disabled={g.locked}>
+          <ScanFace /> {marking ? "Cancel" : "Mark someone it missed"}
+        </ProButton>
+        {marking && (
+          <span className="text-[11px] text-primary" role="status">
+            Click them on the photo
+          </span>
+        )}
+        {!face && !marking && unnamed.length >= 2 && (
           <ProButton onClick={() => ignore(unnamed.map((f) => f.id))}>
             <EyeOff /> Ignore the {unnamed.length} without a name
           </ProButton>
-        </div>
-      )}
+        )}
+      </div>
     </div>
   );
 }
 
-/** Everyone a face can be; fetched each time the picker opens (names change in People & Places). */
-function usePeopleNames() {
+/** Where a word of the label starts with what's typed: those come first. */
+const startsWord = (label: string, needle: string) =>
+  label
+    .toLowerCase()
+    .split(/\s+/)
+    .some((w) => w.startsWith(needle));
+
+/** Everyone a face can be, the likeliest for this face first (how like theirs it looks, who is on
+ *  the slides around in the same clothes); fetched each time the picker opens (names change in
+ *  People & Places, and every name given teaches it). */
+function usePeopleNames(face: string) {
   const [names, setNames] = React.useState<PersonName[]>([]);
   React.useEffect(() => {
     let live = true;
-    api<{ people: PersonName[] }>("GET", "/api/people/names").then(
+    api<{ people: PersonName[] }>("GET", `/api/people/names?face=${encodeURIComponent(face)}`).then(
       (r) => live && setNames(r.people),
       () => undefined,
     );
     return () => {
       live = false;
     };
-  }, []);
+  }, [face]);
   return names;
 }
 
 function WhoIsThis({
   face,
   onAssign,
+  onUnmark,
   onIgnore,
 }: {
   face: SlideFace;
   onAssign: (person: string | null, name?: string) => void;
+  onUnmark: () => void;
   /** Someone to leave out (a stranger in the crowd): everywhere they are, not just here. */
   onIgnore: () => void;
 }) {
-  const names = usePeopleNames();
+  const names = usePeopleNames(face.id);
   const [q, setQ] = React.useState("");
   const [active, setActive] = React.useState(0);
   const listId = React.useId();
   const needle = q.trim().toLowerCase();
+  // the likeliest first (as they come); typing, the names with a word starting so first
   const hits = names
     .filter((p) => p.id !== face.person && (!needle || p.label.toLowerCase().includes(needle)))
+    .map((p, i) => ({ p, i, first: !!needle && startsWord(p.label, needle) }))
+    .sort((a, b) => Number(b.first) - Number(a.first) || a.i - b.i)
+    .map((x) => x.p)
     .slice(0, needle ? 8 : 6);
   const exact = names.some((p) => p.label.toLowerCase() === needle);
   // the options under the input: people, then "someone new" when the name is nobody's yet
@@ -178,6 +217,7 @@ function WhoIsThis({
             <span className="size-5 shrink-0 rounded-full bg-(--ss-panel-2)" />
           )}
           <span className="flex-1 truncate">{p.label}</span>
+          {p.likely && <span className="text-[10px] text-primary">likely</span>}
           <span className="text-[10px] text-muted-foreground tabular-nums">{p.faces}</span>
         </>
       ),
@@ -213,19 +253,26 @@ function WhoIsThis({
           {oddText(face.label, face.odd, face.age)}. Probably someone else — or the slide's date is off.
         </p>
       )}
-      {face.person && (
+      {(face.person || face.manual) && (
         <div className="flex flex-wrap gap-1.5">
-          <ProButton onClick={() => onAssign(null)}>
-            <UserX /> Not {face.label}
-          </ProButton>
-          {!face.named && (
+          {face.person && (
+            <ProButton onClick={() => onAssign(null)}>
+              <UserX /> Not {face.label}
+            </ProButton>
+          )}
+          {face.person && !face.named && (
             <ProButton onClick={onIgnore} title="A stranger: leave their face out here and on every other slide">
               <EyeOff /> Ignore
             </ProButton>
           )}
-          {face.odd && (
+          {face.person && face.odd && (
             <ProButton onClick={() => onAssign(face.person)}>
               <Check /> It is {face.label}
+            </ProButton>
+          )}
+          {face.manual && (
+            <ProButton onClick={onUnmark}>
+              <X /> Nobody there
             </ProButton>
           )}
         </div>

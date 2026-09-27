@@ -351,3 +351,159 @@ def test_model_download_is_checked(monkeypatch, tmp_path):
     monkeypatch.setattr(people, "MODEL_SHA256", hashlib.sha256(body).hexdigest())
     seen = []
     assert people.download_model(lambda done, total: seen.append(done)).read_bytes() == body
+
+
+# --------------------------------------------------------------------------- clothes, naming nearby, marking
+
+
+def test_clothes_tell_outfits_apart():
+    """The chest below a face: the same shirt on another slide (lit a little differently, the person
+    moved) is alike, another colour isn't; no room below the face, no description."""
+    def slide(shirt, x=0.4, light=1.0):
+        a = np.full((300, 400, 3), 0.55, np.float32)  # a grey wall
+        a[60:120, int(x * 400):int(x * 400) + 50] = (0.8, 0.6, 0.5)  # the face
+        a[130:300, int(x * 400) - 50:int(x * 400) + 100] = shirt
+        return np.clip(a * light, 0, 1)
+
+    box = lambda x: [x, 0.2, 0.125, 0.2]  # noqa: E731
+    red = people.describe_clothes(slide((0.7, 0.1, 0.1)), box(0.4))
+    red2 = people.describe_clothes(slide((0.7, 0.1, 0.1), 0.45, 0.9), box(0.45))
+    blue = people.describe_clothes(slide((0.1, 0.2, 0.7)), box(0.4))
+    assert red.shape == (int(np.prod(people.CLOTHES_BINS)),) and red.sum() == pytest.approx(1)
+    assert people.clothes_like(red, red2) >= people.SAME_CLOTHES > people.clothes_like(red, blue)
+    assert people.describe_clothes(slide((0.7, 0.1, 0.1)), [0.4, 0.9, 0.1, 0.1]) is None
+    assert people.clothes_like(red, None) is None
+
+
+def like(identity, cos, seed):
+    """A face `cos` like `identity` (another photo of them, bad light, the years between)."""
+    r = np.random.default_rng(seed).normal(size=128)
+    r -= (r @ identity) * identity
+    return unit(cos * identity + np.sqrt(1 - cos * cos) * unit(r))
+
+
+RED, BLUE = np.eye(int(np.prod(people.CLOTHES_BINS)), dtype=np.float32)[[3, 40]]
+
+
+@pytest.fixture
+def dressed(faces_on, monkeypatch):
+    """Faces with their clothes chosen by the test: by the face box's top (y) - 0.2 red, 0.25 blue."""
+    monkeypatch.setattr(people, "describe_clothes", lambda rgb, box: {0.2: RED, 0.25: BLUE}.get(round(box[1], 2)))
+    return faces_on
+
+
+def shirt(identity, colour, x=0.2):
+    f = face(identity, x)
+    f["box"][1] = {"red": 0.2, "blue": 0.25}[colour]
+    return f
+
+
+def test_a_name_spreads_to_the_same_person_nearby(api, tmp_path, dressed, monkeypatch):
+    """Slides 1-4: Ann in red; a blurry Ann (a little like her) in red; the same blurry face in
+    blue; Bob. Named on slide 1, she's recognised on slide 2 (her, in the same clothes), not on 3
+    (maybe her, another day) nor Bob; and the picker on slide 3 offers Ann first."""
+    blurry = [{**shirt(ANN, "red"), "emb": like(ANN, 0.3, 1)}, {**shirt(ANN, "blue"), "emb": like(ANN, 0.3, 2)}]
+    dressed += [[shirt(ANN, "red")], [blurry[0]], [blurry[1]], [shirt(BOB, "red")]]
+    sid, d = tray_without_helper(api, tmp_path, monkeypatch)
+    api.get("/api/people")  # (grouped)
+    gs = api.get(f"/api/sessions/{sid}").json()["groups"]
+    assert len({g["faces"][0]["person"] for g in gs}) == 4  # not alike enough to group by face alone
+
+    out = api.post("/api/people/faces/assign", json={"face": gs[0]["faces"][0]["id"], "person": "new", "name": "Ann"}).json()
+    got = [g["faces"][0]["label"] for g in out["groups"]]
+    assert got[:2] == ["Ann", "Ann"] and "Ann" not in got[2:] and out["named_along"] == 1
+    # the one named along isn't "sure": "not Ann" still works on it, and it stays out
+    f2 = out["groups"][1]["faces"][0]["id"]
+    assert f2 not in people.load_people()["people"][out["groups"][0]["faces"][0]["person"]].get("sure", [])
+
+    api.patch(f"/api/people/{gs[3]['faces'][0]['person']}", json={"name": "Bob"})
+    names = api.get("/api/people/names", params={"face": gs[2]["faces"][0]["id"]}).json()["people"]
+    assert [p["label"] for p in names] == ["Ann", "Bob"] and names[0]["score"] > names[1]["score"]
+    # Ann's face on slide 1 is surely her; Bob, on a slide nearby in red too, isn't
+    names = api.get("/api/people/names", params={"face": gs[0]["faces"][0]["id"]}).json()["people"]
+    assert [(p["label"], p["likely"]) for p in names] == [("Ann", True), ("Bob", False)]
+    # without a face: by name, as before
+    assert [p["label"] for p in api.get("/api/people/names").json()["people"]] == ["Ann", "Bob"]
+
+
+def test_naming_a_face_brings_its_unnamed_group(api, tmp_path, dressed, monkeypatch):
+    """Ann on slide 1 of one tray and slide 4 of another: grouped as one unnamed person. Naming the
+    face on the first names the other (it looks like her), but not a face of hers taken out before."""
+    dressed += [[face(ANN)], [], [], []]
+    sid, _ = tray_without_helper(api, tmp_path, monkeypatch)
+    dressed += [[], [], [], [face(ANN)]]
+    sid2, _ = tray_without_helper(api, tmp_path, monkeypatch)
+    api.get("/api/people")
+    g1 = api.get(f"/api/sessions/{sid}").json()["groups"][0]["faces"][0]
+    g2 = api.get(f"/api/sessions/{sid2}").json()["groups"][3]["faces"][0]
+    assert g1["person"] == g2["person"] and not g1["named"]
+    out = api.post("/api/people/faces/assign", json={"face": g1["id"], "person": "new", "name": "Ann"}).json()
+    assert out["named_along"] == 1
+    assert api.get(f"/api/sessions/{sid2}").json()["groups"][3]["faces"][0]["label"] == "Ann"
+
+
+def test_mark_someone_the_finder_missed(api, tmp_path, dressed, monkeypatch):
+    """Slide 1: someone with their back turned (no face found), in red; slide 2: a face in red. Marked
+    on slide 1 as Cleo, the face next to it in the same clothes is her too. The mark stays when the
+    slide is turned, and can be taken off."""
+    dressed += [[], [shirt(BOB, "red")], [], []]
+    sid, d = tray_without_helper(api, tmp_path, monkeypatch)
+    gid = d["groups"][0]["id"]
+    # the box around the spot clicked: 8 % of the (landscape) slide's height, from y 0.2 (the red shirt)
+    out = api.post(f"/api/sessions/{sid}/groups/{gid}/faces",
+                   json={"point": [0.5, 0.24], "person": "new", "name": "Cleo"}).json()
+    mine = out["groups"][0]["faces"]
+    assert [(f["id"], f["label"], f["manual"]) for f in mine] == [(out["face"], "Cleo", True)] and mine[0]["box"]
+    assert out["groups"][1]["faces"][0]["label"] == "Cleo" and out["named_along"] == 1
+    assert api.post(f"/api/sessions/{sid}/groups/{gid}/faces", json={"point": [2, 0]}).status_code == 400
+
+    # turned: looked at again, nobody found - the mark stays, turned with the slide
+    before = people.load_faces(sid)[gid]["faces"][0]["box"]
+    api.patch(f"/api/sessions/{sid}/groups/{gid}", json={"rotation": 90})
+    assert wf.find_faces(sid, gid)
+    [f] = people.load_faces(sid)[gid]["faces"]
+    assert f["id"] == out["face"] and f["manual"]
+    assert f["box"] == pytest.approx([1 - before[1] - before[3], before[0], before[3], before[2]], abs=1e-3)
+    assert api.get(f"/api/sessions/{sid}").json()["groups"][0]["faces"][0]["label"] == "Cleo"
+
+    # a face the finder found can't be taken off (it would come back); the mark can
+    other = out["groups"][1]["faces"][0]["id"]
+    assert api.delete(f"/api/people/faces/{other}").status_code == 404
+    out = api.delete(f"/api/people/faces/{f['id']}").json()
+    assert out["groups"][0].get("faces") == [] and out["groups"][1]["faces"][0]["label"] == "Cleo"
+
+
+def test_a_missed_face_is_looked_for_closer(monkeypatch):
+    """Around the spot clicked, the picture is looked at zoomed in: a face found there comes back
+    where it is on the whole picture (size and landmarks too); a face elsewhere in the crop doesn't."""
+    from slidestation import imaging
+
+    rgb = np.random.default_rng(1).random((600, 900, 3)).astype(np.float32)
+
+    def detect(bgr):  # a face in the middle of whatever it's shown, and one in its corner
+        h, w = bgr.shape[:2]
+        rows = []
+        for x, y in ((0.4 * w, 0.4 * h), (0.0, 0.0)):
+            s = 0.2 * w
+            rows.append([x, y, s, s] + [x + 0.5 * s, y + 0.5 * s] * 5 + [0.65])
+        return np.array(rows, np.float32)
+
+    class Recognizer:
+        def alignCrop(self, bgr, f):
+            seen.append(f)
+            return bgr
+
+        def feature(self, crop):
+            return np.ones((1, 128), np.float32)
+
+    seen = []
+    monkeypatch.setattr(imaging, "_faces_in", detect)
+    monkeypatch.setattr(people, "_recognizer", Recognizer())
+    got = people.find_near(rgb, [0.2, 0.3])
+    x, y, w, h = got["box"]
+    assert (x + w / 2, y + h / 2) == (pytest.approx(0.2, abs=0.002), pytest.approx(0.3, abs=0.002))
+    assert w * 900 == pytest.approx(0.2 * 480 / (480 / (0.18 * 600)), rel=0.02)  # the smallest crop's face
+    assert seen[0][4] == pytest.approx(0.2 * 900, abs=1) and got["score"] == 0.65
+    assert np.linalg.norm(got["emb"]) == pytest.approx(1)
+    monkeypatch.setattr(imaging, "_faces_in", lambda bgr: np.zeros((0, 15), np.float32))
+    assert people.find_near(rgb, [0.2, 0.3]) is None

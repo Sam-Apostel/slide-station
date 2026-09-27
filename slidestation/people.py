@@ -10,6 +10,11 @@ Ages: with the age model downloaded (opt-in, `ages_enabled`), every face also ge
 (`age`, years; MiVOLO v2 on the face and the body below it), which dating.py turns into a date for
 the slide once the person has a birthday. A slide's entry says which model aged it (`ages_by`):
 faces aged by a model since replaced are aged again.
+
+Clothes: every face also has what its person wears below it (`clothes`, a colour histogram of the
+chest): on the slides around a named face, a face a little like theirs in the same clothes is them
+(`spread`). Faces the detector missed can be marked by hand (`add_face`): found again at a lower bar
+around the spot, or kept as a box with no face description (the back of a head), clothes only.
 """
 from __future__ import annotations
 
@@ -48,6 +53,13 @@ SAME_PERSON = 0.363  # SFace's recommended cosine-similarity threshold for "same
 MIN_SCORE = 0.7  # the detector confidence a face needs (as for the rotation vote)
 MIN_SIZE = 0.03  # and its size, as a share of the picture's width: tiny faces describe badly
 MATCH = 0.8  # a face found again (after the slide was turned) keeps its id above this similarity
+
+CLOTHES_BINS = (4, 6, 6)  # the clothes' colour histogram: L, a, b bins (a and b over -40..40)
+CLOTHES_V = 1  # faces.json entries say which clothes description they have: older ones are redone
+NEAR = 3  # slides either side of someone's face that their name spreads to (the same day)
+LOOKS_LIKE = 0.2  # there, a face this like theirs (cosine; unrelated faces are ~0)…
+SAME_CLOTHES = 0.8  # …in clothes this alike (Bhattacharyya, 0..1) is them
+CLOTHES_ONLY = 0.9  # next to a face marked by hand (no face to compare): the clothes alone, this alike
 
 _lock = threading.RLock()  # faces.json files and people.json
 
@@ -198,6 +210,42 @@ def estimate_ages(rgb: np.ndarray, boxes: list[list[float]]) -> list[float]:
     return out
 
 
+def describe_clothes(rgb: np.ndarray, box: list[float]) -> np.ndarray | None:
+    """What someone wears: a colour histogram (Lab, CLOTHES_BINS, summing to 1) of the chest below a
+    face (box as stored: 0..1 of the upright picture), weighted to its middle so the background
+    counts little. None when there's no room below the face (it's at the bottom edge)."""
+    import cv2
+
+    h, w = rgb.shape[:2]
+    x, y, bw, bh = box[0] * w, box[1] * h, box[2] * w, box[3] * h
+    cx, cy = x + bw / 2, y + 2.3 * bh
+    x0, x1 = int(max(0, cx - 1.2 * bw)), int(min(w, cx + 1.2 * bw))
+    y0, y1 = int(max(0, y + 1.3 * bh)), int(min(h, y + 3.3 * bh))
+    if x1 - x0 < 4 or y1 - y0 < max(4, 0.5 * bh):
+        return None
+    crop = np.clip(rgb[y0:y1, x0:x1], 0, 1).astype(np.float32)
+    cw, ch = min(48, x1 - x0), min(48, y1 - y0)
+    crop = cv2.resize(crop, (cw, ch), interpolation=cv2.INTER_AREA)
+    lab = cv2.cvtColor(crop, cv2.COLOR_RGB2Lab)  # L 0..100, a / b about -127..127
+    xs = x0 + (np.arange(cw) + 0.5) * (x1 - x0) / cw
+    ys = y0 + (np.arange(ch) + 0.5) * (y1 - y0) / ch
+    wt = np.exp(-0.5 * (((ys[:, None] - cy) / bh) ** 2 + ((xs[None, :] - cx) / bw) ** 2))
+    nl, na, nb = CLOTHES_BINS
+    li = np.clip(lab[..., 0] / 100 * nl, 0, nl - 1).astype(int)
+    ai = np.clip((lab[..., 1] + 40) / 80 * na, 0, na - 1).astype(int)
+    bi = np.clip((lab[..., 2] + 40) / 80 * nb, 0, nb - 1).astype(int)
+    hist = np.bincount(((li * na + ai) * nb + bi).ravel(), wt.ravel(), nl * na * nb)
+    total = hist.sum()
+    return (hist / total).astype(np.float32) if total > 0 else None
+
+
+def clothes_like(a: np.ndarray | None, b: np.ndarray | None) -> float | None:
+    """How alike two clothes descriptions are: 1 = the same colours, 0 = nothing in common."""
+    if a is None or b is None:
+        return None
+    return float(np.sqrt(np.clip(a, 0, None) * np.clip(b, 0, None)).sum())
+
+
 # --------------------------------------------------------------------------- faces per tray
 
 
@@ -216,12 +264,21 @@ def unpack(s: str) -> np.ndarray:
     return e / (np.linalg.norm(e) or 1)
 
 
+def unpack_clothes(s: str | None) -> np.ndarray | None:
+    if not s:
+        return None
+    c = np.frombuffer(base64.b64decode(s), np.float16).astype(np.float32)
+    return c / (c.sum() or 1)
+
+
 def faces_file(sid: str) -> Path:
     return library() / "sessions" / sid / "faces.json"
 
 
 def load_faces(sid: str) -> dict:
-    """{gid: {"key", "rot", "faces": [{"id", "box", "score", "emb"}]}} for one tray."""
+    """{gid: {"key", "rot", "mirror", "clothes_v"?, "faces": [{"id", "box", "score", "emb"?, "clothes"?,
+    "age"?, "manual"?}]}} for one tray. A face marked by hand (`manual`) has no `emb` when no face
+    was found there."""
     f = faces_file(sid)
     try:
         return json.loads(f.read_text()) if f.exists() else {}
@@ -249,24 +306,59 @@ def unaged(entry: dict | None) -> bool:
     return bool(faces) and (entry.get("ages_by") != AGE_BY or any("age" not in f for f in faces))
 
 
+def undressed(entry: dict | None) -> bool:
+    """Faces on the slide without a clothes description yet (found before there were any)."""
+    return bool((entry or {}).get("faces")) and entry.get("clothes_v") != CLOTHES_V
+
+
+def _dress(rgb: np.ndarray, f: dict) -> dict:
+    c = describe_clothes(rgb, f["box"])
+    return {"clothes": _pack(c)} if c is not None else {}
+
+
+def _turn_box(box: list[float], frm: tuple[int, bool], to: tuple[int, bool]) -> list[float]:
+    """A box (0..1) on a slide turned `frm` (rotation, mirrored) as it is on the slide turned `to`."""
+    def corners(b):
+        return [(b[0], b[1]), (b[0] + b[2], b[1] + b[3])]
+
+    def unturn(pt, rot, mirror):  # oriented -> scan as it is: undo the rotation, then the mirror
+        u, v = pt
+        u, v = {0: (u, v), 90: (v, 1 - u), 180: (1 - u, 1 - v), 270: (1 - v, u)}[rot % 360]
+        return (1 - u, v) if mirror else (u, v)
+
+    def turn(pt, rot, mirror):
+        u, v = pt
+        u = 1 - u if mirror else u
+        return {0: (u, v), 90: (1 - v, u), 180: (1 - u, 1 - v), 270: (v, 1 - u)}[rot % 360]
+
+    pts = [turn(unturn(p, *frm), *to) for p in corners(box)]
+    l, t = min(p[0] for p in pts), min(p[1] for p in pts)
+    return [round(l, 4), round(t, 4), round(max(p[0] for p in pts) - l, 4), round(max(p[1] for p in pts) - t, 4)]
+
+
 def record(sid: str, g: dict, rgb: np.ndarray, ages: bool = False) -> list[dict]:
     """Find and describe the faces on one slide (rgb = its upright blend) and store them. A face found
-    again keeps its id, so a name or a removal made in the People dialog stays with it. `ages`: the
-    age model is on, every face gets the age it looks."""
+    again keeps its id, so a name or a removal made in the People dialog stays with it; a face marked
+    by hand that isn't found stays (turned with the slide). `ages`: the age model is on, every face
+    gets the age it looks."""
     found = embed_faces(rgb)
     if ages:
         for f, a in zip(found, estimate_ages(rgb, [f["box"] for f in found])):
             f["age"] = a
+    for f in found:
+        f.update(_dress(rgb, f))
     key, gid = face_key(g), g["id"]
 
     def commit(d: dict):
-        old = (d.get(gid) or {}).get("faces", [])
+        entry = d.get(gid) or {}
+        old = entry.get("faces", [])
         used, taken = set(), {int(f["id"].rsplit("/", 1)[1]) for f in old}
         faces = []
         for f in found:
             match = None
             if old:
-                sims = [float(unpack(o["emb"]) @ f["emb"]) if o["id"] not in used else -1 for o in old]
+                sims = [float(unpack(o["emb"]) @ f["emb"]) if o["id"] not in used and o.get("emb") else -1
+                        for o in old]
                 best = int(np.argmax(sims))
                 if sims[best] >= MATCH:
                     match = old[best]["id"]
@@ -276,12 +368,131 @@ def record(sid: str, g: dict, rgb: np.ndarray, ages: bool = False) -> list[dict]
                 match = f"{sid}/{gid}/{n}"
             used.add(match)
             faces.append({"id": match, "box": f["box"], "score": f["score"], "emb": _pack(f["emb"]),
-                          **({"age": f["age"]} if "age" in f else {})})
+                          **({"age": f["age"]} if "age" in f else {}),
+                          **({"clothes": f["clothes"]} if "clothes" in f else {})})
+        frm = (entry.get("rot", 0), bool(entry.get("mirror")))
+        to = (g["rotation"], bool(g.get("mirror")))
+        for o in old:  # marked by hand and not found now: kept, where it is on the slide as turned now
+            if o.get("manual") and o["id"] not in used:
+                box = _turn_box(o["box"], frm, to) if frm != to else o["box"]
+                kept = {k: v for k, v in o.items() if k not in ("clothes", "age")}
+                faces.append({**kept, "box": box, **_dress(rgb, {"box": box})})
         d[gid] = {"key": key, "rot": g["rotation"], "mirror": bool(g.get("mirror")), "faces": faces,
-                  **({"ages_by": AGE_BY} if ages else {})}
+                  "clothes_v": CLOTHES_V, **({"ages_by": AGE_BY} if ages else {})}
 
     update_faces(sid, commit)
     return found
+
+
+def add_clothes(sid: str, gid: str, rgb: np.ndarray) -> None:
+    """Describe the clothes of the faces already found on a slide (rgb = the same upright blend)."""
+    entry = load_faces(sid).get(gid) or {}
+    dressed = {f["id"]: _dress(rgb, f) for f in entry.get("faces", [])}
+
+    def commit(d: dict):
+        e = d.get(gid)
+        if not e:
+            return
+        for f in e.get("faces", []):
+            f.pop("clothes", None)
+            f.update(dressed.get(f["id"], {}))
+        e["clothes_v"] = CLOTHES_V
+
+    update_faces(sid, commit)
+
+
+def find_near(rgb: np.ndarray, point: list[float]) -> dict | None:
+    """A face the detector missed, at a spot the user pointed at (0..1 of the upright picture): the
+    picture around it looked at closer, at a lower bar (someone is there). {"box", "score", "emb",
+    "landmarks"} or None."""
+    import cv2
+
+    h, w = rgb.shape[:2]
+    px, py = point[0] * w, point[1] * h
+    best = None
+    for share in (0.18, 0.35, 0.6):  # small faces to large ones: a square this share of the short side
+        half = share * min(h, w) / 2
+        x0, y0 = int(max(0, px - half)), int(max(0, py - half))
+        x1, y1 = int(min(w, px + half)), int(min(h, py + half))
+        if x1 - x0 < 8 or y1 - y0 < 8:
+            continue
+        crop = rgb[y0:y1, x0:x1]
+        scale = 480 / max(crop.shape[:2])
+        small = cv2.resize(crop, (max(1, int(crop.shape[1] * scale)), max(1, int(crop.shape[0] * scale))),
+                           interpolation=cv2.INTER_AREA if scale < 1 else cv2.INTER_LINEAR)
+        bgr = cv2.cvtColor((np.clip(small, 0, 1) * 255).astype(np.uint8), cv2.COLOR_RGB2BGR)
+        for f in im._faces_in(bgr):
+            f = f.copy()
+            f[:14] /= scale
+            f[[0, 4, 6, 8, 10, 12]] += x0  # points move with the crop; the size (2, 3) doesn't
+            f[[1, 5, 7, 9, 11, 13]] += y0
+            # the spot is on the face (or just below: a click on the chin, the neck)
+            if not (f[0] - 0.3 * f[2] <= px <= f[0] + 1.3 * f[2] and f[1] - 0.3 * f[3] <= py <= f[1] + 1.6 * f[3]):
+                continue
+            if best is None or f[14] > best[14]:
+                best = f
+    if best is None:
+        return None
+    with _recognizer_lock:
+        global _recognizer
+        if _recognizer is None:
+            _recognizer = cv2.FaceRecognizerSF.create(str(model_file()), "")
+    bgr = cv2.cvtColor((np.clip(rgb, 0, 1) * 255).astype(np.uint8), cv2.COLOR_RGB2BGR)
+    with _recognizer_lock:
+        e = _recognizer.feature(_recognizer.alignCrop(bgr, best)).flatten().astype(np.float32)
+    e /= np.linalg.norm(e) or 1
+    box = [best[0] / w, best[1] / h, best[2] / w, best[3] / h]
+    return {"box": [round(float(v), 4) for v in box], "score": round(float(best[14]), 3), "emb": e}
+
+
+def add_face(sid: str, g: dict, rgb: np.ndarray, point: list[float], ages: bool = False) -> str:
+    """Someone the detector missed, at `point` (0..1 of the upright picture, rgb = the slide's upright
+    blend): the face there if it can be found at a lower bar (described like the others), else a box
+    of the size of the other faces on the slide around the spot, with no face description - the back
+    of a head, a face too small or too blurred: their clothes still say who they are nearby. Answers
+    its id. Marked `manual`: kept when the slide is looked at again."""
+    entry = load_faces(sid).get(g["id"]) or {}
+    near = find_near(rgb, point)
+    if near is None:
+        h, w = rgb.shape[:2]
+        sizes = sorted(f["box"][2] * w for f in entry.get("faces", []))
+        side = sizes[len(sizes) // 2] if sizes else 0.08 * min(h, w)
+        bw, bh = side / w, side / h
+        box = [min(max(point[0] - bw / 2, 0), 1 - bw), min(max(point[1] - bh / 2, 0), 1 - bh), bw, bh]
+        face = {"box": [round(float(v), 4) for v in box], "score": 0.0}
+    else:
+        face = {**near, "emb": _pack(near["emb"])}
+        if ages:
+            face["age"] = estimate_ages(rgb, [face["box"]])[0]
+    face.update(_dress(rgb, face))
+    out = {}
+
+    def commit(d: dict):
+        e = d.get(g["id"])
+        if not e or e.get("key") != face_key(g):
+            raise RuntimeError("This slide's faces are being looked for: try again in a moment.")
+        taken = {int(f["id"].rsplit("/", 1)[1]) for f in e["faces"]}
+        n = next(i for i in range(len(taken) + 1) if i not in taken)
+        out["id"] = f"{sid}/{g['id']}/{n}"
+        e["faces"].append({"id": out["id"], **face, "manual": True})
+
+    update_faces(sid, commit)
+    return out["id"]
+
+
+def drop_face(face: str) -> None:
+    """Forget a face marked by hand (nobody there after all). Faces the detector found can't go:
+    they'd be found again; those are "not them" instead."""
+    sid, gid, _ = face.split("/")
+
+    def commit(d: dict):
+        e = d.get(gid) or {}
+        f = next((x for x in e.get("faces", []) if x["id"] == face), None)
+        if not f or not f.get("manual"):
+            raise KeyError(face)
+        e["faces"].remove(f)
+
+    update_faces(sid, commit)
 
 
 def add_ages(sid: str, gid: str, rgb: np.ndarray) -> None:
@@ -401,7 +612,8 @@ _face_cache: dict[str, tuple[int, dict]] = {}
 
 
 def all_faces() -> dict[str, dict]:
-    """Every face in the library: {face id: {"sid", "gid", "emb", "box", "score", "key", "age"?}}."""
+    """Every face in the library: {face id: {"sid", "gid", "emb" (None: marked by hand where no face
+    was found), "box", "score", "key", "clothes" (or None), "manual", "age"?}}."""
     out = {}
     for f in sorted((library() / "sessions").glob("*/faces.json")):
         sid = f.parent.name
@@ -412,8 +624,9 @@ def all_faces() -> dict[str, dict]:
                 faces = {}
                 for gid, e in json.loads(f.read_text()).items():
                     for x in e.get("faces", []):
-                        faces[x["id"]] = {"sid": sid, "gid": gid, "emb": unpack(x["emb"]), "box": x["box"],
-                                          "score": x.get("score", 0), "key": e.get("key", ""),
+                        faces[x["id"]] = {"sid": sid, "gid": gid, "emb": unpack(x["emb"]) if x.get("emb") else None,
+                                          "box": x["box"], "score": x.get("score", 0), "key": e.get("key", ""),
+                                          "clothes": unpack_clothes(x.get("clothes")), "manual": bool(x.get("manual")),
                                           **({"age": x["age"]} if "age" in x else {})}
                 hit = (mt, faces)
                 _face_cache[sid] = hit
@@ -425,11 +638,12 @@ def all_faces() -> dict[str, dict]:
 
 def refresh() -> dict:
     """Bring people.json up to date with the faces on disk: faces that are gone leave their person
-    (an unnamed person left empty goes too), new faces join the person they resemble or form new ones."""
+    (an unnamed person left empty goes too), new faces join the person they resemble or form new ones.
+    Faces with no description (marked by hand, no face found) stay with whoever they were put with."""
     with _lock:
         d = load_people()
         faces = all_faces()
-        ids = list(faces)
+        ids = [f for f in faces if faces[f]["emb"] is not None]
         index = {f: i for i, f in enumerate(ids)}
         pids = list(d["people"])
         at = {p: i for i, p in enumerate(pids)}
@@ -439,16 +653,17 @@ def refresh() -> dict:
         groups = agglomerate(emb, clusters, rejected)
         people = {}
         for p, g in zip(pids, groups):
-            if g or d["people"][p].get("name") or d["people"][p].get("birthday") or d["people"][p].get("immich"):
-                people[p] = {**d["people"][p], "faces": [ids[i] for i in g]}
+            blind = [f for f in d["people"][p]["faces"] if f in faces and f not in index]
+            if g or blind or d["people"][p].get("name") or d["people"][p].get("birthday") or d["people"][p].get("immich"):
+                people[p] = {**d["people"][p], "faces": [ids[i] for i in g] + blind}
                 if "sure" in people[p]:
                     people[p]["sure"] = [f for f in people[p]["sure"] if f in people[p]["faces"]]
         for g in groups[len(pids):]:
             people[f"p{d['next']}"] = {"name": "", "faces": [ids[i] for i in g]}
             d["next"] += 1
         new = {"people": people, "next": d["next"],
-               "rejected": {f: [p for p in ps if p in people] for f, ps in d["rejected"].items() if f in index},
-               "ages_off": [f for f in d["ages_off"] if f in index]}
+               "rejected": {f: [p for p in ps if p in people] for f, ps in d["rejected"].items() if f in faces},
+               "ages_off": [f for f in d["ages_off"] if f in faces]}
         if new != d:
             save_people(new)
         return new
@@ -476,7 +691,9 @@ def rename(pid: str, name: str) -> dict:
         if same:
             _merge(d, same[0], [pid])
 
-    return _edit(fn)
+    d = _edit(fn)
+    return _spread_from(d, [p for p, v in d["people"].items()
+                            if p == pid or (name and v.get("name", "").lower() == name.lower())])
 
 
 def clean_birthday(v) -> str:
@@ -504,7 +721,7 @@ def set_birthday(pid: str, value) -> dict:
         else:
             d["people"][pid].pop("birthday", None)
 
-    return _edit(fn)
+    return _spread_from(_edit(fn), [pid])
 
 
 def _merge(d: dict, into: str, others: list[str]) -> None:
@@ -533,7 +750,7 @@ def merge(into: str, others: list[str]) -> dict:
             raise KeyError(into)
         _merge(d, into, others)
 
-    return _edit(fn)
+    return _spread_from(_edit(fn), [into])
 
 
 def remove_faces(pid: str, face_ids: list[str]) -> dict:
@@ -589,8 +806,147 @@ def assign(face: str, to: str | None, name: str = "", age_off: bool = False) -> 
                 d["rejected"][face] = rej
             else:
                 d["rejected"].pop(face, None)
+            if now and now != target and _known(p) and not _known(d["people"][now]) \
+                    and not d["people"][now].get("immich"):
+                _follow(d, face, now, target)
 
-    return _edit(fn)
+    d = _edit(fn)
+    return _spread_from(d, [p for p, v in d["people"].items() if face in v["faces"]], [face.split("/")[0]])
+
+
+def _follow(d: dict, face: str, frm: str, to: str) -> None:
+    """A face of an unnamed group was said to be someone: the rest of the group that looks like that
+    face (SAME_PERSON) comes along - clustering put them together, the name says who they all are.
+    Not onto a slide they're on already, not faces taken out of them before."""
+    faces = all_faces()
+    me = faces.get(face)
+    if not me or me["emb"] is None:
+        return
+    on = {(faces[f]["sid"], faces[f]["gid"]) for f in d["people"][to]["faces"] if f in faces}
+    for f in list(d["people"][frm]["faces"]):
+        x = faces.get(f)
+        if (not x or x["emb"] is None or to in d["rejected"].get(f, ()) or (x["sid"], x["gid"]) in on
+                or float(x["emb"] @ me["emb"]) < SAME_PERSON):
+            continue
+        d["people"][frm]["faces"].remove(f)
+        d["people"][to]["faces"].append(f)
+        on.add((x["sid"], x["gid"]))
+
+
+def _known(p: dict | None) -> bool:
+    """Someone the user said who they are: a name or a birthday (the rest are clusters)."""
+    return bool(p and (p.get("name") or p.get("birthday")))
+
+
+def _order(sid: str) -> dict[str, int]:
+    """A tray's slides: {gid: position}."""
+    from .store import Session
+
+    try:
+        return {g["id"]: i for i, g in enumerate(Session(sid).data["groups"])}
+    except (FileNotFoundError, ValueError):
+        return {}
+
+
+def _fit(x: dict, y: dict) -> float | None:
+    """How sure it is that face x is whoever face y is, on slides close together (the same day, the
+    same clothes); None = not sure enough. A clear likeness is enough; a slight one takes the same
+    clothes; next to a face marked by hand (nothing to compare) the clothes alone, very alike."""
+    look = float(x["emb"] @ y["emb"]) if x["emb"] is not None and y["emb"] is not None else None
+    dress = clothes_like(x["clothes"], y["clothes"])
+    if look is not None and look >= SAME_PERSON:
+        return look + (dress or 0)
+    if dress is not None and (dress >= CLOTHES_ONLY if look is None else dress >= SAME_CLOTHES and look >= LOOKS_LIKE):
+        return (look or 0) + dress
+    return None
+
+
+def _ignored(d: dict, pid: str | None) -> bool:
+    return bool(pid and (d["people"].get(pid) or {}).get("ignored"))
+
+
+def spread(sids) -> list[str]:
+    """Names spread to the slides around them: on a tray, a face whose person has no name (a cluster,
+    or alone), within NEAR slides of a named person's face and like it (_fit), is them. Best matches
+    first, again from the faces just named, until nothing more fits; never two faces of one person
+    on a slide, never a person a face was taken out of, never a face the user placed, never to or
+    from someone ignored. Answers the faces named."""
+    if not any(_known(p) for p in load_people()["people"].values()):
+        return []
+    with _lock:
+        d = refresh()
+        faces = all_faces()
+        owner = {f: p for p, v in d["people"].items() for f in v["faces"]}
+        sure = {f for v in d["people"].values() for f in v.get("sure", ())}
+        moved = []
+        for sid in dict.fromkeys(sids):
+            pos = _order(sid)
+            here = {f: x for f, x in faces.items() if x["sid"] == sid and x["gid"] in pos}
+            # every pair close enough to count, best first: (fit, face, the face it'd follow)
+            pairs = sorted(((v, f, a) for f, x in here.items() if f not in sure and x["emb"] is not None
+                            for a, y in here.items() if 0 < abs(pos[x["gid"]] - pos[y["gid"]]) <= NEAR
+                            for v in [_fit(x, y)] if v is not None), key=lambda t: -t[0])
+            on = {(owner.get(f), x["gid"]) for f, x in here.items()}
+            changed = True
+            while changed:
+                changed = False
+                for _, f, a in pairs:
+                    p, now = owner.get(a), owner.get(f)
+                    if (not _known(d["people"].get(p)) or _known(d["people"].get(now)) or p == now
+                            or p in d["rejected"].get(f, ()) or (p, here[f]["gid"]) in on
+                            or _ignored(d, p) or _ignored(d, now)):  # the user said: nobody to us
+                        continue
+                    if now:
+                        d["people"][now]["faces"].remove(f)
+                    d["people"][p]["faces"].append(f)
+                    owner[f] = p
+                    on.add((p, here[f]["gid"]))
+                    moved.append(f)
+                    changed = True
+        if moved:
+            save_people(d)
+            refresh()
+        return moved
+
+
+def _spread_from(d: dict, pids: list[str], sids: list[str] = ()) -> dict:
+    """spread() on the trays these people are on (and `sids`), answering people.json as it is then."""
+    faces = all_faces()
+    trays = list(sids) + sorted({faces[f]["sid"] for p in pids if p in d["people"]
+                                 for f in d["people"][p]["faces"] if f in faces})
+    return refresh() if trays and spread(trays) else d
+
+
+def likely(face: str, d: dict) -> dict[str, float]:
+    """How likely a face is each person the user named (the slide view's picker puts the likeliest
+    first): how like their faces it looks (the mean of its three best matches: people change over the
+    years), and more when they are on the slides around it (up to NEAR away, most on the next one),
+    most in the same clothes. -1: they're on its slide already, or it was taken out of them.
+    {pid: score}; SAME_PERSON and up is likely them."""
+    faces = all_faces()
+    me = faces.get(face)
+    if not me:
+        return {}
+    pos = _order(me["sid"])
+    here = pos.get(me["gid"])
+    out = {}
+    for pid, p in d["people"].items():
+        if not _known(p):
+            continue
+        fs = [faces[f] for f in p["faces"] if f in faces and f != face]
+        if pid in d["rejected"].get(face, ()) or any(x["sid"] == me["sid"] and x["gid"] == me["gid"] for x in fs):
+            out[pid] = -1.0
+            continue
+        sims = sorted((float(me["emb"] @ x["emb"]) for x in fs if me["emb"] is not None and x["emb"] is not None),
+                      reverse=True)
+        near = 0.0
+        for x in fs:
+            dist = abs(pos[x["gid"]] - here) if x["sid"] == me["sid"] and x["gid"] in pos and here is not None else 0
+            if 0 < dist <= NEAR:
+                dress = clothes_like(me["clothes"], x["clothes"]) or 0.0
+                near = max(near, (1 - (dist - 1) / NEAR) * (0.1 + 0.4 * dress))
+        out[pid] = round((float(np.mean(sims[:3])) if sims else 0.0) + near, 4)
+    return out
 
 
 def set_ignored(pids: list[str], ignored: bool = True) -> dict:

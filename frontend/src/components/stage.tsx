@@ -10,6 +10,7 @@ import { cn } from "@/lib/utils";
 import { STATUS_DOT, STATUS_LABEL, STATUS_TEXT } from "@/components/filmstrip";
 import { Loupe, ZoomView } from "@/components/zoom";
 import { FaceOnPhoto } from "@/components/slide-people";
+import { PictureView } from "@/lib/local";
 
 /** Loads the wanted preview off-screen and only swaps it in once decoded, so browsing never flashes. */
 function usePreloadedImage(url: string | null, warm: string | null) {
@@ -100,6 +101,8 @@ export function Stage({
   onLoupe,
   onGrid,
   face,
+  marking = false,
+  onMarked,
   back,
 }: {
   session: SessionPayload;
@@ -136,6 +139,10 @@ export function Stage({
   onGrid: () => void;
   /** The face (id) picked or hovered in the inspector's People section: outlined on the photo. */
   face?: string | null;
+  /** Marking someone the face finder missed: a click on the photo says where (0..1 of the slide
+   *  turned upright, before trim, straighten and crop); null: Esc, cancelled. */
+  marking?: boolean;
+  onMarked?: (at: [number, number] | null) => void;
   /** Came here from a page in People & Places: the way back to it. */
   back?: { label: string; onBack: () => void; onDismiss: () => void };
 }) {
@@ -209,6 +216,18 @@ export function Stage({
     document.addEventListener("keydown", key, true);
     return () => document.removeEventListener("keydown", key, true);
   }, [cropping]);
+
+  // marking someone: Esc cancels (before anything on the page takes the key)
+  React.useEffect(() => {
+    if (!marking) return;
+    const key = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      e.preventDefault();
+      onMarked?.(null);
+    };
+    window.addEventListener("keydown", key, true);
+    return () => window.removeEventListener("keydown", key, true);
+  }, [marking, onMarked]);
 
   return (
     <section className="flex size-full min-h-0 min-w-0 flex-col bg-[var(--pro-well)]">
@@ -335,10 +354,19 @@ export function Stage({
               style={comparing && beforeView.shown ? { clipPath: `inset(0 0 0 ${divider}%)`, filter: "none" } : undefined}
               className={cn(
                 "ss-photo absolute inset-3.5 h-[calc(100%-28px)] w-[calc(100%-28px)] object-contain",
-                picking && !cropping && "cursor-crosshair",
+                (picking || marking) && !cropping && "cursor-crosshair",
                 cropping && "ss-photo-cropping",
               )}
               onClick={(e) => {
+                if (marking && !cropping && !picking) {
+                  const pt = photoPoint(e.currentTarget, e.clientX, e.clientY);
+                  const img = e.currentTarget;
+                  if (!pt || !img.naturalHeight) return;
+                  // the photo as shown -> the slide as the faces were found on it
+                  const [x, y] = new PictureView(img.naturalWidth / img.naturalHeight, g.params).fromShown(pt);
+                  if (x >= 0 && x <= 1 && y >= 0 && y <= 1) onMarked?.([x, y]);
+                  return;
+                }
                 if (!picking || cropping) return;
                 const pt = photoPoint(e.currentTarget, e.clientX, e.clientY);
                 onPicked(pt?.[0] ?? null, pt?.[1] ?? null);
@@ -368,6 +396,14 @@ export function Stage({
         )}
         {cropping && shown && (
           <CropOverlay img={imgEl} rect={rect} ratio={aspect.ratio} onChange={setRect} />
+        )}
+        {marking && shown && !cropping && (
+          <span
+            role="status"
+            className="pointer-events-none absolute top-5 left-1/2 -translate-x-1/2 rounded bg-black/75 px-2 py-0.5 text-[11px] whitespace-nowrap text-white"
+          >
+            Click the person the face finder missed · Esc to cancel
+          </span>
         )}
         {face && shown && g && !cropping && !zooming && !comparing && !before && !localOn && (() => {
           const f = g.faces?.find((x) => x.id === face);

@@ -1527,11 +1527,14 @@ def _people_edit(fn, *args):
 
 
 @app.get("/api/people/names")
-def people_names():
+def people_names(face: str = ""):
     """Who a face on a slide can be (the slide view's picker): everyone named or with a birthday,
-    by name, with their clearest face."""
+    with their clearest face. With `face` (id): the likeliest first (people.likely: how like their
+    faces it looks, whether they're on the slides around in the same clothes), `score` each, and
+    `likely` on the ones it probably is; else by name."""
     d = people.refresh()
     faces = people.all_faces()
+    score = people.likely(face, d) if face else {}
     out = []
     for pid, p in people.seen(d)["people"].items():
         if not (p.get("name") or p.get("birthday")):
@@ -1539,26 +1542,96 @@ def people_names():
         fs = [f for f in p["faces"] if f in faces]
         cover = max(fs, key=lambda f: faces[f].get("score", 0), default=None)
         out.append({"id": pid, "name": p.get("name", ""), "label": people.label(pid, p),
-                    "cover": f"/api/people/faces/{cover}.jpg" if cover else None, "faces": len(fs)})
-    out.sort(key=lambda p: (not p["name"], p["label"].lower()))
+                    "cover": f"/api/people/faces/{cover}.jpg" if cover else None, "faces": len(fs),
+                    **({"score": score.get(pid, 0.0), "likely": score.get(pid, 0.0) >= people.SAME_PERSON}
+                       if face else {})})
+    if face:  # the likeliest first; alike, the ones seen most
+        out.sort(key=lambda p: (-p["score"], -p["faces"], p["label"].lower()))
+    else:
+        out.sort(key=lambda p: (not p["name"], p["label"].lower()))
     return {"people": out}
+
+
+def _owners() -> dict[str, str]:
+    return {f: pid for pid, p in people.load_people()["people"].items() for f in p["faces"]}
+
+
+def _named_along(before: dict[str, str], face: str) -> int:
+    """The slides where other faces were put with someone named because of what was just said
+    (people.spread, and the rest of an unnamed group following)."""
+    d = people.load_people()
+    after = _owners()
+    known = {p for p, v in d["people"].items() if v.get("name") or v.get("birthday")}
+    return len({f.rsplit("/", 1)[0] for f, p in after.items()
+                if f != face and p in known and before.get(f) != p})
 
 
 @app.post("/api/people/faces/assign")
 def people_assign(body: dict = Body(...)):
     """Who the face `face` (id) is on its slide: `person` = an id, "new" (with `name`: someone new,
     or the person who already has that name), or null (not whoever it's with now). Answers its
-    tray's payload, as the slide view shows it."""
+    tray's payload, as the slide view shows it, with `named_along`: how many other slides got the
+    name too (the same person in the same clothes around it, the rest of its unnamed group)."""
     face = str(body.get("face", ""))
     to = body.get("person")
     # "it is them" on a face marked as probably someone else: the age it looks is what's wrong
     odd = dating.model()[2].get(face)
+    before = _owners()
     try:
         people.assign(face, None if to is None else str(to), str(body.get("name", "")),
                       age_off=bool(odd and odd["pid"] == to))
     except KeyError:
         raise HTTPException(404, "No such person (the list changed meanwhile?)")
-    return _session_payload(_session(face.split("/")[0]))
+    return {**_session_payload(_session(face.split("/")[0])), "named_along": _named_along(before, face)}
+
+
+@app.post("/api/sessions/{sid}/groups/{gid}/faces")
+def people_mark(sid: str, gid: str, body: dict = Body(...)):
+    """Someone the face finder missed: `point` [x, y] (0..1 of the slide turned upright, before trim,
+    straighten and crop) is on them. Their face is looked for there at a lower bar, else they're
+    marked as they are (the back of a head: their clothes still say who it is nearby). With `person`
+    (and `name`) as for assign, they're that person straight away. Answers the tray's payload with
+    `face`: the new face's id."""
+    if not wf.people_on():
+        return _err(RuntimeError("Turn on recognising people in Settings first."))
+    try:
+        x, y = (float(v) for v in body.get("point", ()))
+    except (TypeError, ValueError):
+        raise HTTPException(400, "point: [x, y], 0..1")
+    if not (0 <= x <= 1 and 0 <= y <= 1):
+        raise HTTPException(400, "point: [x, y], 0..1")
+    s = _session(sid)
+    try:
+        g = s.group(gid)
+    except KeyError:
+        raise HTTPException(404, "No such slide")
+    wf.find_faces(sid, gid)  # its faces up to date first: the new one is kept with them
+    rgb = im.orient(wf.fused_proxy(s, g), g["rotation"], g.get("mirror", False))
+    try:
+        face = people.add_face(sid, g, rgb, [x, y], wf.ages_on())
+    except RuntimeError as e:
+        return _err(e, 409)
+    before = _owners()
+    to = body.get("person")
+    if to is not None:
+        try:
+            people.assign(face, str(to), str(body.get("name", "")))
+        except KeyError:
+            raise HTTPException(404, "No such person (the list changed meanwhile?)")
+    else:
+        people.refresh()
+    return {**_session_payload(_session(sid)), "face": face, "named_along": _named_along(before, face)}
+
+
+@app.delete("/api/people/faces/{sid}/{gid}/{n}")
+def people_unmark(sid: str, gid: str, n: str):
+    """Take off a face marked by hand (there's nobody there after all). Answers the tray's payload."""
+    try:
+        people.drop_face(f"{sid}/{gid}/{n}")
+    except KeyError:
+        raise HTTPException(404, "Only a face marked by hand can be taken off")
+    people.refresh()
+    return _session_payload(_session(sid))
 
 
 @app.post("/api/people/faces/ignore")
