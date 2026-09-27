@@ -169,7 +169,7 @@ export async function sync(client: Immich, slides: Slide[], people: PeopleStore,
   d = await people.load();
   let owner = owners(d);
   for (const [pid, p] of Object.entries(d.people)) {
-    if (p.name) continue;
+    if (p.name || p.ignored) continue; // the ignored are left alone
     const votes = new Map<string, number>();
     for (const [fid, f] of found) if (owner.get(fid) === pid && immichName(f)) add(votes, immichName(f));
     const best = top(votes);
@@ -203,7 +203,7 @@ export async function sync(client: Immich, slides: Slide[], people: PeopleStore,
   const links: Record<string, ImmichLink> = {};
   for (const [pid, p] of Object.entries(d.people)) {
     const name = p.name;
-    if (!name) continue;
+    if (!name || p.ignored) continue;
     const link = p.immich;
     let them = linked(link);
     if (them && !same(them.name, name)) {

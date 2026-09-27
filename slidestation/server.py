@@ -1500,6 +1500,7 @@ def _people_payload(d: dict) -> dict:
             "id": pid,
             "name": p.get("name", ""),
             "birthday": p.get("birthday", ""),
+            "ignored": bool(p.get("ignored")),
             "slides": len({(faces[f]["sid"], faces[f]["gid"]) for f in fs}),
             # the ages their faces look (corrected by the calibration): youngest, oldest
             "ages": [round(ages[0]), round(ages[-1])] if ages else None,
@@ -1556,7 +1557,7 @@ def people_names(face: str = ""):
     faces = people.all_faces()
     score = people.likely(face, d) if face else {}
     out = []
-    for pid, p in d["people"].items():
+    for pid, p in people.seen(d)["people"].items():
         if not (p.get("name") or p.get("birthday")):
             continue
         fs = [f for f in p["faces"] if f in faces]
@@ -1652,6 +1653,24 @@ def people_unmark(sid: str, gid: str, n: str):
         raise HTTPException(404, "Only a face marked by hand can be taken off")
     people.refresh()
     return _session_payload(_session(sid))
+
+
+@app.post("/api/people/faces/ignore")
+def people_ignore_faces(body: dict = Body(...)):
+    """Ignore the people these faces (ids, all on one tray) are with: the strangers in a crowd.
+    Answers the tray's payload, as the slide view shows it."""
+    faces = [str(x) for x in body.get("faces", [])]
+    if not faces:
+        raise HTTPException(400, "Which faces?")
+    people.set_ignored(people.face_owners(people.refresh(), faces))
+    return _session_payload(_session(faces[0].split("/")[0]))
+
+
+@app.post("/api/people/ignore")
+def people_ignore(body: dict = Body(...)):
+    """Ignore `people` (ids), or stop ignoring them (`ignored`: false)."""
+    return _people_payload(people.set_ignored([str(x) for x in body.get("people", [])],
+                                              bool(body.get("ignored", True))))
 
 
 @app.get("/api/people/{pid}")

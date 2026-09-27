@@ -418,6 +418,8 @@ export type Person = {
   name: string;
   /** "1952", "1952-03" or "1952-03-14"; "" = not given. Dates their slides with the ages they look. */
   birthday?: string;
+  /** Ignored (a stranger in a crowd): left out of the lists, the slides' faces, dating and the sync. */
+  ignored?: boolean;
   /** How many slides they are on. */
   slides: number;
   /** The youngest and oldest they look, in years (with the age model). */
@@ -476,6 +478,7 @@ export type PersonPage = {
   })[];
   /** Who they're on slides with, most first. */
   with: { id: string; name: string; slides: number }[];
+  ignored?: boolean;
 };
 
 export const slidePreview = (s: { sid: string; gid: string; key: string }, size = 320) =>

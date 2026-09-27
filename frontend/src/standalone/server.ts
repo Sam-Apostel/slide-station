@@ -55,6 +55,7 @@ import {
   emptyPeople,
   faceKey,
   merge as mergePeople,
+  setIgnored,
   MODEL_MB as PEOPLE_MB,
   MODEL_NAME as SFACE_NAME,
   recordFaces,
@@ -1222,6 +1223,7 @@ async function peoplePayload(r: Awaited<ReturnType<typeof refreshPeople>>) {
       id: pid,
       name: p.name ?? "",
       birthday: p.birthday ?? "",
+      ignored: !!p.ignored,
       slides: new Set(fs.map((f) => `${faces.get(f)!.sid}/${faces.get(f)!.gid}`)).size,
       ages: null, // the age model is the desktop app's
       cover: fs.length ? url(fs[0]) : null,
@@ -1263,7 +1265,7 @@ async function personPage(pid: string): Promise<PersonPage> {
   };
   const born = p.birthday ? years(p.birthday) : null;
   const owner = new Map<string, string>();
-  for (const [q, v] of Object.entries(d.people)) for (const f of v.faces) owner.set(f, q);
+  for (const [q, v] of Object.entries(d.people)) if (!v.ignored) for (const f of v.faces) owner.set(f, q);
   const onSlide = new Map<string, Set<string>>();
   for (const [f, x] of faces) {
     const q = owner.get(f);
@@ -1316,7 +1318,7 @@ async function personPage(pid: string): Promise<PersonPage> {
     .map(([q, n]) => ({ id: q, name: d.people[q].name ?? "", slides: n }))
     .sort((a, b) => b.slides - a.slides)
     .slice(0, 12);
-  return { id: pid, name: p.name ?? "", birthday: p.birthday ?? "", slides, with: withList };
+  return { id: pid, name: p.name ?? "", birthday: p.birthday ?? "", slides, with: withList, ignored: !!p.ignored };
 }
 
 /** People & Places' map: every place with its slides and who is on them (dating.atlas). */
@@ -1324,7 +1326,7 @@ async function atlas() {
   const { d, faces } = await refreshPeople();
   const who = new Map<string, string[]>();
   for (const [pid, p] of Object.entries(d.people))
-    for (const f of p.faces) {
+    for (const f of p.ignored ? [] : p.faces) {
       const x = faces.get(f);
       if (!x) continue;
       const ids = who.get(`${x.sid}/${x.gid}`) ?? [];
@@ -3389,6 +3391,11 @@ export async function handle(method: string, url: string, body: Body = {}): Prom
       if (!("name" in body)) return peoplePayload(r);
     }
     return peoplePayload(await refreshPeople((d) => renamePerson(d, pid, String(body.name ?? ""))));
+  }
+  if (is("POST", /^\/api\/people\/ignore$/)) {
+    // ignore people (strangers in a crowd), or stop ignoring them (server.people_ignore)
+    const pids = ((body.people as unknown[]) ?? []).map(String);
+    return peoplePayload(await refreshPeople((d) => setIgnored(d, pids, body.ignored !== false)));
   }
   if (is("GET", /^\/api\/atlas$/)) return atlas();
   if ((m = is("GET", /^\/api\/people\/([^/]+)$/))) return personPage(m[1]);

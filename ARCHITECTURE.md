@@ -1393,7 +1393,7 @@ Opt-in (`people_enabled`, Settings → "Recognise people"), desktop / server app
   pairwise similarity of two groups is `sum_a · sum_b / (n_a n_b)`, so groups are just running
   sums). Existing people keep their faces and never merge with each other automatically (that's the
   user's call); new faces join them or form new people. `people.json` = `{"people": {pid: {"name",
-  "faces", "birthday"?, "immich"?}}, "rejected": {face: [pids]}, "next"}`; `immich` = `{"id", "name"}`,
+  "faces", "birthday"?, "immich"?, "ignored"?}}, "rejected": {face: [pids]}, "next"}`; `immich` = `{"id", "name"}`,
   the Immich person last synced with and the name both had then (a merge keeps it). Unnamed people left without faces disappear; named
   ones stay.
 - **Editing** (People dialog, `components/people.tsx`): `PATCH /api/people/{pid}` names (a name
@@ -1401,6 +1401,17 @@ Opt-in (`people_enabled`, Settings → "Recognise people"), desktop / server app
   `POST …/{pid}/remove {"faces": [...]}` takes faces out and remembers they're not that person (the
   clustering never puts them back there; they join someone else or stand alone).
   `GET /api/people/faces/{sid}/{gid}/{n}.jpg?v=<key>` cuts the face from the proxy.
+- **Ignoring** (crowds, sports, the stranger behind you): `people[pid].ignored`. An ignored person
+  stays a cluster, so their look-alikes on later slides keep joining them and stay ignored too, but
+  `people.seen(d)` (people.json without them) is what dating (`model`, `tray_view`), the map
+  (`atlas`), "often with" and the names picker go by; `slide_faces` leaves their faces out, names never `spread` to or from them, and the
+  Immich sync neither names them from Immich nor gives them an Immich person. `POST
+  /api/people/ignore {"people": [...], "ignored": bool}` (People & Places: the sidebar's selection,
+  the eye on an unnamed face in "Who are they?", the person's page; the sidebar's "Show N ignored"
+  lists them to bring back) and `POST /api/people/faces/ignore {"faces": [...]}` (the slide's People
+  section: "Ignore" on a picked unnamed face, "Ignore the N without a name"; answers the tray's
+  payload). Naming someone, putting a face with them by hand, or merging them into someone not
+  ignored un-ignores them. Ported to the browser version with the rest of the dialog.
 - **Who is who on the slide** (inspector section "People", `components/slide-people.tsx`): every face
   on the slide (payload `faces`, `dating.slide_faces`: id, url, box, person, label, age, `odd`), left
   to right; hovering or picking one outlines it on the photo (`FaceOnPhoto`: the box through

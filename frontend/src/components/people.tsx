@@ -3,10 +3,11 @@
 // lists people or places with search and sort; the main pane is an overview (people's faces, or
 // the map), a person's page (their slides by year with the age they were and look, their places,
 // who they're with) or a place's page. Slides picked on a page can be placed by clicking the map.
+// People can be ignored (strangers in a crowd): hidden from the lists until asked for.
 // Birthdays date the slides people are on (dating.py; ages are the desktop app's). In both versions.
 import * as React from "react";
 import { toast } from "sonner";
-import { ArrowLeft, MapPin, MapPinOff, Search, Users, X } from "lucide-react";
+import { ArrowLeft, Eye, EyeOff, MapPin, MapPinOff, Search, Users, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
@@ -38,6 +39,7 @@ export type PeopleSpot = { nav: Nav; label: string; scroll: number };
 type Sort = "name" | "slides" | "birthday";
 const LIST = 200; // sidebar rows before "show more"
 const slideId = (s: { sid: string; gid: string }) => `${s.sid}/${s.gid}`;
+const persons = (n: number) => (n === 1 ? "1 person" : `${n} people`);
 const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
 const placeKey = (p: Place) => `${p.name ?? ""}@${p.lat.toFixed(3)},${p.lon.toFixed(3)}`;
 
@@ -137,6 +139,12 @@ export function PeoplePlaces({
     loadAtlas();
     setNav({ tab: "people", person: into });
   };
+  const ignore = async (ids: string[], ignored: boolean) => {
+    await run(api("POST", "/api/people/ignore", { people: ids, ignored }));
+    toast(ignored ? `Ignored ${persons(ids.length)}` : `Stopped ignoring ${persons(ids.length)}`);
+    loadAtlas();
+    if (nav.person && ids.includes(nav.person)) loadPage(nav.person);
+  };
   const start = async (path: string, what: string) => {
     try {
       await api("POST", path);
@@ -222,6 +230,7 @@ export function PeoplePlaces({
         onPick={pick}
         onUnplace={() => place(null)}
         onEdit={(body) => editPerson(page.id, body)}
+        onIgnore={(on) => ignore([page.id], on)}
         onRemoveFace={(face) => removeFace(page.id, face)}
         onPerson={(pid) => setNav({ tab: "people", person: pid })}
         onPlace={(id) => setNav({ tab: "places", place: id })}
@@ -260,6 +269,7 @@ export function PeoplePlaces({
         searching={searching}
         job={job}
         onPerson={(pid) => setNav({ tab: "people", person: pid })}
+        onIgnore={(pid) => ignore([pid], true)}
         onSettings={onSettings}
         onFind={() => start("/api/people/scan", "Looking for faces on every slide")}
         onSync={() => start("/api/people/sync", "Syncing people with Immich")}
@@ -276,6 +286,7 @@ export function PeoplePlaces({
         places={allPlaces}
         onClose={onClose}
         onMerge={merge}
+        onIgnore={ignore}
       />
       <section className="flex min-w-0 flex-1 flex-col">{main}</section>
     </div>
@@ -295,6 +306,7 @@ function Sidebar({
   places,
   onClose,
   onMerge,
+  onIgnore,
 }: {
   nav: Nav;
   onNav: (n: Nav) => void;
@@ -302,24 +314,32 @@ function Sidebar({
   places: MapPlace[];
   onClose: () => void;
   onMerge: (ids: string[]) => void;
+  onIgnore: (ids: string[], ignored: boolean) => void;
 }) {
   const [q, setQ] = React.useState("");
   const [sort, setSort] = React.useState<Sort>("name");
   const [more, setMore] = React.useState(false);
   const [once, setOnce] = React.useState(false);
+  const [ignored, setIgnored] = React.useState(false); // show the people ignored (only them)
   const [merging, setMerging] = React.useState<string[]>([]);
   React.useEffect(() => (setQ(""), setMore(false)), [nav.tab]);
 
   const needle = q.trim().toLowerCase();
-  const seenOnce = people.filter((p) => !p.name && p.faces.length === 1).length;
+  const ignoredCount = people.filter((p) => p.ignored).length;
+  const seenOnce = people.filter((p) => !p.ignored && !p.name && p.faces.length === 1).length;
   const shownPeople = React.useMemo(() => {
-    let list = people.filter((p) => once || p.name || p.faces.length > 1);
+    let list = ignored
+      ? people.filter((p) => p.ignored)
+      : people.filter((p) => !p.ignored && (once || p.name || p.faces.length > 1));
     if (needle) list = list.filter((p) => personLabel(p).toLowerCase().includes(needle));
     if (sort === "birthday") list = list.filter((p) => !p.birthday);
     const byName = (a: Person, b: Person) =>
       +!a.name - +!b.name || a.name.localeCompare(b.name) || b.slides - a.slides;
     return [...list].sort(sort === "slides" ? (a, b) => b.slides - a.slides || byName(a, b) : byName);
-  }, [people, needle, sort, once]);
+  }, [people, needle, sort, once, ignored]);
+  // the selection, as it's still there (people merge and go)
+  const chosen = merging.filter((id) => people.some((p) => p.id === id));
+  const allIgnored = chosen.length > 0 && chosen.every((id) => people.find((p) => p.id === id)?.ignored);
   const shownPlaces = React.useMemo(() => {
     const list = needle
       ? places.filter((p) => placeLabel({ ...p, id: undefined }, true).toLowerCase().includes(needle))
@@ -403,7 +423,7 @@ function Sidebar({
                 <Checkbox
                   checked={merging.includes(p.id)}
                   onCheckedChange={(v) => setMerging((m) => (v === true ? [...m, p.id] : m.filter((x) => x !== p.id)))}
-                  aria-label={`Select ${personLabel(p)} to merge`}
+                  aria-label={`Select ${personLabel(p)}`}
                   className={cn(
                     "absolute top-1/2 right-2 -translate-y-1/2 opacity-0 group-hover:opacity-100 focus-visible:opacity-100",
                     merging.includes(p.id) && "opacity-100",
@@ -445,26 +465,54 @@ function Sidebar({
             </Button>
           </li>
         )}
-        {nav.tab === "people" && seenOnce > 0 && (
+        {nav.tab === "people" && seenOnce > 0 && !ignored && (
           <li>
             <Button variant="link" className="h-auto p-2 text-[12px]" onClick={() => setOnce((v) => !v)}>
               {once ? "Hide" : "Show"} {plural(seenOnce, "face")} seen only once
             </Button>
           </li>
         )}
+        {nav.tab === "people" && (ignoredCount > 0 || ignored) && (
+          <li>
+            <Button
+              variant="link"
+              className="h-auto p-2 text-[12px]"
+              onClick={() => (setIgnored((v) => !v), setMerging([]))}
+            >
+              {ignored ? "Back to everyone else" : `Show ${persons(ignoredCount)} ignored`}
+            </Button>
+          </li>
+        )}
       </ul>
-      {nav.tab === "people" && merging.length >= 2 && (
+      {nav.tab === "people" && chosen.length >= 1 && (
         <div className="flex items-center gap-2 border-t border-(--ss-line-soft) p-2">
-          <Button
-            size="sm"
-            className="flex-1 bg-primary text-primary-foreground"
-            onClick={() => {
-              onMerge(merging);
-              setMerging([]);
-            }}
-          >
-            <Users className="size-3.5" /> These {merging.length} are one person
-          </Button>
+          {chosen.length >= 2 && !allIgnored && (
+            <Button
+              size="sm"
+              className="flex-1 bg-primary text-primary-foreground"
+              onClick={() => {
+                onMerge(chosen);
+                setMerging([]);
+              }}
+            >
+              <Users className="size-3.5" /> These {chosen.length} are one person
+            </Button>
+          )}
+          <Tip label={allIgnored ? "Show them again" : "Strangers: leave them out of the lists and off the slides"}>
+            <Button
+              size="sm"
+              variant="outline"
+              className={cn(chosen.length < 2 || allIgnored ? "flex-1" : "")}
+              onClick={() => {
+                onIgnore(chosen, !allIgnored);
+                setMerging([]);
+              }}
+            >
+              {allIgnored ? <Eye className="size-3.5" /> : <EyeOff className="size-3.5" />}
+              {allIgnored ? "Stop ignoring" : "Ignore"}
+              {chosen.length > 1 && ` ${chosen.length}`}
+            </Button>
+          </Tip>
           <Tip label="Clear">
             <Button size="sm" variant="ghost" onClick={() => setMerging([])} aria-label="Clear the selection">
               <X className="size-3.5" />
@@ -491,6 +539,7 @@ function PeopleOverview({
   searching,
   job,
   onPerson,
+  onIgnore,
   onSettings,
   onFind,
   onSync,
@@ -499,13 +548,14 @@ function PeopleOverview({
   searching: boolean;
   job: Job | null;
   onPerson: (pid: string) => void;
+  onIgnore: (pid: string) => void;
   onSettings: () => void;
   onFind: () => void;
   onSync: () => void;
 }) {
   if (!data) return <Loading />;
-  const named = data.people.filter((p) => p.name);
-  const unnamed = data.people.filter((p) => !p.name && p.faces.length > 1);
+  const named = data.people.filter((p) => p.name && !p.ignored);
+  const unnamed = data.people.filter((p) => !p.name && !p.ignored && p.faces.length > 1);
   return (
     <div className="min-h-0 flex-1 overflow-y-auto px-6 py-5">
       <header className="mb-4 flex flex-wrap items-start gap-3">
@@ -552,14 +602,25 @@ function PeopleOverview({
           <AgesNote data={data} onSettings={onSettings} onFind={onFind} searching={searching} />
           {!data.people.length && <p className="py-6 text-[12px] text-muted-foreground">No faces found yet.</p>}
           <FaceGrid title="Named" people={named} onPerson={onPerson} />
-          <FaceGrid title="Who are they?" people={unnamed} onPerson={onPerson} />
+          <FaceGrid title="Who are they?" people={unnamed} onPerson={onPerson} onIgnore={onIgnore} />
         </>
       )}
     </div>
   );
 }
 
-function FaceGrid({ title, people, onPerson }: { title: string; people: Person[]; onPerson: (pid: string) => void }) {
+function FaceGrid({
+  title,
+  people,
+  onPerson,
+  onIgnore,
+}: {
+  title: string;
+  people: Person[];
+  onPerson: (pid: string) => void;
+  /** A stranger: out of the lists (the sidebar brings them back). */
+  onIgnore?: (pid: string) => void;
+}) {
   const [all, setAll] = React.useState(false);
   if (!people.length) return null;
   const shown = all ? people : people.slice(0, 60);
@@ -570,7 +631,7 @@ function FaceGrid({ title, people, onPerson }: { title: string; people: Person[]
       </h2>
       <ul className="grid grid-cols-[repeat(auto-fill,minmax(104px,1fr))] gap-3">
         {shown.map((p) => (
-          <li key={p.id}>
+          <li key={p.id} className="group/face relative">
             <button
               type="button"
               onClick={() => onPerson(p.id)}
@@ -585,6 +646,18 @@ function FaceGrid({ title, people, onPerson }: { title: string; people: Person[]
                 {p.birthday ? ` · ${p.birthday.slice(0, 4)}` : ""}
               </span>
             </button>
+            {onIgnore && (
+              <Tip label="Ignore: a stranger">
+                <button
+                  type="button"
+                  aria-label={`Ignore ${personLabel(p)}`}
+                  onClick={() => onIgnore(p.id)}
+                  className="absolute top-1 right-1 hidden rounded-full bg-black/70 p-1 text-white group-hover/face:block focus-visible:block"
+                >
+                  <EyeOff className="size-3" />
+                </button>
+              </Tip>
+            )}
           </li>
         ))}
       </ul>
@@ -844,6 +917,7 @@ function PersonView({
   onPick,
   onUnplace,
   onEdit,
+  onIgnore,
   onRemoveFace,
   onPerson,
   onPlace,
@@ -854,6 +928,7 @@ function PersonView({
   ages: boolean;
   places: MapPlace[];
   onEdit: (body: Record<string, string>) => void;
+  onIgnore: (ignored: boolean) => void;
   onRemoveFace: (face: string) => void;
   onPerson: (pid: string) => void;
   onPlace: (id: string) => void;
@@ -919,8 +994,16 @@ function PersonView({
                 {plural(page.slides.length, "slide")} · {plural(mine.length, "place")}
                 {looks && ` · looks ${looks[0] === looks[1] ? `≈ ${looks[0]}` : `${looks[0]}–${looks[1]}`}`}
               </span>
-              {!page.birthday && ages && <span className="text-foreground/75">A birthday dates their slides.</span>}
+              {!page.birthday && ages && !page.ignored && (
+                <span className="text-foreground/75">A birthday dates their slides.</span>
+              )}
             </div>
+            {page.ignored && (
+              <p className="mt-1 px-1 text-[12px] text-foreground/75">
+                Ignored: left out of the lists, the slides' faces, dating and the Immich sync. Look-alikes found later
+                are ignored too.
+              </p>
+            )}
             {page.with.length > 0 && (
               <div className="mt-2 flex flex-wrap items-center gap-1.5 px-1 text-[11px]">
                 <span className="text-muted-foreground">Often with</span>
@@ -937,6 +1020,12 @@ function PersonView({
               </div>
             )}
           </div>
+          <Tip label={page.ignored ? "Show them again" : "A stranger: leave them out of the lists and off the slides"}>
+            <Button variant="outline" size="sm" onClick={() => onIgnore(!page.ignored)}>
+              {page.ignored ? <Eye className="size-3.5" /> : <EyeOff className="size-3.5" />}
+              {page.ignored ? "Stop ignoring" : "Ignore"}
+            </Button>
+          </Tip>
         </header>
         <PlaceBar
           selection={selection}
