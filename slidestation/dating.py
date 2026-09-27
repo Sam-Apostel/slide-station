@@ -218,7 +218,7 @@ def suspects(pdata: dict, faces: dict, slides: dict, cal: dict, born: dict) -> d
         if not b:
             continue
         sure = set(p.get("sure", ()))
-        mine = [f for f in p["faces"] if f in faces]
+        mine = [f for f in p["faces"] if f in faces and faces[f]["emb"] is not None]
         total = np.sum([faces[f]["emb"] for f in mine], 0) if len(mine) > 2 else None
         for f in p["faces"]:
             x = faces.get(f)
@@ -234,7 +234,7 @@ def suspects(pdata: dict, faces: dict, slides: dict, cal: dict, born: dict) -> d
             if off < MISNAMED or off <= AGREE * math.hypot(sd, when[1], b[1]):
                 continue
             weak = False
-            if total is not None:  # the others' average direction, without this face
+            if total is not None and x["emb"] is not None:  # the others' average direction, without this face
                 rest = total - x["emb"]
                 weak = float(x["emb"] @ rest) / (float(np.linalg.norm(rest)) or 1) < WEAK_FIT
             if weak or (s["date"] and not s["own_from"]):
@@ -309,7 +309,7 @@ def slide_faces(sid: str, groups: list[dict], pdata: dict, faces: dict, cal: dic
     """Every face on each slide of a tray, left to right, for correcting who is who on the slide:
     {gid: [{"id", "url", "box" (0..1 of the slide as it's turned now; None when the face was found
     turned otherwise), "person", "label", "named", "age" (looks, corrected; None when the user said it's wrong), "odd" (suspects: {"age",
-    "year"}, they'd be `age` in `year`) | None}]}."""
+    "year"}, they'd be `age` in `year`) | None, "manual"}]}."""
     owner = {f: pid for pid, p in pdata["people"].items() for f in p["faces"]}
     entries = people.load_faces(sid)
     out: dict[str, list[dict]] = {}
@@ -327,6 +327,7 @@ def slide_faces(sid: str, groups: list[dict], pdata: dict, faces: dict, cal: dic
                 "named": bool(p and p.get("name")),
                 "age": round(corrected(x["age"], pid or "", cal)[0]) if "age" in x and not (f in odd and not o) else None,
                 "odd": {"age": o["age"], "year": o["year"]} if o else None,
+                "manual": bool(x.get("manual")),  # marked by hand: can be taken off again
             })
         if rows:
             out[g["id"]] = rows

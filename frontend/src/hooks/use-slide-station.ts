@@ -43,6 +43,10 @@ type UnsavedParams = {
 };
 
 const fail = (e: unknown) => toast.error(e instanceof Error ? e.message : String(e));
+/** A name given on one slide that was recognised on others too (the same person nearby in the same
+ *  clothes, or the rest of their group): say so, it's why those slides changed. */
+const alongToast = (n?: number) =>
+  n && toast.success(`Also recognised on ${n} more slide${n === 1 ? "" : "s"}`, { duration: 3000 });
 
 /**
  * All app state and every action the UI can take. Mirrors the old plain-JS app:
@@ -587,7 +591,41 @@ export function useSlideStation() {
    *  them), or null (not whoever it's with now). The tray comes back with the dates redone. */
   const assignFace = async (face: string, person: string | null, name = "") => {
     try {
-      applyPayload(await api<SessionPayload>("POST", "/api/people/faces/assign", { face, person, name }));
+      const p = await api<SessionPayload & { named_along?: number }>("POST", "/api/people/faces/assign", {
+        face,
+        person,
+        name,
+      });
+      applyPayload(p);
+      alongToast(p.named_along);
+      return true;
+    } catch (e) {
+      fail(e);
+      return false;
+    }
+  };
+
+  /** Someone the face finder missed on slide `gid`, at `point` (0..1 of the slide turned upright,
+   *  before trim, straighten and crop). Answers the new face's id (null: it failed). */
+  const markFace = async (gid: string, point: [number, number]) => {
+    try {
+      const p = await api<SessionPayload & { face: string }>(
+        "POST",
+        `/api/sessions/${ref.current.sessionId}/groups/${gid}/faces`,
+        { point },
+      );
+      applyPayload(p);
+      return p.face;
+    } catch (e) {
+      fail(e);
+      return null;
+    }
+  };
+
+  /** Take off a face marked by hand. */
+  const unmarkFace = async (face: string) => {
+    try {
+      applyPayload(await api<SessionPayload>("DELETE", `/api/people/faces/${face}`));
       return true;
     } catch (e) {
       fail(e);
@@ -982,6 +1020,8 @@ export function useSlideStation() {
     decideSimilar,
     decideLookalike,
     assignFace,
+    markFace,
+    unmarkFace,
     checkLookalikes,
     propagate,
     setTags,

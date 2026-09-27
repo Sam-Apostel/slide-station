@@ -101,6 +101,7 @@ function SlideStationApp() {
   React.useEffect(() => {
     setPicking(false);
     setCropping(false);
+    setMarking(false);
     setLocal((t) => ({ ...t, open: false, sel: 0 }));
     setZoom(null); // the full-resolution render is per slide: moving on leaves the zoom
   }, [app.sel, sessionId]);
@@ -108,10 +109,24 @@ function SlideStationApp() {
   const [settingsPane, setSettingsPane] = React.useState<SettingsPane>();
   /** Settings, on the pane that matters to what asked (else where it was left). */
   const openSettings = (pane?: SettingsPane) => (setSettingsPane(pane), setSettingsOpen(true));
+  const onMarked = React.useCallback(
+    async (at: [number, number] | null) => {
+      setMarking(false);
+      const g = app.current;
+      if (!at || !g) return;
+      const id = await app.markFace(g.id, at);
+      if (id) setMarked(id);
+    },
+    [app],
+  );
   const [helpOpen, setHelpOpen] = React.useState(false);
   const [peopleOpen, setPeopleOpen] = React.useState(false);
   /** The face picked or hovered in the inspector's People section, outlined on the photo. */
   const [face, setFace] = React.useState<string | null>(null);
+  /** Marking someone the face finder missed: the stage waits for a click on them; `marked`: the
+   *  face that made (the People section picks it to say who it is). */
+  const [marking, setMarking] = React.useState(false);
+  const [marked, setMarked] = React.useState<string | null>(null);
   // the People & Places page a slide was opened from, to go back to (else it opens on the overview)
   const [peopleFrom, setPeopleFrom] = React.useState<PeopleSpot | null>(null);
   const [paletteOpen, setPaletteOpen] = React.useState(false);
@@ -521,6 +536,8 @@ function SlideStationApp() {
                   onLoupe={setLoupe}
                   onGrid={views.toggleGrid}
                   face={face}
+                  marking={marking}
+                  onMarked={onMarked}
                   back={backToPeople}
                 />
               )}
@@ -560,6 +577,12 @@ function SlideStationApp() {
                     onAccepted={offerNeighbours}
                     face={face}
                     onFace={setFace}
+                    people={{
+                      on: !standalone && !!state?.config.people_enabled,
+                      marking,
+                      onMark: () => setMarking((v) => !v),
+                      marked,
+                    }}
                     onStockRange={(stock) =>
                       setOffer({ kind: "stock", value: stock, from: app.sel, to: session.groups.length - 1 })
                     }

@@ -229,10 +229,22 @@ export type SlideFace = {
   age: number | null;
   /** Probably someone else: `label` would be `age` in `year` (dating.suspects). */
   odd: { age: number; year: number } | null;
+  /** Marked by hand (the face finder missed them): can be taken off again. */
+  manual?: boolean;
 };
 
 /** Who a face can be (`GET /api/people/names`): everyone named or with a birthday. */
-export type PersonName = { id: string; name: string; label: string; cover: string | null; faces: number };
+export type PersonName = {
+  id: string;
+  name: string;
+  label: string;
+  cover: string | null;
+  faces: number;
+  /** Asked for a face: how likely it's them (people.likely; the list comes likeliest first). */
+  score?: number;
+  /** …and likely enough to say so. */
+  likely?: boolean;
+};
 
 /** Which of the two trays in a box: they stand side by side. */
 export type Side = "left" | "right";
