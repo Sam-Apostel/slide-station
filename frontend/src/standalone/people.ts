@@ -25,8 +25,9 @@ export const MATCH = 0.8; // a face found again (after the slide was turned) kee
 export type Found = { box: number[]; score: number; emb: Float32Array };
 export type StoredFace = { id: string; box: number[]; score: number; emb: string };
 export type FacesFile = Record<string, { key: string; rot: number; mirror?: boolean; faces: StoredFace[] }>;
-/** immich: the Immich person they were synced with and the name both had then. */
-export type Person = { name: string; faces: string[]; birthday?: string; immich?: ImmichLink };
+/** immich: the Immich person they were synced with and the name both had then. ignored: someone the
+ *  user doesn't care about (a stranger in a crowd, setIgnored). */
+export type Person = { name: string; faces: string[]; birthday?: string; immich?: ImmichLink; ignored?: boolean };
 export type ImmichLink = { id: string; name: string };
 export type PeopleFile = { people: Record<string, Person>; rejected: Record<string, string[]>; next: number };
 
@@ -189,6 +190,7 @@ function mergeInto(d: PeopleFile, into: string, others: string[]) {
     target.name = target.name || gone.name || "";
     if (!target.birthday && gone.birthday) target.birthday = gone.birthday;
     if (!target.immich && gone.immich) target.immich = gone.immich;
+    if (!gone.ignored) delete target.ignored; // ignored only if every one of them was
     for (const [f, ps] of Object.entries(d.rejected))
       d.rejected[f] = [...new Set(ps.map((x) => (x === p ? into : x)))].sort();
   }
@@ -200,6 +202,7 @@ export function rename(d0: PeopleFile, pid: string, name: string): PeopleFile | 
   if (!(pid in d.people)) return null;
   const n = String(name).split(/\s+/).filter(Boolean).join(" ").slice(0, 80);
   d.people[pid].name = n;
+  if (n) delete d.people[pid].ignored; // someone with a name matters after all
   const same = Object.keys(d.people).filter(
     (p) => p !== pid && n && (d.people[p].name ?? "").toLowerCase() === n.toLowerCase(),
   );
@@ -239,6 +242,18 @@ export function removeFaces(d0: PeopleFile, pid: string, faces: string[]): Peopl
   if (!(pid in d.people)) return null;
   d.people[pid].faces = d.people[pid].faces.filter((f) => !faces.includes(f));
   for (const f of faces) d.rejected[f] = [...new Set([...(d.rejected[f] ?? []), pid])].sort();
+  return d;
+}
+
+/** Ignore people (strangers in a crowd) or stop ignoring them (people.set_ignored): they stay people,
+ *  so their look-alikes keep joining them, but drop out of the lists, the map and the sync. */
+export function setIgnored(d0: PeopleFile, pids: string[], ignored: boolean): PeopleFile {
+  const d = clone(d0);
+  for (const pid of pids) {
+    if (!(pid in d.people)) continue;
+    if (ignored) d.people[pid].ignored = true;
+    else delete d.people[pid].ignored;
+  }
   return d;
 }
 

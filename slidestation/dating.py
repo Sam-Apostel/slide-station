@@ -252,7 +252,7 @@ def model(pdata: dict | None = None, faces: dict | None = None) -> tuple[dict, d
     when people.json, a faces.json or a session changed. A suspect face teaches neither the
     calibration nor a birth year: they're looked for first with the model uncalibrated, then again."""
     global _model_cache
-    pdata = pdata or people.load_people()
+    pdata = people.seen(pdata or people.load_people())  # the people ignored date nothing
     faces = faces if faces is not None else people.all_faces()
     slides = library_slides()
     pf = people.people_file()
@@ -309,8 +309,9 @@ def slide_faces(sid: str, groups: list[dict], pdata: dict, faces: dict, cal: dic
     """Every face on each slide of a tray, left to right, for correcting who is who on the slide:
     {gid: [{"id", "url", "box" (0..1 of the slide as it's turned now; None when the face was found
     turned otherwise), "person", "label", "named", "age" (looks, corrected; None when the user said it's wrong), "odd" (suspects: {"age",
-    "year"}, they'd be `age` in `year`) | None}]}."""
+    "year"}, they'd be `age` in `year`) | None}]}. Faces of people the user ignored aren't listed."""
     owner = {f: pid for pid, p in pdata["people"].items() for f in p["faces"]}
+    hidden = {f for p in pdata["people"].values() if p.get("ignored") for f in p["faces"]}
     entries = people.load_faces(sid)
     out: dict[str, list[dict]] = {}
     for g in groups:
@@ -318,6 +319,8 @@ def slide_faces(sid: str, groups: list[dict], pdata: dict, faces: dict, cal: dic
         upright = e.get("rot", 0) == g["rotation"] and bool(e.get("mirror")) == bool(g.get("mirror"))
         rows = []
         for x in sorted(e.get("faces", []), key=lambda x: x["box"][0]):
+            if x["id"] in hidden:
+                continue
             f, pid = x["id"], owner.get(x["id"])
             p = pdata["people"].get(pid) if pid else None
             o = odd.get(f)
@@ -405,13 +408,14 @@ def _say(ps: dict[str, tuple]) -> tuple[tuple[float, float], frozenset, list[str
 def tray_view(sid: str, d: dict, dates: list[dict], pdata: dict | None = None, faces: dict | None = None) -> list[dict]:
     """Per slide of a tray {"people": [{"id", "name", "age" (corrected, or None)}], "faces": every face
     on it (slide_faces), "year": (value, SD) | None, "floor": year | None, "suggestion": entry | None}."""
-    pdata = pdata or people.load_people()
+    everyone = pdata or people.load_people()
+    pdata = people.seen(everyone)
     faces = faces if faces is not None else people.all_faces()
     groups = d["groups"]
     n = len(groups)
     cal, born, odd = model(pdata, faces)
     on = _on_slides(sid, pdata, faces, odd)
-    every = slide_faces(sid, groups, pdata, faces, cal, odd)
+    every = slide_faces(sid, groups, everyone, faces, cal, odd)
     # the year each person on a slide puts it in: {pid: (year, age SD, birth SD, age, label)}
     per: list[dict[str, tuple]] = []
     views = []
@@ -552,7 +556,7 @@ def views(sid: str, d: dict, dates: list[dict], pdata: dict | None = None,
 def atlas() -> dict:
     """Every place in the library with its slides (and who is on them), for the map."""
     slides = library_slides()
-    pdata = people.load_people()
+    pdata = people.seen(people.load_people())
     faces = people.all_faces()
     who: dict[tuple[str, str], list[str]] = {}
     for pid, p in pdata["people"].items():
@@ -593,7 +597,7 @@ def person(pid: str, pdata: dict | None = None) -> dict:
         x = faces.get(f)
         if x and ((x["sid"], x["gid"]) not in best or x.get("score", 0) > best[(x["sid"], x["gid"])][1].get("score", 0)):
             best[(x["sid"], x["gid"])] = (f, x)
-    owner = {f: q for q, v in pdata["people"].items() for f in v["faces"]}
+    owner = {f: q for q, v in people.seen(pdata)["people"].items() for f in v["faces"]}  # not the ignored
     on_slide: dict[tuple[str, str], set[str]] = {}
     for f, y in faces.items():
         if owner.get(f) not in (None, pid):
@@ -636,4 +640,4 @@ def person(pid: str, pdata: dict | None = None) -> dict:
     with_ = sorted(({"id": q, "name": pdata["people"][q].get("name", ""), "slides": n} for q, n in together.items()
                     if q in pdata["people"]), key=lambda w: -w["slides"])
     return {"id": pid, "name": p.get("name", ""), "birthday": p.get("birthday", ""), "slides": slides,
-            "with": with_[:12]}
+            "with": with_[:12], "ignored": bool(p.get("ignored"))}

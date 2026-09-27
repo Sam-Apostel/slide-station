@@ -380,9 +380,10 @@ def people_file() -> Path:
 
 
 def load_people() -> dict:
-    """{"people": {pid: {"name", "faces": [face ids], "birthday"?, "sure"?: [face ids], "immich"?}},
-    "rejected": {face id: [pids]}, "next": int, "ages_off": [face ids]}. `sure`: faces the user put with
-    them by hand (the age check never doubts those). `ages_off`: faces the user said are who they're
+    """{"people": {pid: {"name", "faces": [face ids], "birthday"?, "sure"?: [face ids], "immich"?,
+    "ignored"?}}, "rejected": {face id: [pids]}, "next": int, "ages_off": [face ids]}. `sure`: faces the
+    user put with them by hand (the age check never doubts those). `ignored`: someone the user doesn't
+    care about (a stranger in a crowd, see seen). `ages_off`: faces the user said are who they're
     with although the age they look doesn't fit (dating.suspects): the age model got those wrong, they
     date nothing. "immich": {"id", "name"}, the Immich person they were synced with and the name both
     had then."""
@@ -469,6 +470,8 @@ def rename(pid: str, name: str) -> dict:
         if pid not in d["people"]:
             raise KeyError(pid)
         d["people"][pid]["name"] = name
+        if name:  # someone with a name matters after all
+            d["people"][pid].pop("ignored", None)
         same = [p for p, v in d["people"].items() if p != pid and name and v.get("name", "").lower() == name.lower()]
         if same:
             _merge(d, same[0], [pid])
@@ -518,6 +521,8 @@ def _merge(d: dict, into: str, others: list[str]) -> None:
             target["birthday"] = gone["birthday"]
         if not target.get("immich") and gone.get("immich"):
             target["immich"] = gone["immich"]
+        if not gone.get("ignored"):  # ignored only if every one of them was
+            target.pop("ignored", None)
         for f, ps in d["rejected"].items():
             d["rejected"][f] = sorted({into if x == p else x for x in ps})
 
@@ -575,6 +580,7 @@ def assign(face: str, to: str | None, name: str = "", age_off: bool = False) -> 
         d["ages_off"] = sorted(off | {face} if age_off and target == now else off)
         if target:
             p = d["people"][target]
+            p.pop("ignored", None)  # a face put with them by hand: they matter
             if face not in p["faces"]:
                 p["faces"].append(face)
             p["sure"] = sorted(set(p.get("sure", [])) | {face})
@@ -585,6 +591,36 @@ def assign(face: str, to: str | None, name: str = "", age_off: bool = False) -> 
                 d["rejected"].pop(face, None)
 
     return _edit(fn)
+
+
+def set_ignored(pids: list[str], ignored: bool = True) -> dict:
+    """Ignore people (strangers in a crowd, the players on the other team) or stop ignoring them.
+    They stay people - their look-alikes on later slides keep joining them, so they stay ignored too -
+    but drop out of the lists, the slides' faces, dating, the map and the Immich sync (seen). Unknown
+    ids are skipped (joined someone already)."""
+    def fn(d):
+        for pid in pids:
+            if pid not in d["people"]:
+                continue
+            if ignored:
+                d["people"][pid]["ignored"] = True
+            else:
+                d["people"][pid].pop("ignored", None)
+
+    return _edit(fn)
+
+
+def face_owners(d: dict, faces: list[str]) -> list[str]:
+    """The people these faces are with (each once, in order)."""
+    owner = {f: pid for pid, p in d["people"].items() for f in p["faces"]}
+    return list(dict.fromkeys(owner[f] for f in faces if f in owner))
+
+
+def seen(d: dict) -> dict:
+    """people.json without the people the user ignored: what dating, the map and the sync go by."""
+    if not any(p.get("ignored") for p in d["people"].values()):
+        return d
+    return {**d, "people": {pid: p for pid, p in d["people"].items() if not p.get("ignored")}}
 
 
 def label(pid: str, p: dict) -> str:

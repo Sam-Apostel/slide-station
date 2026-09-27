@@ -189,6 +189,54 @@ def test_merged_slide_forgets_its_faces(api, tmp_path, faces_on, monkeypatch):
     assert g1 not in people.load_faces(sid)
 
 
+CROWD = [person(1, seed=20 + i)[0] for i in range(3)]
+
+
+def test_ignoring_a_crowd(api, tmp_path, faces_on, monkeypatch):
+    # slide 1: Ann in a crowd of three; slide 2: Ann and one of the crowd again; slide 3: that one alone
+    faces_on += [[face(ANN), face(CROWD[0], 0.4), face(CROWD[1], 0.6), face(CROWD[2], 0.8)],
+                 [face(ANN), face(CROWD[0], 0.5)], [face(CROWD[0])], []]
+    sid, d = tray_without_helper(api, tmp_path, monkeypatch)
+    g0, g1, g2 = (g["id"] for g in d["groups"][:3])
+    out = api.get("/api/people").json()
+    ann = next(p for p in out["people"] if f"{sid}/{g0}/0" in [f["id"] for f in p["faces"]])
+    api.patch(f"/api/people/{ann['id']}", json={"name": "Ann"})
+    d = api.get(f"/api/sessions/{sid}").json()
+    faces = d["groups"][0]["faces"]
+    assert [f["label"] for f in faces][0] == "Ann" and len(faces) == 4
+
+    # the slide's strangers, all at once: gone from this slide and from the others they're on
+    d = api.post("/api/people/faces/ignore", json={"faces": [f["id"] for f in faces if not f["named"]]}).json()
+    assert [f["label"] for f in d["groups"][0]["faces"]] == ["Ann"]
+    assert [f["label"] for f in d["groups"][1]["faces"]] == ["Ann"]
+    assert d["groups"][2]["faces"] == []
+    out = api.get("/api/people").json()
+    ignored = [p for p in out["people"] if p["ignored"]]
+    assert len(ignored) == 3 and not next(p for p in out["people"] if p["id"] == ann["id"])["ignored"]
+    assert ann["id"] not in [p["id"] for p in ignored]
+    # nobody ignored is offered as who a face is, nor is anyone Ann is "often with"
+    assert all(p["id"] not in {x["id"] for x in ignored}
+               for p in api.get("/api/people/names").json()["people"])
+    assert api.get(f"/api/people/{ann['id']}").json()["with"] == []
+    stranger = next(p for p in ignored if len(p["faces"]) == 3)  # CROWD[0], on all three slides
+    assert api.get(f"/api/people/{stranger['id']}").json()["ignored"]
+
+    # changed my mind: back on the slides
+    out = api.post("/api/people/ignore", json={"people": [stranger["id"]], "ignored": False}).json()
+    assert sum(p["ignored"] for p in out["people"]) == 2
+    d = api.get(f"/api/sessions/{sid}").json()
+    assert len(d["groups"][0]["faces"]) == 2 and len(d["groups"][2]["faces"]) == 1
+
+    # naming an ignored person, or merging them into someone who isn't, means they matter after all
+    other = next(p for p in out["people"] if p["ignored"])
+    out = api.patch(f"/api/people/{other['id']}", json={"name": "Carl"}).json()
+    assert not next(p for p in out["people"] if p["id"] == other["id"])["ignored"]
+    last = next(p for p in out["people"] if p["ignored"])
+    out = api.post(f"/api/people/{ann['id']}/merge", json={"people": [last["id"]]}).json()
+    assert not any(p["ignored"] for p in out["people"])
+    assert api.post("/api/people/faces/ignore", json={"faces": []}).status_code == 400
+
+
 def test_scan_job_and_old_immich(api, tmp_path, faces_on, immich_db, monkeypatch):
     store.save_config({**CONFIG, "people_enabled": False})
     sid, d = tray_without_helper(api, tmp_path, monkeypatch)  # imported with people off: no faces yet

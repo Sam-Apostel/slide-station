@@ -1,5 +1,5 @@
 import * as React from "react";
-import { Check, TriangleAlert, UserPlus, UserX } from "lucide-react";
+import { Check, EyeOff, TriangleAlert, UserPlus, UserX } from "lucide-react";
 import { PreviewImg } from "@/components/filmstrip";
 import { ProButton } from "@/components/ui/pro-button";
 import { Input } from "@/components/ui/input";
@@ -27,8 +27,10 @@ export const oddText = (label: string, odd: { age: number; year: number }, looks
 
 /**
  * The faces on the slide and who they are: a click picks one to say who it is (a name, someone
- * new, or "not them"). Faces whose age doesn't fit their person (dating.suspects) are marked, with
- * "not them" / "it is them". `onFocus` tells the stage which face to outline on the photo.
+ * new, "not them", or ignore them). Faces whose age doesn't fit their person (dating.suspects) are
+ * marked, with "not them" / "it is them". A crowd's strangers can be ignored all at once: their faces
+ * leave every slide (People & Places lists them to bring back). `onFocus` tells the stage which face
+ * to outline on the photo.
  */
 export function SlidePeople({
   app,
@@ -56,6 +58,10 @@ export function SlidePeople({
   const assign = async (f: SlideFace, person: string | null, name = "") => {
     if (await app.assignFace(f.id, person, name)) setPicked(null);
   };
+  const ignore = async (ids: string[]) => {
+    if (await app.ignoreFaces(ids)) setPicked(null);
+  };
+  const unnamed = faces.filter((f) => f.person && !f.named);
 
   return (
     <div className="flex flex-col gap-2 px-3 pt-2.5 pb-3">
@@ -105,7 +111,21 @@ export function SlidePeople({
           probably someone else. Click it to check.
         </p>
       )}
-      {face && <WhoIsThis key={face.id} face={face} onAssign={(p, n) => assign(face, p, n)} />}
+      {face && (
+        <WhoIsThis
+          key={face.id}
+          face={face}
+          onAssign={(p, n) => assign(face, p, n)}
+          onIgnore={() => ignore([face.id])}
+        />
+      )}
+      {!face && unnamed.length >= 2 && (
+        <div>
+          <ProButton onClick={() => ignore(unnamed.map((f) => f.id))}>
+            <EyeOff /> Ignore the {unnamed.length} without a name
+          </ProButton>
+        </div>
+      )}
     </div>
   );
 }
@@ -126,7 +146,16 @@ function usePeopleNames() {
   return names;
 }
 
-function WhoIsThis({ face, onAssign }: { face: SlideFace; onAssign: (person: string | null, name?: string) => void }) {
+function WhoIsThis({
+  face,
+  onAssign,
+  onIgnore,
+}: {
+  face: SlideFace;
+  onAssign: (person: string | null, name?: string) => void;
+  /** Someone to leave out (a stranger in the crowd): everywhere they are, not just here. */
+  onIgnore: () => void;
+}) {
   const names = usePeopleNames();
   const [q, setQ] = React.useState("");
   const [active, setActive] = React.useState(0);
@@ -189,6 +218,11 @@ function WhoIsThis({ face, onAssign }: { face: SlideFace; onAssign: (person: str
           <ProButton onClick={() => onAssign(null)}>
             <UserX /> Not {face.label}
           </ProButton>
+          {!face.named && (
+            <ProButton onClick={onIgnore} title="A stranger: leave their face out here and on every other slide">
+              <EyeOff /> Ignore
+            </ProButton>
+          )}
           {face.odd && (
             <ProButton onClick={() => onAssign(face.person)}>
               <Check /> It is {face.label}

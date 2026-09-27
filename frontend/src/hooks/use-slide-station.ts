@@ -595,6 +595,18 @@ export function useSlideStation() {
     }
   };
 
+  /** Ignore the people these faces are with (strangers in a crowd): their faces leave the slides. */
+  const ignoreFaces = async (faces: string[]) => {
+    try {
+      applyPayload(await api<SessionPayload>("POST", "/api/people/faces/ignore", { faces }));
+      toast(faces.length === 1 ? "Ignored — undo in People & Places" : `Ignored ${faces.length} people — undo in People & Places`);
+      return true;
+    } catch (e) {
+      fail(e);
+      return false;
+    }
+  };
+
   /**
    * A look-alike suggestion of the tray (by id). Accepting: duplicates keep `keep` (default the best)
    * and skip the rest, split cuts the stack, merge joins the two slides.
@@ -982,6 +994,7 @@ export function useSlideStation() {
     decideSimilar,
     decideLookalike,
     assignFace,
+    ignoreFaces,
     checkLookalikes,
     propagate,
     setTags,

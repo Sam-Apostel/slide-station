@@ -17,6 +17,8 @@ developed slide (trimmed, straightened, cropped), so each face box is taken thro
   a manual face Immich's detection found after all is deleted again
 - birthdays fill whichever side has none
 - a face or person the two sides name differently is left alone and listed, never overwritten
+- people ignored here (strangers in a crowd) are left alone: no name comes back to them, they get no
+  Immich person
 """
 from __future__ import annotations
 
@@ -162,7 +164,7 @@ def sync(client: Immich, slides: list[Slide], progress=None) -> Report:
     d = people.load_people()
     owner = _owners(d)
     for pid, p in list(d["people"].items()):
-        if p.get("name"):
+        if p.get("name") or p.get("ignored"):
             continue
         votes = Counter(immich_name(f) for fid, f in found.items() if owner.get(fid) == pid and immich_name(f))
         if votes:
@@ -189,7 +191,7 @@ def sync(client: Immich, slides: list[Slide], progress=None) -> Report:
     links: dict[str, dict] = {}
     for pid, p in d["people"].items():
         name = p.get("name")
-        if not name:
+        if not name or p.get("ignored"):
             continue
         link = p.get("immich") or {}
         them = theirs_by_id.get(link.get("id"))
