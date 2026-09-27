@@ -1377,8 +1377,8 @@ Opt-in (`people_enabled`, Settings → "Recognise people"), desktop / server app
   one function tests replace. The model (`face_recognition_sface_2021dec.onnx`, Apache 2.0, 39 MB)
   is downloaded on first use from OpenCV's Hugging Face mirror into `<library>/models/`, checked
   against its SHA-256, never committed.
-- **Where they live:** `sessions/<id>/faces.json` = `{gid: {"key", "rot", "faces": [{"id", "box",
-  "score", "emb"}]}}`, next to `session.json` but never in it, so finding faces never writes a
+- **Where they live:** `sessions/<id>/faces.json` = `{gid: {"key", "rot", "mirror", "clothes_v",
+  "faces": [{"id", "box", "score", "emb", "clothes"?, "age"?, "manual"?}]}}`, next to `session.json` but never in it, so finding faces never writes a
   session (§3). `people.update_faces` is the reload-apply-save for it. `key` = `face_key(g)` (active
   scans + rotation): a slide turned or re-stacked is stale and is looked at again. Face ids are
   `sid/gid/n`; a face found again (cosine ≥ 0.8, e.g. after turning) keeps its id, so names and
@@ -1411,6 +1411,35 @@ Opt-in (`people_enabled`, Settings → "Recognise people"), desktop / server app
   its person and is `sure` there (`people[pid].sure`: the age check never doubts it); "new" with a
   name someone has is them. Only while people are on (`people_enabled`); not ported to the browser
   version (its payload has no `faces`).
+- **The likeliest first.** Asked with `?face=<id>`, `/api/people/names` sorts by `people.likely`:
+  the mean of the face's three best cosine matches among that person's faces (people change over
+  the years), plus up to 0.5 when they're on a slide up to `NEAR` (3) away in the same tray — most
+  on the next one, most in the same clothes; −1 when they're on the slide already or the face was
+  taken out of them. `likely` (≥ 0.363) puts a "likely" on the name. Typing, names with a word
+  starting so come first, then the same order.
+- **Clothes.** Each face also stores `clothes`: a Lab histogram (4 × 6 × 6 bins, a / b over −40…40,
+  summing to 1, base64 float16) of the chest below it (2.4 faces wide, 1.3–3.3 faces down, weighted
+  to the middle), compared by Bhattacharyya coefficient (`clothes_like`). Entries say `clothes_v`;
+  faces found before are described again by `faces_pending` / `find_faces` like missing ages.
+- **A name spreads** (`people.spread`, after assign, rename, birthday, merge, and after each slide's
+  faces are found): in a tray, a face whose person has no name or birthday, within `NEAR` slides of
+  a named person's face, is them when it looks like it (≥ 0.363), or a little like it (≥ 0.2) in the
+  same clothes (≥ 0.8) — next to a face marked by hand, with nothing to compare, the clothes alone
+  (≥ 0.9). Best pairs first, again from the faces just named, until nothing more fits; never two
+  faces of one person on a slide, never a person the face was taken out of, never a `sure` face.
+  Spread faces aren't `sure` ("Not <name>" undoes them). Naming a face from an unnamed group from the
+  slide also brings the rest of the group that looks like it (≥ 0.363, any tray; `people._follow`).
+  The assign answer has `named_along` (other slides that got the name), toasted as "Also recognised
+  on N more slides".
+- **Marking someone missed** ("Mark someone it missed" in the section, then a click on the photo;
+  Esc cancels): `POST /api/sessions/{sid}/groups/{gid}/faces {"point": [x, y], "person"?, "name"?}`
+  (the point through `PictureView.fromShown`, 0..1 of the upright slide). `people.find_near` looks
+  at squares of 18 / 35 / 60 % of the short side around it, zoomed to 480 px, with YuNet's own bar
+  (0.6); a face on or just above the spot gets an SFace feature like any. Else a box of the slide's
+  median face size (or 8 % of the short side) with no `emb` — the back of a head: clustering leaves
+  it with whoever it was put with, the clothes still spread the name. Stored `manual`; kept (its box
+  turned with the slide, `_turn_box`) when the slide is looked at again. The payload has `manual`
+  per face; `DELETE /api/people/faces/{sid}/{gid}/{n}` takes a mark off ("Nobody there").
 - **Immich** (`immich_people.py`, "Sync with Immich" = `POST /api/people/sync`, job `people`): Immich
   finds and groups faces on the uploaded slides itself; the sync lines the two up rather than
   replacing either. Our boxes are on the turned scan, the upload is the developed slide, so
@@ -1440,7 +1469,11 @@ Opt-in (`people_enabled`, Settings → "Recognise people"), desktop / server app
   after turning, merged slides forgotten, naming / merging / removing, the scan job, the model checksum) and
   `test_sync_with_immich` against tests/fake_immich.py's people and faces (linking by name, merging
   an unnamed group, a name coming back, a face added by hand and its double removed later, renames
-  either way, a rename on both sides left alone, the old tags removed). The real model was run once on 48 LFW photos of
+  either way, a rename on both sides left alone, the old tags removed), and clothes (outfits told
+  apart on synthetic pictures), a name spreading to the same person in the same clothes nearby (not
+  in other clothes, nor onto someone else), the picker's order, an unnamed group following a
+  name, a face marked by hand (named, spreading by clothes, kept when turned, taken off) and the
+  zoomed-in search's coordinates. The real model was run once on 48 LFW photos of
   six people (Hugging Face, scratch only) imported as a tray: 52 faces, one clean cluster of 6–8
   faces per person, 6 faces on their own (mostly people in the background) and one two-face cluster
   mixing two of those.
