@@ -66,6 +66,16 @@ export type GroupData = {
   immich: ImmichRecord | null;
   /** Pulled in from Immich: its upload replaces this asset. */
   source_asset?: { id: string };
+  /** Unlocked from its final version in Immich (unlockFromImmich): the asset, and what the slide was
+   *  developed from before (its scans, excluded, rotation, mirror, params). */
+  from_final?: {
+    asset: string;
+    scans: string[];
+    excluded: string[];
+    rotation: number;
+    mirror: boolean;
+    params: Params;
+  };
   /** When it was marked developed (seconds), for the stats. */
   developed_at?: number;
   params_source?: string;

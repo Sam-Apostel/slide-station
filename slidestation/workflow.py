@@ -1377,6 +1377,107 @@ def pull_in(job: Job, sid: str, asset_ids: list[str]) -> None:
         f"; left out {unusable} that aren't JPEG or PNG photos" if unusable else "")
 
 
+# a slide developed from its final version: these settings render the photo as it is (develop's
+# saturation starts at 1.1, so -0.1 is none), so its render key matches Immich's copy until edited
+AS_IS = Params(strength=0.0, trim=False, saturation=-0.1).to_dict()
+
+
+def _download_verified(client: Immich, asset_id: str, dest: Path, expected: str) -> None:
+    """An asset's original to `dest`, checked against the hex SHA-1 we expect (a scan's own, or
+    Immich's checksum); nothing is left behind if it doesn't match."""
+    client.download(asset_id, str(dest))
+    if expected and sha1_file(dest) != expected:
+        dest.unlink(missing_ok=True)
+        raise RuntimeError(f"The download of {asset_id} from Immich did not verify - try again")
+
+
+def unlock_from_immich(job: Job, sid: str, gids: list[str] | None = None) -> None:
+    """Make locked slides (originals deleted after upload) editable again from what Immich has.
+
+    Where Immich has the slide's original scans (stacked under it), those come back byte for byte,
+    checked against the SHA-1 recorded at import: the slide is exactly as it was, settings and all.
+    Otherwise the uploaded photo itself - the final version - is downloaded and becomes the slide's
+    one scan, developed with AS_IS settings (its turn, crop and colour are in the pixels already);
+    what it was developed from is kept in `from_final`. Its render key is then what Immich has, so
+    it stays uploaded until edited, and an edit's upload replaces that asset like any other."""
+    cfg = load_config()
+    s = Session(sid)
+    todo = [g for g in s.data["groups"] if g.get("locked") and (g.get("immich") or {}).get("asset_id")
+            and (gids is None or g["id"] in gids)]
+    job.total = len(todo)
+    job.message = f"Downloading {_slides(len(todo))} from Immich"
+    client = Immich(cfg["immich_url"], cfg["immich_key"])
+    scans_back = finals = gone = 0
+    try:
+        for g in todo:
+            job.done += 1
+            rec = g["immich"]
+            lost = [x for x in g["scans"] if x in s.data["scans"] and not s.original_path(x).exists()]
+            stacked = rec.get("originals") or {}
+            if all(x in stacked for x in lost if x in active_scans(g)):
+                for x in lost:  # the scans Immich has; any it doesn't are brackets left out of the blend
+                    if x in stacked:
+                        _download_verified(client, stacked[x], s.original_path(x), s.data["scans"][x]["sha1"])
+                scans_back += 1
+                continue
+            a = client.asset(rec["asset_id"])
+            if not a or a.get("isTrashed"):
+                gone += 1
+                continue
+            aid = rec["asset_id"]
+            try:
+                expected = base64.b64decode(a.get("checksum") or "").hex()
+            except ValueError:
+                expected = ""
+            scan_id = f"final_{g['id']}_{aid.replace('-', '')[:6]}"
+            dest = s.originals / f"{scan_id}.jpg"
+            _download_verified(client, aid, dest, expected if len(expected) == 40 else "")
+            try:
+                rotation = _ORIENTATION.get(int(Image.open(dest).getexif().get(274, 1)), 0)
+            except Exception:
+                rotation = 0
+            was = s.data["scans"].get(active_scans(g)[0]) or {}
+            record = {"file": dest.name, "source": f"immich:{aid}", "source_root": "immich", "removable": False,
+                      "size": dest.stat().st_size, "sha1": sha1_file(dest), "taken": was.get("taken", ""),
+                      "source_deleted": False, "immich_asset": aid}
+
+            def commit(fresh: Session, gid=g["id"], aid=aid, scan_id=scan_id, record=record, rotation=rotation):
+                try:
+                    fg = fresh.group(gid)
+                except KeyError:
+                    return
+                if not fg.get("locked") or (fg.get("immich") or {}).get("asset_id") != aid:
+                    return  # unlocked or uploaded again meanwhile
+                fresh.data["scans"][scan_id] = record
+                fg["from_final"] = {"asset": aid, **{k: fg.get(k) for k in ("scans", "excluded", "rotation", "params")},
+                                    "mirror": bool(fg.get("mirror"))}
+                fg.update(scans=[scan_id], excluded=[], rotation=rotation, rot_reason="exif" if rotation else "",
+                          params=dict(AS_IS), params_source="", export=None)
+                for k in ("mirror", "mount", "feat", "auto_excluded", "history", "locked"):
+                    fg.pop(k, None)  # the old scans' (a learning example from them stays as it was)
+                fg["immich"]["key"] = render_key(fg)
+
+            s = update_session(sid, commit)
+            if scan_id not in s.data["scans"]:
+                dest.unlink(missing_ok=True)
+                continue
+            make_proxies(s, scan_id)
+            finals += 1
+        s = update_session(sid, sync_locks)
+        update_session(sid, lambda fresh: fresh.log(
+            f"Unlocked {_slides(scans_back + finals)} from Immich ({scans_back} from their original scans, "
+            f"{finals} from the final version)"))
+    finally:
+        client.close()
+    parts = []
+    if scans_back:
+        parts.append(f"{_slides(scans_back)} from the original scans stacked in Immich")
+    if finals:
+        parts.append(f"{_slides(finals)} from the final version (edits start from the photo as uploaded)")
+    job.message = ("Unlocked " + " and ".join(parts) if parts else "Nothing unlocked") + (
+        f"; {_slides(gone)} no longer in Immich (or in its trash)" if gone else "")
+
+
 def immich_place(exif: dict) -> dict | None:
     """A place from an Immich asset's exifInfo (its GPS and reverse-geocoded city / country)."""
     lat, lon = exif.get("latitude"), exif.get("longitude")

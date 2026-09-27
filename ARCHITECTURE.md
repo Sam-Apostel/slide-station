@@ -474,6 +474,30 @@ the local render). Marking it developed or skipping it is still allowed. Re-impo
 scans into the tray restores the originals (the dedupe index no longer skips a scan whose
 original this tray lost) and unlocks it.
 
+**Unlocking from Immich** (`POST /api/sessions/{sid}/unlock {"groups"?}`, a job of kind `unlock`;
+`workflow.unlock_from_immich`, `unlockFromImmich` in `standalone/server.ts`; the locked banner's
+"From Immich" and ⌘K "Download N locked slides from Immich"). Per slide, whichever Immich allows:
+
+1. *Its original scans*, when every lost active scan is in `immich.originals` (stacked under it,
+   §6a): each is downloaded byte for byte and checked against the scan's SHA-1 from import. The
+   slide is exactly as before — settings, brackets, render key — and `sync_locks` unlocks it.
+2. *Otherwise the final version*: the uploaded photo (`GET /assets/{id}/original`, checked against
+   Immich's checksum) becomes the slide's one scan `final_<gid>_<asset>` (`source: "immich:<id>"`,
+   never removable, the old scan's `taken` kept for dating). Its turn, crop and colour are in the
+   pixels, so it gets `workflow.AS_IS` settings (restore 0, no trim, saturation −0.1, which cancels
+   develop's built-in 1.1 — the render is the photo itself) and rotation 0; what it was developed
+   from (scans, excluded, rotation, mirror, params) is kept in `g["from_final"]`. Undo history,
+   mount, `feat` (a learning example from the old scans stays; a developed photo must not teach the
+   restore) and the export go. `immich.key` is set to the new render key, so it stays `uploaded`
+   until edited; an edit's upload then replaces that asset like any other (with stacks on, the
+   downloaded photo is found by bulk-upload-check and stays stacked under the new one, like a
+   pulled-in photo). The payload says `from_final` and the Caption area explains it.
+
+A locked slide's preview is never cached by the browser (its Immich preview shares the URL key
+its own render has once unlocked). Tests: `test_unlock_from_stacked_originals`,
+`test_unlock_from_final_version` in `tests/test_api.py`. Not in the Swift app, like pulling from
+Immich.
+
 ### Review grid, 1:1 zoom, presets, stats (ROADMAP §6)
 
 - **Review grid** (G, `components/review-grid.tsx`): replaces the stage with every slide of the

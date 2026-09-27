@@ -293,6 +293,24 @@ def pull_from_immich(sid: str):
     return {**_session_payload(_session(sid)), "pulled": pulled}
 
 
+@app.post("/api/sessions/{sid}/unlock")
+def unlock_from_immich(sid: str, body: dict = Body(default={})):
+    """Download locked slides back from Immich to edit them again: their original scans where Immich
+    has them stacked, otherwise the final version. `groups`: those slides (default: every locked one)."""
+    s = _session(sid)
+    cfg = load_config()
+    if not cfg.get("immich_url") or not cfg.get("immich_key"):
+        return _err(RuntimeError("Set your Immich URL and API key in Settings first."))
+    gids = [str(x) for x in body["groups"]] if body.get("groups") else None
+    if not any(g.get("locked") and (gids is None or g["id"] in gids) for g in s.data["groups"]):
+        return _err(RuntimeError("No locked slides to download."))
+    try:
+        wf.start_job("unlock", sid, wf.unlock_from_immich, sid, gids)
+    except RuntimeError as e:
+        return _err(e, 409)
+    return {"ok": True}
+
+
 # --------------------------------------------------------------------------- sessions
 
 
@@ -353,6 +371,8 @@ def _session_payload(s: Session) -> dict:
             "locked": bool(g.get("locked")),
             # pulled in from Immich: its upload replaces that photo
             "from_immich": bool(g.get("source_asset")),
+            # unlocked from its final version in Immich: edits start from the photo as uploaded
+            "from_final": bool(g.get("from_final")),
             "status": st[i],
             "date": g.get("date", ""),
             "caption": g.get("caption", ""),
@@ -741,7 +761,8 @@ def _step(sid: str, gid: str, direction: str):
 
 
 LOCKED = ("This slide's original scans were deleted after it was uploaded, so it can't be edited "
-          "(Immich has the final version). Re-import its scans into this tray to edit it again.")
+          "(Immich has the final version). Download it from Immich, or re-import its scans into this "
+          "tray, to edit it again.")
 
 
 def _editable(g: dict) -> None:
@@ -1775,7 +1796,8 @@ def group_preview(sid: str, gid: str, size: int = 1600, before: int = 0, uncropp
         raise HTTPException(404)
     # Only let the browser keep it if it is the render the URL names. A preview requested while
     # an edit is still being saved renders the older settings and must not be cached as the new.
-    fresh = v and v == render_key(g)
+    # A locked slide may show Immich's preview under the same key its own render has once unlocked.
+    fresh = v and v == render_key(g) and not g.get("locked")
     return Response(data, media_type="image/jpeg", headers={"Cache-Control": "max-age=31536000" if fresh else "no-store"})
 
 

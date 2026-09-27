@@ -447,3 +447,66 @@ def test_locked_preview_falls_back_to_local(api, tmp_path, immich_db):
     s.save()
     assert api.get(f"/api/sessions/{sid}").json()["groups"][0]["status"] == "uploaded"
     assert image_size(api, f"/api/sessions/{sid}/groups/{g['id']}/preview.jpg?size=320")[0] > 0
+
+
+def test_unlock_from_stacked_originals(api, tmp_path, immich_db):
+    """Immich has the original scans stacked under each photo: they come back byte for byte and the
+    slides are as they were, settings and all."""
+    api.post("/api/config", json={"keep_originals": False, "upload_originals_stacked": True})
+    sid, d = new_tray(api, tmp_path / "scans")
+    api.post(f"/api/sessions/{sid}/finish", json={})
+    wait_job(api)
+    assert all(g["locked"] for g in groups(api, sid))
+    before = {g["id"]: (g["scans"], g["params"], g["key"]) for g in groups(api, sid)}
+
+    assert api.post(f"/api/sessions/{sid}/unlock", json={}).json() == {"ok": True}
+    assert "4 slides from the original scans" in wait_job(api)["message"]
+    s = Session(sid)
+    assert all(s.original_path(x).exists() for x in s.data["scans"])
+    out = groups(api, sid)
+    assert not any(g["locked"] for g in out) and {g["id"]: (g["scans"], g["params"], g["key"]) for g in out} == before
+    assert [g["status"] for g in out] == ["uploaded"] * 4
+    gid = out[0]["id"]
+    assert patch(api, sid, gid, {"params": {"warmth": 0.3}})["groups"][0]["status"] == "changed"
+    assert api.post(f"/api/sessions/{sid}/unlock", json={}).status_code == 400  # nothing locked any more
+
+
+def test_unlock_from_final_version(api, tmp_path, immich_db):
+    """No originals in Immich: the uploaded photo becomes the slide's scan, rendered as it is, and
+    an edit's upload replaces that photo."""
+    api.post("/api/config", json={"keep_originals": False, "upload_originals_stacked": False})
+    sid, d = new_tray(api, tmp_path / "scans")
+    gid = d["groups"][0]["id"]
+    patch(api, sid, gid, {"rotation": 90, "params": {"warmth": 0.4}})
+    api.post(f"/api/sessions/{sid}/finish", json={})
+    wait_job(api)
+    s = Session(sid)
+    aid = s.group(gid)["immich"]["asset_id"]
+    old_scans = s.group(gid)["scans"]
+
+    assert api.post(f"/api/sessions/{sid}/unlock", json={"groups": [gid]}).json() == {"ok": True}
+    assert "1 slide from the final version" in wait_job(api)["message"]
+    s = Session(sid)
+    g = s.group(gid)
+    (scan,) = g["scans"]
+    assert s.data["scans"][scan]["sha1"] == immich_db["assets"][aid]["sha1"]  # Immich's bytes, verified
+    assert not s.data["scans"][scan]["removable"]
+    assert g["from_final"]["scans"] == old_scans and g["from_final"]["params"]["warmth"] == 0.4
+    assert g["rotation"] == 0 and g["params"]["warmth"] == 0 and not g.get("history")
+    out = groups(api, sid)
+    assert not out[0]["locked"] and out[0]["from_final"] and out[0]["status"] == "uploaded"
+    assert all(x["locked"] for x in out[1:])  # only the one asked for
+    # rendered as it is: the preview is the uploaded photo (same size, near the same pixels)
+    up = Image.open(io.BytesIO(immich_db["data"][aid])).convert("RGB")
+    r = api.get(f"/api/sessions/{sid}/groups/{gid}/preview.jpg?size=2400")
+    mine = Image.open(io.BytesIO(r.content)).convert("RGB")
+    assert mine.size == up.size
+    import numpy as np
+    assert np.abs(np.asarray(mine, np.float32) - np.asarray(up, np.float32)).mean() < 3
+
+    # an edit uploads a new photo in its place
+    assert patch(api, sid, gid, {"params": {"warmth": 0.2}})["groups"][0]["status"] == "changed"
+    api.post(f"/api/sessions/{sid}/finish", json={})
+    wait_job(api)
+    new = Session(sid).group(gid)["immich"]["asset_id"]
+    assert new != aid and immich_db["assets"][aid]["trashed"]
