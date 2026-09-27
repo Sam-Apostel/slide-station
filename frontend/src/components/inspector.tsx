@@ -169,6 +169,7 @@ export function Inspector({
   insights,
   face,
   onFace,
+  people,
 }: {
   app: SlideStation;
   session: SessionPayload;
@@ -212,6 +213,10 @@ export function Inspector({
   /** The face picked or hovered in the People section (the stage outlines it). */
   face: string | null;
   onFace: (face: string | null) => void;
+  /** Recognising people is on (the section shows on slides with no faces too, to mark someone);
+   *  `marking`: the stage waits for a click on someone the face finder missed; `marked`: the face
+   *  that made. */
+  people?: { on: boolean; marking: boolean; onMark: () => void; marked: string | null };
 }) {
   const { current: g, sel } = app;
   const sm = session.summary;
@@ -350,9 +355,17 @@ export function Inspector({
               />
             </ProDisclosureGroup>
 
-            {!!g.faces?.length && (
+            {(!!g.faces?.length || (people?.on && !g.skip)) && (
               <ProDisclosureGroup title="People" summary={peopleNote(g)} {...section("people")}>
-                <SlidePeople app={app} g={g} focus={face} onFocus={onFace} />
+                <SlidePeople
+                  app={app}
+                  g={g}
+                  focus={face}
+                  onFocus={onFace}
+                  marking={!!people?.marking}
+                  onMark={() => people?.onMark()}
+                  marked={people?.marked ?? null}
+                />
               </ProDisclosureGroup>
             )}
 

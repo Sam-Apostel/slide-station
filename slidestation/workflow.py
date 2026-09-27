@@ -812,10 +812,15 @@ def find_faces(sid: str, gid: str) -> bool:
     ages = ages_on()
     if people.stale(g, entry):
         people.record(sid, g, im.orient(fused_proxy(s, g), g["rotation"], g.get("mirror", False)), ages)
-    elif ages and people.unaged(entry):  # found before the age model was there
-        people.add_ages(sid, gid, im.orient(fused_proxy(s, g), g["rotation"], g.get("mirror", False)))
+    elif (ages and people.unaged(entry)) or people.undressed(entry):  # found before the age model / clothes
+        rgb = im.orient(fused_proxy(s, g), g["rotation"], g.get("mirror", False))
+        if ages and people.unaged(entry):
+            people.add_ages(sid, gid, rgb)
+        if people.undressed(entry):
+            people.add_clothes(sid, gid, rgb)
     else:
         return False
+    people.spread([sid])  # a named person on the slides around may be on this one too
     return True
 
 
@@ -841,7 +846,8 @@ def faces_pending(sids: list[str] | None = None) -> list[tuple[str, str]]:
             people.update_faces(sid, lambda d: [d.pop(k) for k in list(d) if k not in gids])
         ages = ages_on()
         todo += [(sid, g["id"]) for g in s.data["groups"]
-                 if people.stale(g, faces.get(g["id"])) or (ages and not g.get("skip") and people.unaged(faces.get(g["id"])))]
+                 if people.stale(g, faces.get(g["id"])) or (not g.get("skip") and (
+                     (ages and people.unaged(faces.get(g["id"]))) or people.undressed(faces.get(g["id"]))))]
     return todo
 
 
