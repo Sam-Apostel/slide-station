@@ -41,6 +41,25 @@ npm run render                 # slide-station-launch.mp4
 Rendering needs `ffmpeg` on the PATH (or `FFMPEG=/path/to/ffmpeg`), and Python 3 with `numpy`
 and `scipy` for the sound; without them it writes the video silently. It takes a few minutes.
 
+## Another track (e.g. for YouTube)
+
+The cuts follow the music's bars, so any track works. Keep it out of the repository if its licence
+doesn't allow redistribution (Approaching Nirvana, for one, allows its music in YouTube videos
+only, credited in the description):
+
+```bash
+python3 music/beats.py ~/Music/track.mp3     # prints the tempo, the drop and the command below
+node render.cjs --music ~/Music/track.mp3 --bpm 128 --offset 31.9 --out slide-station-youtube.mp4
+```
+
+The whole video is timed for 115 BPM and sped up or slowed down to the track's tempo (a 128 BPM
+track gives a 36-second video), so every cut still lands on a bar. `--offset` is where in the track the video starts: 3 bars before the drop, so the drop lands on
+the first step. `beats.py` estimates it; if the drop feels early or late, move it by a bar
+(4 × 60 / bpm seconds). The page previews the same way:
+`index.html?music=<path from promo/>&bpm=128&offset=31.9`.
+
+## Timing
+
 The scenes start on bars of the music (`T` at the top of the `<script>`), and every
 `A(target, keyframes, start, duration, easing)` call is one animation. `sfx(time, kind)` cues a
 sound; the kinds are in `SFX` in `soundtrack.py`. To change the slides, edit

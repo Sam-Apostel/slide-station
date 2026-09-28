@@ -126,9 +126,9 @@ def reverb(x, secs=2.2, mix=0.25):
 
 # ------------------------------------------------------------------ mix
 
-def load_music(path, seconds):
+def load_music(path, seconds, offset=0.0):
     ffmpeg = os.environ.get("FFMPEG", "ffmpeg")
-    raw = subprocess.run([ffmpeg, "-v", "error", "-i", path, "-t", str(seconds), "-ac", "2", "-ar", str(SR), "-f", "f32le", "-"],
+    raw = subprocess.run([ffmpeg, "-v", "error", "-ss", str(offset), "-i", path, "-t", str(seconds), "-ac", "2", "-ar", str(SR), "-f", "f32le", "-"],
                          capture_output=True, check=True).stdout
     return np.frombuffer(raw, np.float32).reshape(-1, 2).T.astype(np.float64)
 
@@ -138,8 +138,11 @@ def main(cues_path, out_path):
     dur = cues["duration"]
     total = int(dur * SR)
     music = np.zeros((2, total))
-    m = load_music(cues["music"], dur)
+    m = load_music(cues["music"], dur, cues.get("offset", 0))
     music[:, : m.shape[1]] = m[:, :total]
+    # fade out over the last 1.6 s (the committed excerpt already does; another track may not)
+    n = int(1.6 * SR)
+    music[:, total - n :] *= np.linspace(1, 0, n)
 
     fx = np.zeros((2, total + SR))
     for at, kind in cues["sfx"]:

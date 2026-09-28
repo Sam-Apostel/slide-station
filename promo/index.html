@@ -135,19 +135,14 @@ body { display: grid; place-items: center; font-family: "Inter", sans-serif; col
   display: flex; flex-wrap: wrap; gap: 36px; align-content: center; justify-content: center; transform-style: preserve-3d; }
 .persp { position: absolute; inset: 0; perspective: 1700px; }
 #s1 .shade { position: absolute; inset: 0; background: radial-gradient(60% 60% at 50% 50%, rgba(14,14,16,.25), rgba(14,14,16,.92) 80%); }
-#s1 .line { position: absolute; left: 0; right: 0; text-align: center; font-family: "Fraunces"; font-weight: 500; font-size: 118px; letter-spacing: -.02em; line-height: 1.05; text-shadow: 0 4px 40px rgba(0,0,0,.6); }
+#s1 .line { position: absolute; left: 0; right: 0; text-align: center; font-family: "Fraunces"; font-weight: 500; font-size: 150px; letter-spacing: -.025em; line-height: 1.05; text-shadow: 0 4px 40px rgba(0,0,0,.6); }
 .chips { display: flex; gap: 16px; margin-top: 46px; }
 .chip { height: 48px; padding: 0 22px; border-radius: 24px; border: 1px solid var(--line); background: rgba(29,29,34,.8); display: inline-flex; align-items: center; gap: 10px; font-size: 22px; color: var(--text); }
 
 /* ---------------------------------------------------------------- how it works */
-#cap { position: absolute; left: 110px; top: 0; bottom: 0; width: 560px; }
-.step-cap { position: absolute; left: 0; top: 380px; width: 560px; }
-.step-title { font-family: "Fraunces"; font-weight: 600; font-size: 80px; letter-spacing: -.025em; line-height: 1.02; }
-.step-sub { font-size: 28px; line-height: 1.45; color: var(--muted); margin-top: 26px; }
-.checks { margin-top: 30px; display: flex; flex-direction: column; gap: 16px; }
-.checks div { display: flex; align-items: center; gap: 14px; font-size: 27px; color: var(--muted); }
-.checks .tick { width: 30px; height: 30px; border-radius: 50%; border: 2px solid var(--line); display: grid; place-items: center; }
-.checks .tick svg { width: 17px; height: 17px; }
+#cap { position: absolute; left: 100px; top: 0; bottom: 0; width: 600px; }
+.step-cap { position: absolute; left: 0; top: 0; bottom: 0; width: 600px; display: flex; flex-direction: column; justify-content: center; }
+.step-title { font-family: "Fraunces"; font-weight: 600; font-size: 118px; letter-spacing: -.025em; line-height: 1.02; }
 #progress { position: absolute; left: 110px; bottom: 110px; display: flex; gap: 12px; }
 #progress i { display: block; height: 6px; width: 36px; border-radius: 3px; background: var(--line); overflow: hidden; position: relative; }
 #progress i b { position: absolute; inset: 0; background: var(--accent); transform-origin: 0 50%; transform: scaleX(0); }
@@ -193,8 +188,8 @@ body { display: grid; place-items: center; font-family: "Inter", sans-serif; col
 /* develop */
 .big-pic { position: absolute; width: 780px; height: 520px; border-radius: 10px; overflow: hidden; box-shadow: 0 40px 100px rgba(0,0,0,.6); background: #111; }
 .tag {
-  position: absolute; height: 44px; padding: 0 18px; border-radius: 22px; display: inline-flex; align-items: center; gap: 10px;
-  background: rgba(19,19,22,.92); border: 1px solid var(--line); font-size: 20px; white-space: nowrap;
+  position: absolute; height: 60px; padding: 0 26px; border-radius: 30px; display: inline-flex; align-items: center; gap: 10px;
+  background: rgba(19,19,22,.92); border: 1px solid var(--line); font-size: 28px; font-weight: 550; white-space: nowrap;
 }
 .facebox { position: absolute; border: 3px solid var(--accent); border-radius: 8px; box-shadow: 0 0 20px rgba(242,179,75,.5); }
 
@@ -214,7 +209,7 @@ body { display: grid; place-items: center; font-family: "Inter", sans-serif; col
 .ftile .badge.skip { background: var(--bad); color: #2a0d0a; }
 #fsel { position: absolute; top: 14px; width: 144px; height: 99px; border: 3px solid var(--accent); border-radius: 9px; }
 #keyhud { position: absolute; left: 0; right: 0; top: 770px; display: flex; justify-content: center; }
-.keyrow { position: absolute; display: flex; align-items: center; gap: 22px; font-size: 30px; white-space: nowrap; }
+.keyrow { position: absolute; display: flex; align-items: center; gap: 26px; font-size: 40px; font-weight: 550; white-space: nowrap; }
 
 /* upload */
 .album {
@@ -252,7 +247,7 @@ body { display: grid; place-items: center; font-family: "Inter", sans-serif; col
 .server .unit s { flex: 1; height: 6px; border-radius: 3px; background: repeating-linear-gradient(90deg, #26262c 0 10px, transparent 10px 16px); display: block; }
 .dev .scr::after { content: ""; position: absolute; inset: 0; pointer-events: none; z-index: 4; border-radius: inherit;
   background: linear-gradient(118deg, rgba(255,255,255,.10), rgba(255,255,255,.03) 34%, transparent 36%); }
-.dev-label { position: absolute; white-space: nowrap; font-size: 22px; color: var(--muted); }
+.dev-label { position: absolute; white-space: nowrap; font-size: 32px; color: var(--muted); }
 .dev-label b { color: var(--text); font-weight: 650; }
 .mini { position: absolute; inset: 0; background: var(--rail); }
 .mini .mtop { position: absolute; left: 0; right: 0; top: 0; height: 9%; background: var(--bar); border-bottom: 1px solid var(--line); display: flex; align-items: center; padding: 0 3%; gap: 3%; }
@@ -269,14 +264,14 @@ body { display: grid; place-items: center; font-family: "Inter", sans-serif; col
 #lib-node { position: absolute; left: 910px; top: 540px; width: 100px; height: 100px; margin: -50px 0 0 -50px; border-radius: 28px; background: linear-gradient(160deg, #fac97a, #e49a2c); display: grid; place-items: center; box-shadow: 0 0 80px rgba(242,179,75,.55); z-index: 6; }
 #links { position: absolute; inset: 0; z-index: 5; }
 #links path { fill: none; stroke: var(--accent); stroke-width: 3; stroke-linecap: round; stroke-dasharray: 8 14; }
-.headline { position: absolute; left: 0; right: 0; text-align: center; font-family: "Fraunces"; font-weight: 600; font-size: 84px; letter-spacing: -.025em; }
+.headline { position: absolute; left: 0; right: 0; text-align: center; font-family: "Fraunces"; font-weight: 600; font-size: 104px; letter-spacing: -.025em; }
 
 /* ---------------------------------------------------------------- features */
-.cards { position: absolute; left: 130px; top: 170px; width: 1660px; display: grid; grid-template-columns: repeat(3, 1fr); gap: 34px; }
-.card { position: relative; height: 360px; border-radius: 22px; background: linear-gradient(170deg, #1b1b20, #141418); border: 1px solid var(--line); overflow: hidden; }
+.cards { position: absolute; left: 130px; top: 150px; width: 1660px; display: grid; grid-template-columns: repeat(3, 1fr); gap: 34px; }
+.card { position: relative; height: 370px; border-radius: 22px; background: linear-gradient(170deg, #1b1b20, #141418); border: 1px solid var(--line); overflow: hidden; }
 .card .art { position: absolute; left: 0; right: 0; top: 0; height: 226px; overflow: hidden; }
-.card .txt { position: absolute; left: 30px; right: 30px; bottom: 26px; }
-.card h3 { font-family: "Fraunces"; font-weight: 600; font-size: 36px; letter-spacing: -.015em; }
+.card .txt { position: absolute; left: 34px; right: 30px; bottom: 30px; }
+.card h3 { font-family: "Fraunces"; font-weight: 600; font-size: 50px; letter-spacing: -.015em; }
 .card p { font-size: 20px; color: var(--muted); margin-top: 8px; line-height: 1.35; }
 .speck { position: absolute; border-radius: 50%; background: #fffbe8; box-shadow: 0 0 3px rgba(255,255,255,.8); }
 .sug { display: inline-flex; align-items: center; gap: 8px; height: 40px; padding: 0 16px; border-radius: 20px; background: var(--panel-2); border: 1px solid var(--line); font-size: 19px; }
@@ -300,33 +295,25 @@ body { display: grid; place-items: center; font-family: "Inter", sans-serif; col
   <section class="scene" id="s1">
     <div class="persp" id="s1p"><div class="plane" id="plane1"></div></div>
     <div class="shade"></div>
-    <div class="line" id="l1" style="top: 395px">Thousands of slides.</div>
-    <div class="line" id="l2" style="top: 525px"><i>In a shoebox.</i></div>
-    <div class="line" id="l3" style="top: 460px">Slowly <span id="fading" style="display:inline-block">fading.</span></div>
+    <div class="line" id="l1" style="top: 350px">Thousands of slides.</div>
+    <div class="line" id="l2" style="top: 520px"><i>In a shoebox.</i></div>
+    <div class="line" id="l3" style="top: 440px">Slowly <span id="fading" style="display:inline-block">fading.</span></div>
   </section>
 
   <!-- 2 · how it works -->
   <section class="scene" id="s2">
     <div id="cap">
       <div class="step-cap" id="c1">
-        <div class="step-title">Plug in the scanner.</div>
-        <div class="step-sub">It finds your Slide N Scan and imports the whole card.</div>
+        <div class="step-title">Plug in. Import.</div>
       </div>
       <div class="step-cap" id="c2">
-        <div class="step-title">The fiddly bits, done.</div>
-        <div class="checks">
-          <div id="k1"><span class="tick"></span>Brackets blended into one</div>
-          <div id="k2"><span class="tick"></span>Faded colour restored</div>
-          <div id="k3"><span class="tick"></span>Turned the right way up</div>
-        </div>
+        <div class="step-title">Fixed for you.</div>
       </div>
       <div class="step-cap" id="c3">
-        <div class="step-title">Review with the keyboard.</div>
-        <div class="step-sub">Space if it looks good, R to turn, X to skip.</div>
+        <div class="step-title">Review at speed.</div>
       </div>
       <div class="step-cap" id="c4">
-        <div class="step-title">Straight into Immich.</div>
-        <div class="step-sub">An album per tray, dated and tagged.</div>
+        <div class="step-title">Into Immich.</div>
       </div>
     </div>
     <div id="progress"><i><b></b></i><i><b></b></i><i><b></b></i><i><b></b></i></div>
@@ -378,9 +365,9 @@ body { display: grid; place-items: center; font-family: "Inter", sans-serif; col
           <div class="abs" id="wipe" style="top:0; bottom:0; width: 4px; margin-left: -2px; background: #fff; box-shadow: 0 0 30px 8px rgba(255,220,160,.8)"></div>
         </div>
       </div>
-      <div class="tag" id="t-hdr" style="left: 400px; top: 720px">3 scans blended</div>
-      <div class="tag" id="t-col" style="left: 400px; top: 720px">Colour restored</div>
-      <div class="tag" id="t-rot" style="left: 400px; top: 720px"><span id="nfaces">4</span> faces, turned upright</div>
+      <div class="tag" id="t-hdr" style="left: 360px; top: 715px">3 scans → 1</div>
+      <div class="tag" id="t-col" style="left: 360px; top: 715px">Colour back</div>
+      <div class="tag" id="t-rot" style="left: 360px; top: 715px">Upright, from <span id="nfaces">4</span> faces</div>
     </div>
 
     <!-- step 3: review -->
@@ -421,15 +408,15 @@ body { display: grid; place-items: center; font-family: "Inter", sans-serif; col
         <div class="grid" id="alb-grid"></div>
       </div>
       <div id="flyers" class="abs" style="inset:0"></div>
-      <div class="tag" id="up-done" style="left: 700px; top: 745px; color: var(--ok)">✓ 36 uploaded and checked</div>
+      <div class="tag" id="up-done" style="left: 660px; top: 745px; color: var(--ok)">✓ 36 uploaded</div>
       <svg class="abs" id="cursor2" width="34" height="42" viewBox="0 0 34 42" style="left:0;top:0"><path d="M3 2 L3 34 L11 26 L17 40 L23 37 L17 24 L29 24 Z" fill="#fff" stroke="#000" stroke-width="2" stroke-linejoin="round"/></svg>
     </div>
   </section>
 
   <!-- 3 · every device -->
   <section class="scene" id="s3">
-    <div class="headline" id="h4a" style="top: 70px">Works on <i>every</i> device.</div>
-    <div class="headline" id="h4b" style="top: 70px">One library for all of them.</div>
+    <div class="headline" id="h4a" style="top: 50px">On <i>every</i> device.</div>
+    <div class="headline" id="h4b" style="top: 50px">One library.</div>
     <svg id="links" viewBox="0 0 1920 1080"></svg>
     <div class="dev browser" id="d-browser" style="left: 1040px; top: 250px; width: 760px; height: 470px">
       <div class="url"><div class="dots"><i></i><i></i><i></i></div><div class="field">🔒 photos.example.com/slide-station</div></div>
@@ -445,22 +432,22 @@ body { display: grid; place-items: center; font-family: "Inter", sans-serif; col
     </div>
     <div class="dev tablet" id="d-tablet" style="left: 820px; top: 520px; width: 560px; height: 420px"><div class="scr"></div></div>
     <div class="dev phone" id="d-phone" style="left: 590px; top: 560px; width: 200px; height: 410px"><div class="island"></div><div class="scr"></div></div>
-    <div class="dev-label" id="lb-laptop" style="left: 150px; top: 785px"><b>Mac app</b> · works with the scanner</div>
-    <div class="dev-label" id="lb-browser" style="left: 1040px; top: 205px"><b>Any browser</b> · nothing to install</div>
-    <div class="dev-label" id="lb-tablet" style="left: 870px; top: 960px"><b>iPad &amp; iPhone</b> · no Mac needed</div>
-    <div class="dev-label" id="lb-server" style="left: 1480px; top: 890px"><b>Your server</b> · next to Immich</div>
+    <div class="dev-label" id="lb-laptop" style="left: 150px; top: 785px"><b>Mac</b></div>
+    <div class="dev-label" id="lb-browser" style="left: 1040px; top: 195px"><b>Browser</b></div>
+    <div class="dev-label" id="lb-tablet" style="left: 870px; top: 960px"><b>iPad &amp; iPhone</b></div>
+    <div class="dev-label" id="lb-server" style="left: 1560px; top: 885px"><b>Server</b></div>
     <div id="lib-node"><svg width="56" height="56" viewBox="0 0 24 24" fill="none" stroke="#1a1305" stroke-width="2" stroke-linecap="round"><ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v6c0 1.7 3.6 3 8 3s8-1.3 8-3V5"/><path d="M4 11v6c0 1.7 3.6 3 8 3s8-1.3 8-3v-6"/></svg></div>
   </section>
 
   <!-- 4 · more -->
   <section class="scene" id="s4">
     <div class="cards">
-      <div class="card" id="f1"><div class="art" id="f1a"></div><div class="txt"><h3>Learns from you</h3><p>Fix one slide and the next ones start closer.</p></div></div>
-      <div class="card" id="f2"><div class="art" id="f2a"></div><div class="txt"><h3>Knows who's who</h3><p>Name someone once, Immich gets it too.</p></div></div>
-      <div class="card" id="f3"><div class="art" id="f3a"></div><div class="txt"><h3>Dust and scratches</h3><p>Specks, scratches and mould painted out.</p></div></div>
-      <div class="card" id="f4"><div class="art" id="f4a"></div><div class="txt"><h3>Reads the signs</h3><p>The place comes straight from the photo.</p></div></div>
-      <div class="card" id="f5"><div class="art" id="f5a"></div><div class="txt"><h3>Tags and dates</h3><p>Suggested for you to accept or dismiss.</p></div></div>
-      <div class="card" id="f6"><div class="art" id="f6a"></div><div class="txt"><h3>Stays private</h3><p>It all runs on your own devices.</p></div></div>
+      <div class="card" id="f1"><div class="art" id="f1a"></div><div class="txt"><h3>Learns from you</h3></div></div>
+      <div class="card" id="f2"><div class="art" id="f2a"></div><div class="txt"><h3>Knows who's who</h3></div></div>
+      <div class="card" id="f3"><div class="art" id="f3a"></div><div class="txt"><h3>Removes dust</h3></div></div>
+      <div class="card" id="f4"><div class="art" id="f4a"></div><div class="txt"><h3>Reads signs</h3></div></div>
+      <div class="card" id="f5"><div class="art" id="f5a"></div><div class="txt"><h3>Suggests tags</h3></div></div>
+      <div class="card" id="f6"><div class="art" id="f6a"></div><div class="txt"><h3>Stays private</h3></div></div>
     </div>
   </section>
 
@@ -470,12 +457,9 @@ body { display: grid; place-items: center; font-family: "Inter", sans-serif; col
     <div class="abs" style="inset:0; background: radial-gradient(58% 62% at 50% 52%, rgba(14,14,16,.96) 40%, rgba(14,14,16,.6) 100%)"></div>
     <div class="center">
       <svg id="logo-icon" viewBox="0 0 64 64" style="width: 170px; height: 170px; filter: drop-shadow(0 24px 50px rgba(242,179,75,.3))"></svg>
-      <div id="wm" class="serif" style="font-size: 128px; font-weight: 600; letter-spacing: -.035em; margin-top: 20px; line-height: 1">Slide Station</div>
-      <div id="tl" class="serif" style="font-size: 50px; font-style: italic; color: var(--accent); margin-top: 22px">Bring your slides back to life.</div>
-      <div class="chips" id="plat">
-        <div class="chip">Mac</div><div class="chip">Browser</div><div class="chip">iPad &amp; iPhone</div><div class="chip">Server</div>
-      </div>
-      <div id="oss" style="margin-top: 44px; font-size: 26px; color: var(--muted)">Free and open source · <span style="color: var(--text)">github.com/Sam-Apostel/slide-station</span></div>
+      <div id="wm" class="serif" style="font-size: 150px; font-weight: 600; letter-spacing: -.035em; margin-top: 20px; line-height: 1">Slide Station</div>
+      <div id="tl" class="serif" style="font-size: 62px; font-style: italic; color: var(--accent); margin-top: 22px">Bring your slides back to life.</div>
+      <div id="oss" style="margin-top: 60px; font-size: 36px; color: var(--muted)">Free and open source<br><span style="color: var(--text); font-weight: 600">github.com/Sam-Apostel/slide-station</span></div>
     </div>
   </section>
 
@@ -490,12 +474,20 @@ body { display: grid; place-items: center; font-family: "Inter", sans-serif; col
 <script>
 "use strict";
 const FPS = 30;
-// The cuts sit on the music's bars: "New Friendly" runs at 115 BPM, and music/new-friendly.mp3 starts
-// 7 bars into the track so that its drop lands on the first step.
+// The cuts sit on the music's bars. The default is "New Friendly" (public domain) at 115 BPM,
+// music/new-friendly.mp3 starting 7 bars in so its drop lands on the first step. Any other track
+// can be used without committing it: ?music=<file>&bpm=<tempo>&offset=<seconds into the file where
+// the video starts> (render.cjs --music/--bpm/--offset; music/beats.py finds the tempo and drop).
+const Q = new URLSearchParams(location.search);
+const MUSIC = Q.has("music")
+  ? { file: Q.get("music"), bpm: +Q.get("bpm") || 120, offset: +Q.get("offset") || 0 }
+  : { file: "music/new-friendly.mp3", bpm: 115, offset: 0 };
+// Everything below is timed for 115 BPM and played SPEED times as fast, so the cuts stay on the bars
+// of a track at any tempo (a very fast one counts in half time).
 const BAR = 4 * 60 / 115;
 const T = { steps: 3 * BAR, devices: 11 * BAR, more: 14 * BAR, end: 16 * BAR };
-const DURATION = 19 * BAR;
-const MUSIC = { file: "music/new-friendly.mp3", title: "New Friendly", artist: "Kevin MacLeod" };
+const SPEED = (MUSIC.bpm > 150 ? MUSIC.bpm / 2 : MUSIC.bpm) / 115;
+const DURATION = 19 * BAR; // at 115 BPM; the video lasts DURATION / SPEED
 
 /* ============================================================ timeline */
 const EASE = {
@@ -523,7 +515,7 @@ function A(target, frames, start, dur, ease = "out", stagger = 0) {
     const fresh = [...props].every((p) => !seen.has(p));
     props.forEach((p) => seen.add(p));
     const a = el.animate(frames, {
-      delay: (start + i * stagger) * 1000, duration: dur * 1000,
+      delay: (start + i * stagger) / SPEED * 1000, duration: dur / SPEED * 1000,
       easing: EASE[ease] || ease, fill: fresh ? "both" : "forwards",
     });
     a.pause();
@@ -534,7 +526,7 @@ function A(target, frames, start, dur, ease = "out", stagger = 0) {
 const fadeIn = (t, s, d = .6, e = "out", st = 0) => A(t, [{ opacity: 0 }, { opacity: 1 }], s, d, e, st);
 const fadeOut = (t, s, d = .4, e = "soft", st = 0) => A(t, [{ opacity: 1 }, { opacity: 0 }], s, d, e, st);
 const tick = (fn) => ticks.push(fn);
-const sfx = (t, kind) => SFX.push([+t.toFixed(3), kind]);
+const sfx = (t, kind) => SFX.push([+(t / SPEED).toFixed(3), kind]);
 const clamp = (x, a = 0, b = 1) => Math.min(b, Math.max(a, x));
 const prog = (t, s, d) => clamp((t - s) / d);
 const easeOut = (x) => 1 - Math.pow(1 - x, 3);
@@ -917,8 +909,6 @@ function table(plane, seed, pick, both) {
   ["#c1", "#c2", "#c3", "#c4"].forEach((sel, i) => {
     const s = T0 + i * STEP, cap = $(sel);
     rise($(".step-title", cap), s + .05, .6, .05);
-    const sub = $(".step-sub", cap) || $(".checks", cap);
-    A(sub, [{ opacity: 0, transform: "translateY(16px)" }, { opacity: 1, transform: "translateY(0)" }], s + .3, .5);
     if (i < 3) A(cap, [{ opacity: 1, transform: "translateX(0)" }, { opacity: 0, transform: "translateX(-40px)" }], s + STEP - .25, .25, "in");
     A($$("#progress b")[i], [{ transform: "scaleX(0)" }, { transform: "scaleX(1)" }], s, STEP, "lin");
   });
@@ -995,13 +985,7 @@ function table(plane, seed, pick, both) {
     A("#devpic-wrap", [{ transform: "rotate(90deg) scale(.66)" }, { transform: "rotate(0deg) scale(1)" }], s + 2.75, .55, "back");
     sfx(s + 2.75, "whoosh-soft");
     A("#t-rot", [{ opacity: 0, transform: "translateY(10px)" }, { opacity: 1, transform: "translateY(0)" }], s + 2.9, .3);
-    [["#k1", 1.05], ["#k2", 2.2], ["#k3", 3.2]].forEach(([id, dt]) => {
-      const row = $(id), t = $(".tick", row); t.innerHTML = CHECK; t.style.color = "#0c2014";
-      A(t, [{ background: "transparent", borderColor: "#2a2a31", transform: "scale(1)" }, { background: "#6cc28a", borderColor: "#6cc28a", transform: "scale(1.25)", offset: .5 }, { background: "#6cc28a", borderColor: "#6cc28a", transform: "scale(1)" }], s + dt, .3, "soft");
-      A($("svg", t), [{ opacity: 0 }, { opacity: 1 }], s + dt, .15);
-      A(row, [{ color: "#9b978e" }, { color: "#ebe8e2" }], s + dt, .25);
-      sfx(s + dt, "ding");
-    });
+    [1.05, 2.2, 3.2].forEach((dt) => sfx(s + dt, "ding"));
   }
 
   /* ---- step 3: review with the keyboard */
@@ -1014,12 +998,12 @@ function table(plane, seed, pick, both) {
       html(track, `<div class="ftile" style="left: ${14 + j * TW}px">${photo(k)}<div class="badge ok" id="bk${j}" style="opacity:0">✓</div></div>`);
     });
     $("#fsel").style.left = "10px";
-    const b = 60 / 115; // on the beat
+    const b = BAR / 4; // on the beat
     const keys = [
       { t: b, key: "Space", say: "Looks good", next: true, badge: "ok" },
       { t: 2 * b, key: "R", say: "Turn", rot: true },
       { t: 3 * b, key: "Space", say: "Looks good", next: true, badge: "ok" },
-      { t: 4 * b, key: "C", say: "Same colour as the last one", copy: true },
+      { t: 4 * b, key: "C", say: "Copy colour", copy: true },
       { t: 5 * b, key: "Space", say: "Looks good", next: true, badge: "ok" },
       { t: 6 * b, key: "X", say: "Skip", next: true, badge: "skip" },
       { t: 7 * b, key: "Space", say: "Looks good", next: true, badge: "ok" },
@@ -1217,18 +1201,18 @@ function table(plane, seed, pick, both) {
   A("#logo-icon", [{ opacity: 0, transform: "scale(.5) rotate(-10deg)" }, { opacity: 1, transform: "scale(1) rotate(0)" }], s + .1, .7, "back");
   rise($("#wm"), s + .3, .7, .08);
   rise($("#tl"), s + .8, .7, .05);
-  A("#plat .chip", [{ opacity: 0, transform: "translateY(20px)" }, { opacity: 1, transform: "translateY(0)" }], s + 1.3, .45, "back", .08);
-  A("#oss", [{ opacity: 0, transform: "translateY(12px)" }, { opacity: 1, transform: "translateY(0)" }], s + 1.75, .5);
+  A("#oss", [{ opacity: 0, transform: "translateY(12px)" }, { opacity: 1, transform: "translateY(0)" }], s + 1.4, .5);
   A("#fadeout", [{ opacity: 0 }, { opacity: 1 }], DURATION - .7, .7, "soft");
 }
 
 /* ============================================================ player */
+/** Show the video at t seconds (real time: the ticks think in 115-BPM time). */
 function seek(t) {
   anims.forEach((a) => { a.currentTime = t * 1000; });
-  ticks.forEach((fn) => fn(t));
+  ticks.forEach((fn) => fn(t * SPEED));
 }
 window.seek = seek;
-window.DURATION = DURATION;
+window.DURATION = DURATION / SPEED;
 window.FPS = FPS;
 window.MUSIC = MUSIC;
 window.SFX = SFX.sort((a, b) => a[0] - b[0]);
@@ -1244,17 +1228,17 @@ if (params.has("render")) {
   addEventListener("resize", fit); fit();
   const audio = new Audio(MUSIC.file);
   let t = +params.get("t") || 0, playing = true, last = performance.now();
-  const sync = () => { audio.currentTime = t; if (playing) audio.play().catch(() => {}); else audio.pause(); };
+  const sync = () => { audio.currentTime = t + MUSIC.offset; if (playing) audio.play().catch(() => {}); else audio.pause(); };
   addEventListener("keydown", (e) => {
     if (e.code === "Space") { playing = !playing; sync(); }
-    if (e.code === "ArrowRight") { t = Math.min(DURATION, t + 1); sync(); }
+    if (e.code === "ArrowRight") { t = Math.min(DURATION / SPEED, t + 1); sync(); }
     if (e.code === "ArrowLeft") { t = Math.max(0, t - 1); sync(); }
   });
   addEventListener("click", sync);
   const hud = $("#hud");
   const loop = (now) => {
     if (playing) t += (now - last) / 1000;
-    if (t > DURATION) { t = 0; sync(); }
+    if (t > DURATION / SPEED) { t = 0; sync(); }
     last = now; seek(t);
     hud.textContent = `${t.toFixed(2)} s · click for sound · space pause · ←/→ scrub`;
     requestAnimationFrame(loop);

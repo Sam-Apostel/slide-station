@@ -5,6 +5,8 @@
 //
 //   npm install && npm run render            the whole video
 //   node render.cjs --stills 3.5,12,20       PNGs of single moments into stills/, to check a layout
+//   node render.cjs --music ~/track.mp3 --bpm 128 --offset 31.9 --out video-youtube.mp4
+//                                            another track; the cuts follow its bars
 //
 // Needs ffmpeg on the PATH (or FFMPEG=/path/to/ffmpeg) and Python 3 with numpy for the sound.
 
@@ -15,8 +17,15 @@ const path = require("node:path");
 
 const FFMPEG = process.env.FFMPEG || "ffmpeg";
 const here = __dirname;
-const url = "file://" + path.join(here, "index.html") + "?render";
 const arg = (name) => { const i = process.argv.indexOf(name); return i > 0 ? process.argv[i + 1] : undefined; };
+// --music <file> --bpm <tempo> --offset <seconds>: another track, not committed (see music/beats.py)
+const query = new URLSearchParams({ render: "" });
+if (arg("--music")) {
+  query.set("music", path.relative(here, path.resolve(arg("--music"))));
+  query.set("bpm", arg("--bpm") || "120");
+  query.set("offset", arg("--offset") || "0");
+}
+const url = "file://" + path.join(here, "index.html") + "?" + query;
 
 async function open() {
   const browser = await chromium.launch({ executablePath: process.env.CHROMIUM || undefined });
@@ -42,7 +51,7 @@ async function video() {
   const out = path.join(here, arg("--out") || "slide-station-launch.mp4");
   const silent = path.join(here, ".video.mp4");
   const { browser, page } = await open();
-  const { duration, fps, sfx, music } = await page.evaluate(() => ({ duration: window.DURATION, fps: window.FPS, sfx: window.SFX, music: window.MUSIC.file }));
+  const { duration, fps, sfx, music } = await page.evaluate(() => ({ duration: window.DURATION, fps: window.FPS, sfx: window.SFX, music: window.MUSIC }));
   const frames = Math.round(duration * fps);
 
   const enc = spawn(FFMPEG, ["-y", "-loglevel", "error", "-f", "image2pipe", "-framerate", String(fps), "-c:v", "mjpeg", "-i", "-",
@@ -61,7 +70,7 @@ async function video() {
 
   const cues = path.join(here, ".cues.json");
   const wav = path.join(here, ".soundtrack.wav");
-  fs.writeFileSync(cues, JSON.stringify({ duration, sfx, music: path.join(here, music) }));
+  fs.writeFileSync(cues, JSON.stringify({ duration, sfx, music: path.join(here, music.file), offset: music.offset }));
   const py = spawnSync(process.env.PYTHON || "python3", [path.join(here, "soundtrack.py"), cues, wav], { stdio: "inherit", env: { ...process.env, FFMPEG } });
   if (py.status === 0) {
     spawnSync(FFMPEG, ["-y", "-loglevel", "error", "-i", silent, "-i", wav, "-c:v", "copy", "-c:a", "aac", "-b:a", "192k", "-shortest", "-movflags", "+faststart", out], { stdio: "inherit" });
