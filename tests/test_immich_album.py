@@ -17,7 +17,7 @@ def upload(api, sid) -> str:
     return wait_job(api)["message"]
 
 
-def shared_album(db, name="Apostel digitalisatie") -> str:
+def shared_album(db, name="Family slides") -> str:
     """An album someone else owns and shared with this user: only `GET /albums?shared=true` has it."""
     aid = str(uuid.uuid4())
     db["albums"][aid] = {"name": name, "assets": [], "shared": True}
@@ -32,10 +32,10 @@ def test_every_tray_goes_into_the_album_from_settings(api, tray, immich_db):
     sid, _ = tray
     aid = shared_album(immich_db)
     names = {a["id"]: a["name"] for a in api.get("/api/immich/albums").json()}
-    assert names[aid] == "Apostel digitalisatie"  # shared albums are offered too
-    api.post("/api/config", json={"immich_album": aid, "immich_album_name": "Apostel digitalisatie"})
+    assert names[aid] == "Family slides"  # shared albums are offered too
+    api.post("/api/config", json={"immich_album": aid, "immich_album_name": "Family slides"})
     msg = upload(api, sid)
-    assert "uploaded to 'Apostel digitalisatie'" in msg, msg
+    assert "uploaded to 'Family slides'" in msg, msg
     assert list(immich_db["albums"]) == [aid]  # no album of its own for the tray
     assets = [g["immich"]["asset_id"] for g in Session(sid).data["groups"]]
     assert sorted(immich_db["albums"][aid]["assets"]) == sorted(assets)
@@ -68,7 +68,7 @@ def test_an_uploaded_tray_moves_into_the_album_chosen_later(api, tray, immich_db
     aid = shared_album(immich_db)
     # what Immich does when a stack is added to an album by hand: the scans come along
     immich_db["albums"][aid]["assets"] = [r["asset_id"] for r in recs] + sorted(scans)
-    api.post("/api/config", json={"immich_album": aid, "immich_album_name": "Apostel digitalisatie"})
+    api.post("/api/config", json={"immich_album": aid, "immich_album_name": "Family slides"})
     assert api.get(f"/api/sessions/{sid}").json()["placement_stale"] is True
     upload(api, sid)
     assert sorted(immich_db["albums"][aid]["assets"]) == sorted(r["asset_id"] for r in recs)

@@ -15,14 +15,12 @@ COPY frontend ./
 COPY slidestation/models /repo/slidestation/models
 RUN npm run build:web
 
-# The docs, rendered from the READMEs
+# The docs, rendered from docs/
 FROM node:24-slim AS docs
 WORKDIR /repo/site
 COPY site/package.json site/package-lock.json ./
 RUN npm ci --no-audit --no-fund
-COPY README.md /repo/
-COPY desktop/README.md /repo/desktop/
-COPY apple/README.md /repo/apple/
+COPY docs /repo/docs
 COPY site ./
 RUN npm run build
 

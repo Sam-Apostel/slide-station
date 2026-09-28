@@ -39,7 +39,7 @@ MODEL_MB = 39
 AGE_NAME = "mivolo_v2_age.onnx"
 # MiVOLO v2 (Kuprashevich & Tolstykh, Apache-2.0): a face crop and the body below it, 384 px each,
 # stacked as 6 channels -> the age. Our ONNX export of its age output (PyTorch has no place in the
-# app), on the owner's Hugging Face at a pinned commit. On faded, grainy slides of children it is off
+# app), on the project's Hugging Face at a pinned commit. On faded, grainy slides of children it is off
 # by ~2 years where the ViT trained on UTKFace it replaced was off by 13 (a girl of 7 "looked" 63)
 AGE_URL = ("https://huggingface.co/Sam-Apostel/mivolo-v2-age-onnx/resolve/"
            "8eb4cd8f5dd4bd28df2c9a43b24bc54d6d139d36/mivolo_v2_age.onnx")

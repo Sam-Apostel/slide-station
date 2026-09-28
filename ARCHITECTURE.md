@@ -4,8 +4,8 @@ For whoever works on this next (human or coding agent): what exists, why it is b
 the invariants worth keeping, and the traps that already cost time. What's still to do lives in
 `ROADMAP.md`.
 
-Repo: <https://github.com/Sam-Apostel/slide-station> · owner drives a Kodak Slide N Scan (RODFS50)
-and has ~10,000 35mm slides to digitise into a self-hosted Immich.
+Repo: <https://github.com/Sam-Apostel/slide-station> · built around the Kodak Slide N Scan (RODFS50)
+and a self-hosted Immich, for collections of thousands of 35mm slides.
 
 ---
 
@@ -15,7 +15,7 @@ One window that takes a tray of slides from the scanner's SD card to an Immich a
 
 1. **Import** — detects the scanner as a mounted volume (`/Volumes/*/DCIM` with scanner EXIF),
    copies scans into a library, verifies every copy by SHA-1, never imports the same scan twice.
-2. **Group** — consecutive scans of one slide at different brightness (the owner brackets by hand)
+2. **Group** — consecutive scans of one slide at different brightness (bracketing is done by hand on the scanner)
    are detected and exposure-fused (Mertens) into one image.
 3. **Orient** — rotation guessed from faces (OpenCV YuNet) and, failing that, from where the sky is.
 4. **Restore** — auto colour restoration for faded film + manual adjustments (Adjust panel).
@@ -25,7 +25,7 @@ One window that takes a tray of slides from the scanner's SD card to an Immich a
    developed slides (the rest stay to work on) or everything.
 7. **Clean the card** — deletes only scans that still match verified local copies.
 
-Status: **working end to end** and tested (see §7). The owner has run it on his own Mac.
+Status: **working end to end** and tested (see §7).
 
 ## 2. Layout
 
@@ -587,9 +587,9 @@ feature is behind `if (desktop)`, and the browser build is the same bundle.
   userData (`UV_PROJECT_ENVIRONMENT`), never inside the signed bundle.
 - Quitting kills the server's whole process group (uv → python); verified nothing is left behind.
 - **Releases and updates:** every push to `main` is built, signed, notarised and published to
-  GitHub Releases by a self-hosted runner on Sam's Mac (`.github/workflows/release.yml`); the app
-  updates itself from there when idle (`updater.cjs`). Details, runner upkeep and the safety rule
-  for a public repo: `desktop/README.md` → "Automatic releases and updates".
+  GitHub Releases by a self-hosted Mac runner (`.github/workflows/release.yml`); the app updates
+  itself from there when idle (`updater.cjs`). The workflow must never run on pull requests: this
+  is a public repo and the runner holds the signing credentials.
 
 Tested under Xvfb on Linux with Playwright's Electron driver (menus, commands, panel toggles,
 import, packaged uv first start). Not yet tried on a real Mac: traffic-light position, dock badge
@@ -655,7 +655,7 @@ standalone/
   `finish` (save to disk) and `cleanup` ask for their folder in the route itself, before the job
   starts; dropped items are read inside the drop event (`pick.fromDrop`).
 - **Immich from the page** needs CORS or the same origin (Immich enables CORS in development only);
-  `immich.ts` turns a failed fetch into an explanation (mixed content, CORS). README has proxy
+  `immich.ts` turns a failed fetch into an explanation (mixed content, CORS). docs/browser.md has proxy
   snippets. Saving to disk (a picked folder, the library's export folder, or a zip) is the way
   around it.
 - **Card cleanup** keeps the safety rules: only folders picked or dropped as a directory with
@@ -1589,7 +1589,7 @@ values alone, same-stock date suggestions and the era bound, accepting a date gu
 with hints, date suggestions). `tests/web_flow.py` accepts the Ektachrome guess in the browser
 version and gives it to the whole tray. **Not done:** the Swift app keeps `stock` on slides and
 trays and learns per stock, but has no stock UI, guess or era hint; the heuristic's thresholds and
-confidences are uncalibrated against real scans (the owner's trays are the first real test).
+confidences are uncalibrated against real scans (real trays are the first real test).
 
 ## 5e. Look-alikes: near-duplicates, grouping safety net, scenes, Immich (`similar.py`)
 
@@ -1959,7 +1959,7 @@ keeps the first birthday.
 (Kuprashevich & Tolstykh, Apache-2.0), which reads the face *and* the body below it — a child's body
 says as much about their age as their face. Our ONNX export of its age output (opset 18, batch 1,
 input `faces_bodies` [1, 6, 384, 384]: face then body, each letterboxed to 384 px on black, RGB,
-ImageNet mean / std; output `age` [1, 1] years), 118 MB, hosted on the owner's Hugging Face
+ImageNet mean / std; output `age` [1, 1] years), 118 MB, hosted on the project's Hugging Face
 (`Sam-Apostel/mivolo-v2-age-onnx`, a pinned commit; its model card says how it was exported),
 checksummed and downloaded like SFace (`people._download`) by the face-search job when turned on;
 the model it replaced (`OLD_AGE_NAMES`) is deleted then. `people.estimate_ages(rgb, boxes)` (the
@@ -1972,7 +1972,7 @@ or aged by another model (`people.unaged`), are aged in place by `add_ages` with
 (ids untouched) — `faces_pending` counts them, so the background helper and "Find faces" catch up.
 
 Why MiVOLO: the ViT-B/16 trained on UTKFace it replaced (329 MB) was fed exactly as trained, but
-on the owner's slides — faded, grainy, children's faces 60–160 px across — it read everyone ~11
+on real family slides — faded, grainy, children's faces 60–160 px across — it read everyone ~11
 years too old (a girl of 7 "looked" 63). On 20 faces of a tray labelled 1977 with birthdays (a
 holiday, checked by eye) it was off by 13.1 years on average and within 3 years for 15 %; MiVOLO:
 1.9 years, 85 % within 3. Levelling the eyes, the crop's margin, the developed look instead of the
@@ -1982,8 +1982,8 @@ by more than a year.
 **The date** (`dating.tray_view`, computed per payload; no file):
 - A face of someone with a birthday gives `born + age`. Ages are corrected by a **calibration on the
   slides dated by hand** (`calibrate`) — and, at half the weight (`TRAY_WEIGHT`), on the slides of
-  a tray with a date (a tray is one stretch of time; in the owner's "Box 5 - Tray 1", labelled 1977,
-  the model saw Tom, 8, as 11–50): residuals r = log1p(real) − log1p(guess) (error ∝ age). **Medians,
+  a tray with a date (a tray is one stretch of time; in one real tray labelled 1977, the model saw a
+  child of 8 as 11–50): residuals r = log1p(real) − log1p(guess) (error ∝ age). **Medians,
   not means** (`_wmedian`): a mask, a misnamed face or a slide from another year is one wild sample.
   The common bias is the median of each *person's* median residual (each person counts at most
   once), shrunk by k / (k + 3) with k the people: a child on many slides whom the model sees
@@ -2020,9 +2020,9 @@ by more than a year.
   date *without* the people: own, else `_prior` of the ordinary estimate — `library_slides` keeps it
   as `when`). That alone could as well be a wrong date (trays aren't in order; that's what the
   people's dates are for), so it also takes the slide being dated by hand, or the face being a weak
-  match for them: cosine < 0.35 to the average of their other faces (3+). In the owner's library,
-  "Tom (born 1968)" looking 37 in a tray labelled 1977 matched at 0.19, while his faces looking
-  13–27 in a tray labelled 1971 matched at 0.46–0.60 (him, slides from later). A suspect gives no
+  match for them: cosine < 0.35 to the average of their other faces (3+). On a real library, a
+  misnamed face looking 37 in a tray labelled 1977 matched its person at 0.19, while that
+  person's own faces in another tray matched at 0.46–0.60. A suspect gives no
   age (no date, no calibration sample, no implied birth year); they're found first with the neutral
   calibration (a misnamed face on a dated slide would widen the calibration enough to hide
   itself), then again. Shown as `odd` {age, year} on the slide's faces and the person's page cards.
@@ -2241,8 +2241,8 @@ cleanup refuses when anything is unuploaded.
 - macOS: the `.command` launcher is quarantined after download (right-click → Open), and Terminal
   needs the "Removable Volumes" permission before the scanner is visible.
 - `Image.thumbnail` + `draft()` is what keeps proxy generation fast; don't load full-res for previews.
-- The owner's scanner writes EXIF with a deliberately wrong clock (he sets it to the slide's year),
-  so EXIF time is useful for ordering, not for dating.
+- Scanner EXIF clocks are often deliberately wrong (set to the slide's year, say), so EXIF time
+  is useful for ordering, not for dating.
 
 ## 9. Repo hygiene (public repo)
 

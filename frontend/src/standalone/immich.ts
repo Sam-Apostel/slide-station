@@ -1,7 +1,7 @@
 // Minimal Immich client for the browser (slidestation/immich.py): same endpoints, same v1/v2 vs
 // v3 field rules. Immich only allows cross-origin requests in development builds, so this works
 // when Slide Station is served from the same origin as Immich, or when the reverse proxy in front
-// of Immich adds CORS headers for this page (docs: README "Slide Station in the browser").
+// of Immich adds CORS headers for this page (docs/browser.md, "Connecting Immich").
 import { pyRound } from "./clip";
 
 export class ImmichError extends Error {}

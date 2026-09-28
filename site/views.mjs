@@ -47,11 +47,11 @@ function layout({ title, description, current, body, wide = false }) {
 <meta property="og:title" content="${esc(title)}">
 <meta property="og:description" content="${esc(description)}">
 <meta property="og:image" content="https://slide-station.sams.land/assets/apple-touch-icon.png">
-<meta name="theme-color" content="#f6efe3" media="(prefers-color-scheme: light)">
-<meta name="theme-color" content="#16120e" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#131316">
 <link rel="icon" href="/assets/favicon.svg" type="image/svg+xml">
 <link rel="icon" href="/assets/favicon-32.png" sizes="32x32" type="image/png">
 <link rel="apple-touch-icon" href="/assets/apple-touch-icon.png">
+<link rel="preload" href="/assets/fonts/fraunces.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="stylesheet" href="/assets/style.css">
 <link rel="alternate" type="application/atom+xml" title="Slide Station releases" href="/changelog.atom">
 </head>
@@ -77,80 +77,132 @@ ${body}
 }
 
 const FEATURES = [
-  ["Brackets become one", "Repeated scans of a slide are grouped and exposure-fused into one HDR image."],
+  ["Brackets become one", "Took a brighter scan too? They're grouped and blended into one photo with detail in the highlights and shadows."],
   ["Upright by itself", "Rotation is guessed from faces and skies, and left alone when it isn't sure."],
-  ["Faded film restored", "Colour comes back, and your corrections teach it how to pre-set the next slides."],
-  ["Crooked mounts, dust, scratches", "Straightens slides in their mount and cleans up dust, scratches, mould and Newton rings."],
-  ["People across trays", "Optionally recognises faces: name someone once and Immich gets them as a tag."],
-  ["Straight into Immich", "An album per tray (or one for all), each photo tagged with its tray. Works with Immich v1.118 → v3."],
-  ["Local adjustments", "Graduated filters, radials and a brush to dodge and burn one part of a slide."],
-  ["Card cleaned safely", "Scans are deleted from the scanner's card only once they're verified and uploaded."],
+  ["Faded film restored", "Colour comes back automatically, and your corrections teach it how to start the next slides."],
+  ["Dust, mould, crooked mounts", "Straightens slides in their mount and cleans up dust, scratches, mould and Newton rings."],
+  ["People across trays", "Name someone once and every slide with them gets the name, on Immich's People page too."],
+  ["Straight into Immich", "An album per tray, with dates, places, captions and tags filled in. Immich v1.118 to v3."],
+  ["Local adjustments", "Graduated filters, radials and a brush to fix one part of a slide."],
+  ["The card, cleaned safely", "Scans are deleted from the scanner's card only once they're verified and uploaded."],
 ];
 
+// before / after pairs: DOCUMERICA slides (US EPA, 1971–77, public domain), developed by the app
+const COMPARE = [
+  ["toddler", "A toddler on the beach, 1973"],
+  ["tub", "Children in a park in Baltimore, 1973"],
+  ["pyramid", "Pyramid Lake, Nevada, 1972"],
+  ["rockport", "Rockport harbour, Massachusetts, 1973"],
+];
+
+const shot = (name, alt, eager = false) =>
+  `<img src="/assets/img/app-${name}-2000.webp" srcset="/assets/img/app-${name}-1100.webp 1100w, /assets/img/app-${name}-2000.webp 2000w" sizes="(max-width: 1240px) 100vw, 1200px" width="2000" height="1250" alt="${alt}"${eager ? ' fetchpriority="high"' : ' loading="lazy"'}>`;
+
+const APPLE = `<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M16.37 12.64c-.02-2.2 1.8-3.26 1.88-3.31-1.03-1.5-2.62-1.7-3.19-1.72-1.35-.14-2.65.8-3.34.8-.69 0-1.75-.78-2.88-.76-1.48.02-2.85.86-3.61 2.19-1.54 2.67-.39 6.62 1.1 8.79.73 1.06 1.6 2.25 2.74 2.2 1.1-.04 1.52-.71 2.85-.71s1.7.71 2.87.69c1.19-.02 1.94-1.08 2.66-2.15.84-1.23 1.19-2.42 1.2-2.48-.03-.01-2.3-.88-2.33-3.5ZM14.2 6.17c.6-.74 1.01-1.75.9-2.77-.87.04-1.93.58-2.55 1.31-.56.64-1.05 1.68-.92 2.67.97.08 1.97-.49 2.57-1.21Z"/></svg>`;
+
 export function home({ release, waitlistState, tip }) {
-  const download = release
-    ? `<a class="button primary" href="/download/mac">Download for Mac</a>`
-    : `<a class="button primary" href="${GH}/releases">Download for Mac</a>`;
+  const downloadHref = release ? "/download/mac" : `${GH}/releases`;
+  const download = `<a class="button primary" href="${downloadHref}">${APPLE}Download for Mac</a>`;
   const version = release
-    ? `<p class="fine">Version ${esc(release.version)} · ${day(release.date)} · Apple silicon · ${mb(release.dmg.size)} · updates itself</p>`
+    ? `<p class="fine">Version ${esc(release.version)} · Apple silicon · ${mb(release.dmg.size)} · updates itself · <a href="/changelog">What's new</a></p>`
     : "";
   const joined = waitlistState === "joined";
   const error = waitlistState && !joined ? waitlistState : "";
+  const [first] = COMPARE;
   return layout({
     title: "Slide Station: digitise 35mm slides without the tedium",
     description:
-      "Import Kodak Slide N Scan scans, blend brackets into HDR, turn slides upright, restore faded colour, upload to Immich and clean the card, in one window.",
+      "Import a tray of scanned slides, blend brackets, turn them upright, restore faded colour and send them to Immich, in one window.",
     current: "/",
     body: `<main>
 <section class="hero">
   <div class="bar">
-    <div class="hero-text">
-      <p class="eyebrow">For the Kodak Slide N Scan, a camera rig, or any folder of scans</p>
-      <h1>Digitise 35mm slides without the tedium.</h1>
-      <p class="lede">Import a tray, blend bracketed scans into HDR, turn slides upright, bring faded colour back and send them to Immich, then clean the scanner's card. Keyboard-first, built for working through thousands of slides. Everything runs on your own computer.</p>
-      <div class="actions">
-        ${download}
-        <a class="button" href="/app/">Open in browser</a>
-        <a class="button ghost" href="#testflight">iPad beta</a>
-      </div>
-      ${version}
+    <a class="eyebrow" href="#testflight"><b>New</b> The iPad and iPhone app is coming to TestFlight</a>
+    <h1>Digitise 35mm slides without the tedium.</h1>
+    <p class="lede">Import a tray from the Kodak Slide N Scan, and Slide Station blends the brackets, turns the slides upright and brings faded colour back. Check them with a few keys, and they go to Immich with dates, places and people.</p>
+    <div class="actions">
+      ${download}
+      <a class="button" href="/app/">Try it in your browser</a>
     </div>
-    <div class="hero-art" aria-hidden="true">
-      <div class="slide s1">${MOUNT}</div>
-      <div class="slide s2">${MOUNT}</div>
-      <div class="slide s3">${MOUNT}</div>
+    ${version}
+  </div>
+  <div class="hero-shot-wrap">
+    <figure class="shot hero-shot">${shot("develop", "Slide Station developing a tray of slides from 1973: the filmstrip on the left, the slide in the middle, tone curve and restore controls on the right", true)}</figure>
+  </div>
+</section>
+
+<section class="compare" aria-labelledby="compare-title">
+  <div class="bar">
+    <div class="section-head center">
+      <h2 id="compare-title">Faded film, fixed by itself.</h2>
+      <p>Real slides from the 1970s, as they came off the scanner and after Slide Station's automatic restore. Drag to compare.</p>
     </div>
+    <div class="frame" data-compare>
+      <img class="after" src="/assets/img/${first[0]}-after.webp" width="1200" height="804" alt="${first[1]}, restored by Slide Station">
+      <div class="before"><img src="/assets/img/${first[0]}-before.webp" width="1200" height="804" alt="${first[1]}, the faded scan"></div>
+      <span class="divider" aria-hidden="true"></span>
+      <span class="tag left">Scan</span><span class="tag right">Slide Station</span>
+      <input type="range" min="0" max="100" value="50" aria-label="Compare the scan with the restored slide">
+    </div>
+    <div class="picker" role="group" aria-label="Example slides">${COMPARE.map(
+      ([name, caption], i) =>
+        `<button type="button" data-slide="${name}" data-caption="${caption}" aria-pressed="${i === 0}" aria-label="${caption}"><img src="/assets/img/${name}-thumb.webp" alt="" width="72" height="48"></button>`,
+    ).join("")}</div>
+    <p class="fine">Slides from <a href="https://en.wikipedia.org/wiki/Documerica">DOCUMERICA</a>, the US Environmental Protection Agency's 1971–77 photo project (public domain).</p>
   </div>
 </section>
 
 <section class="features">
   <div class="bar">
-    <h2>What it does</h2>
+    <div class="section-head">
+      <h2>It does the boring parts.</h2>
+      <p>Everything a tray needs between the scanner and your photo library, on your own computer.</p>
+    </div>
     <ul class="grid">${FEATURES.map(([t, d]) => `<li><h3>${t}</h3><p>${d}</p></li>`).join("")}</ul>
+  </div>
+</section>
+
+<section class="showcase">
+  <div class="bar">
+    <div>
+      <h2>A whole tray at a glance.</h2>
+      <p>Built for working through thousands of slides. Most need nothing, so checking them is a key press each, and the full-resolution work happens in the background.</p>
+      <ul class="keys">
+        <li><kbd>Space</kbd> Looks good, next</li>
+        <li><kbd>R</kbd> Turn it</li>
+        <li><kbd>X</kbd> Skip it</li>
+        <li><kbd>G</kbd> The whole tray at once</li>
+      </ul>
+      <p class="fine"><a href="/docs/workflow">All the shortcuts</a></p>
+    </div>
+    <figure class="shot">${shot("grid", "The review grid showing twelve slides of the tray at once")}</figure>
   </div>
 </section>
 
 <section id="download" class="ways">
   <div class="bar">
-    <h2>Get it</h2>
+    <div class="section-head">
+      <h2>Get Slide Station</h2>
+      <p>Free and open source.</p>
+    </div>
     <div class="cards">
-      <article class="card">
+      <article class="card featured">
         <h3>Mac app</h3>
-        <p>Its own window with native menus, folder pickers, drag-and-drop, notifications when the scanner is plugged in, and updates that install themselves.</p>
+        <p>Notices when the scanner is plugged in, cleans its card, and keeps itself up to date.</p>
         <div class="card-foot">${download}</div>
-        ${version}
+        ${release ? `<p class="fine">Version ${esc(release.version)} · macOS on Apple silicon</p>` : ""}
       </article>
       <article class="card">
         <h3>In the browser</h3>
-        <p>Nothing to install: drop the scanner's card or a folder of JPEGs on the page. Nothing leaves your computer except what you send to your own Immich.</p>
+        <p>Nothing to install: drop the scanner's card or a folder of scans on the page. Nothing leaves your computer except what you send to your own Immich.</p>
         <div class="card-foot"><a class="button" href="/app/">Open Slide Station</a></div>
-        <p class="fine">Best in Chrome or Edge. <a href="/docs#in-the-browser-nothing-to-install">What works where</a></p>
+        <p class="fine">Best in Chrome or Edge. <a href="/docs/browser">What works where</a></p>
       </article>
       <article class="card">
-        <h3>Next to Immich</h3>
-        <p>A container on the server that runs Immich, used from any browser. Scans upload to the server, which does the work and sends slides on to Immich.</p>
-        <div class="card-foot"><a class="button" href="/docs#next-to-immich-as-a-container">Set it up</a></div>
-        <p class="fine">Docker · accounts per Immich user</p>
+        <h3>On your server</h3>
+        <p>Run it next to Immich and everyone in the house uses it from their own browser, signed in with their Immich account.</p>
+        <div class="card-foot"><a class="button" href="/docs/self-hosting">Set it up</a></div>
+        <p class="fine">Docker</p>
       </article>
     </div>
   </div>
@@ -161,10 +213,10 @@ export function home({ release, waitlistState, tip }) {
     <div>
       <h2>iPad and iPhone beta</h2>
       <p>Plug the Slide N Scan into an iPad, import a tray, keep, skip or turn each slide, and send it to Immich. No Mac needed. It's coming to TestFlight: leave your email and you'll get an invite when there's room.</p>
-      <p class="fine">Your address is only used for the TestFlight invite, and nothing else.</p>
+      <p class="fine">Your address is only used for the TestFlight invite.</p>
     </div>
     <form class="waitlist" method="post" action="/waitlist" data-state="${joined ? "joined" : ""}">
-      <div class="joined" role="status">${joined ? "<strong>You're on the list.</strong> Thanks! The invite will come from TestFlight." : ""}</div>
+      <div class="joined" role="status">${joined ? "<strong>You're on the list.</strong> The invite will come from TestFlight." : ""}</div>
       <label for="email">Email</label>
       <input id="email" name="email" type="email" autocomplete="email" required placeholder="you@example.com">
       <fieldset>
@@ -186,7 +238,7 @@ ${
   <div class="bar">
     <div>
       <h2>Tip jar</h2>
-      <p>Slide Station is free and open source. If it rescued a box of family slides, a tip keeps it going.</p>
+      <p>Slide Station is free. If it rescued a box of family slides, a tip keeps it going.</p>
     </div>
     <a class="button primary" href="${esc(tip.url)}" rel="noopener">${esc(tip.label)}</a>
   </div>
@@ -196,14 +248,12 @@ ${
 
 <section class="links">
   <div class="bar">
-    <h2>Links</h2>
+    <h2>More</h2>
     <ul>
-      <li><a href="/docs">Documentation</a><span>Setup, the workflow per tray, Immich, film stock, people, places</span></li>
+      <li><a href="/docs">Documentation</a><span>Getting started, the workflow, Immich, self-hosting</span></li>
       <li><a href="/changelog">Changelog</a><span>Every release, newest first</span></li>
-      <li><a href="${GH}">Source code</a><span>GitHub, MIT licence</span></li>
-      <li><a href="${GH}/issues">Issues</a><span>Report a problem or ask for something</span></li>
-      <li><a href="${GH}/releases">All releases</a><span>Older versions and the zip builds</span></li>
-      <li><a href="${GH}/blob/main/ROADMAP.md">Roadmap</a><span>What's next</span></li>
+      <li><a href="${GH}/issues">Report a problem</a><span>Or ask for something, on GitHub</span></li>
+      <li><a href="${GH}">Source code</a><span>MIT licence</span></li>
     </ul>
   </div>
 </section>
@@ -212,10 +262,13 @@ ${
 }
 
 export function docs(page, all) {
+  const href = (p) => `/docs${p.slug ? `/${p.slug}` : ""}`;
+  const i = all.indexOf(page);
+  const [prev, next] = [all[i - 1], all[i + 1]];
   const side = all
     .map(
       (p) =>
-        `<li><a href="/docs${p.slug ? `/${p.slug}` : ""}"${p === page ? ' aria-current="page"' : ""}>${esc(p.title)}</a>${
+        `<li><a href="${href(p)}"${p === page ? ' aria-current="page"' : ""}>${esc(p.title)}</a>${
           p === page
             ? `<ul>${p.toc.filter((t) => t.depth === 2).map((t) => `<li><a href="#${t.id}">${t.html}</a></li>`).join("")}</ul>`
             : ""
@@ -224,12 +277,21 @@ export function docs(page, all) {
     .join("");
   return layout({
     title: `${page.title} · Slide Station docs`,
-    description: "How to set up and use Slide Station.",
+    description: page.html.match(/<p>(.*?)<\/p>/s)?.[1].replace(/<[^>]+>/g, "").replace(/&#39;/g, "'").replace(/&quot;/g, '"').replace(/&amp;/g, "&").slice(0, 200) ?? "How to use Slide Station.",
     current: "/docs",
     wide: true,
     body: `<main class="docs bar wide">
   <aside><nav aria-label="Documentation"><ul>${side}</ul></nav></aside>
-  <article class="prose">${page.html}<p class="fine"><a href="${page.source}">Edit this page on GitHub</a></p></article>
+  <details class="docs-menu">
+    <summary><span>Docs</span> ${esc(page.title)}</summary>
+    <ul>${all.map((p) => `<li><a href="${href(p)}"${p === page ? ' aria-current="page"' : ""}>${esc(p.title)}</a></li>`).join("")}</ul>
+  </details>
+  <article class="prose">${page.html}
+    <nav class="pager" aria-label="More docs">${prev ? `<a class="prev" href="${href(prev)}"><span>Previous</span>${esc(prev.title)}</a>` : "<span></span>"}${
+      next ? `<a class="next" href="${href(next)}"><span>Next</span>${esc(next.title)}</a>` : ""
+    }</nav>
+    <p class="fine"><a href="${page.source}">Suggest a change to this page</a></p>
+  </article>
 </main>`,
   });
 }
