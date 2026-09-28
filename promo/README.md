@@ -41,13 +41,14 @@ node render.cjs --music edit.wav --bpm 140 --out slide-station.mp4   # see Music
 ```
 
 Rendering needs `ffmpeg` on the PATH (or `FFMPEG=/path/to/ffmpeg`), and Python 3 with `numpy`
-and `scipy` for the sound; without them it writes the video silently. It takes a few minutes.
+and `scipy` for the sound; without them it writes the video without sound. It takes a few minutes.
 
-## Another track (e.g. for YouTube)
+## Music
 
-Any track works; keep it out of the repository if its licence doesn't allow redistribution
-(Approaching Nirvana's free-to-use originals, for one, are for YouTube videos, credited in the
-description: "Music by Approaching Nirvana", their channel, the song title and a Spotify link).
+Any track works; keep it out of the repository (`*.mp3`, `*.wav` and `*.mp4` are git-ignored).
+The launch video uses Approaching Nirvana's "Long Past, and Yet to Come"; its licence and the
+credit it needs are in `music/CREDITS.md`. Without `--music` the video renders with the sound
+effects only.
 
 1. `python3 music/beats.py song.mp3` estimates the tempo, where the bars start and the drop.
 2. Cut the song to 24 bars on its bar lines, choosing bars so that its drop is the 5th and the
