@@ -12,6 +12,7 @@ on:
       - "**.md"
       - "tests/**"
       - "apple/**" # the native app ships separately (TestFlight), not in the desktop release
+      - "site/**" # the website deploys on Railway by itself
       - ".github/ISSUE_TEMPLATE/**"
   workflow_dispatch:
 

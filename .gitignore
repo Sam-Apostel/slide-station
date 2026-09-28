@@ -16,3 +16,6 @@ apple/**/.swiftpm/
 apple/build/
 .claude/worktrees/
 frontend/dist-web/
+site/node_modules/
+site/dist/
+site/data/
