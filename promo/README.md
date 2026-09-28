@@ -1,18 +1,19 @@
 # Launch video
 
-`slide-station-launch.mp4`: 40 seconds, 1920×1080, 30 fps, with music. Every cut is on a bar of
-the music.
+`slide-station-launch.mp4`: 1920×1080, 30 fps, with music: 50 seconds on the public-domain track
+committed here, 41 on a 140 BPM one. The video is 24 bars long and every cut and every move sits
+on the music's bars and beats: a key on each beat, a photo landing on each sixteenth.
 
-| Time | Scene |
+| Bars | Scene |
 | --- | --- |
-| 0:00 | Thousands of slides, in a shoebox, slowly fading (the developed slides fade to the real scans) |
-| 0:06 | Plug in the scanner: a slide goes into the Slide N Scan's holder, the card is imported |
-| 0:10 | Brackets blended, colour restored, turned upright from the faces it finds |
-| 0:15 | Review with the keyboard (Space, R, C, X) |
-| 0:19 | Upload to an Immich album, then clean the card |
-| 0:23 | Every device: Mac app, browser, iPad & iPhone, server, one library |
-| 0:29 | Learning, people, dust, places from signs, tags, privacy |
-| 0:33 | Logo, "Bring your slides back to life.", platforms, GitHub link |
+| 1–4 | Thousands of slides, in a shoebox, slowly fading; the 4th bar is the hush before the drop |
+| 5–6 | Plug in. Import.: a slide lands in the Slide N Scan's holder, the holder goes in, Import |
+| 7–8 | Fixed for you.: brackets blended, colour restored, turned upright from the faces it finds |
+| 9–10 | Review at speed.: Space, R, C, X |
+| 11–12 | Into Immich.: the photos fly into an album, the card is cleaned |
+| 13–16 | On every device. One library. |
+| 17–20 | Six feature cards, one on each beat |
+| 21–24 | Logo, "Bring your slides back to life.", the GitHub link |
 
 The slides are real: 35 mm Kodachromes and Ektachromes from the EPA's DOCUMERICA project
 (1971–1977), public domain, fetched from the National Archives and developed by Slide Station
@@ -43,25 +44,32 @@ and `scipy` for the sound; without them it writes the video silently. It takes a
 
 ## Another track (e.g. for YouTube)
 
-The cuts follow the music's bars, so any track works. Keep it out of the repository if its licence
-doesn't allow redistribution (Approaching Nirvana, for one, allows its music in YouTube videos
-only, credited in the description):
+Any track works; keep it out of the repository if its licence doesn't allow redistribution
+(Approaching Nirvana's free-to-use originals, for one, are for YouTube videos, credited in the
+description: "Music by Approaching Nirvana", their channel, the song title and a Spotify link).
 
-```bash
-python3 music/beats.py ~/Music/track.mp3     # prints the tempo, the drop and the command below
-node render.cjs --music ~/Music/track.mp3 --bpm 128 --offset 31.9 --out slide-station-youtube.mp4
-```
+1. `python3 music/beats.py song.mp3` estimates the tempo, where the bars start and the drop.
+2. Cut the song to 24 bars on its bar lines, choosing bars so that its drop is the 5th and the
+   phrases join where they end: `music/cut.py` joins whole bars with short crossfades and fades
+   the last one. For "Long Past, and Yet to Come" (140 BPM, bars from 0.03 s): the last intro bars
+   and the hush (13–16), one 16-bar drop phrase (17–32), then the outro (114–117):
 
-The whole video is timed for 115 BPM and sped up or slowed down to the track's tempo (a 128 BPM
-track gives a 36-second video), so every cut still lands on a bar. `--offset` is where in the track the video starts: 3 bars before the drop, so the drop lands on
-the first step. `beats.py` estimates it; if the drop feels early or late, move it by a bar
-(4 × 60 / bpm seconds). The page previews the same way:
-`index.html?music=<path from promo/>&bpm=128&offset=31.9`.
+   ```bash
+   python3 music/cut.py song.mp3 --bpm 140 --first-beat 0.03 --bars 13-32,114-117 -o edit.wav
+   node render.cjs --music edit.wav --bpm 140 --out slide-station-youtube.mp4
+   ```
+
+   Or skip the cut and start the song a little before its drop:
+   `node render.cjs --music song.mp3 --bpm 128 --offset 31.9` (4 bars before the drop).
+
+The video is timed for 115 BPM and played faster or slower to fit the track, so the cuts stay on
+its bars. The sound effects are tuned to the track's key, which `soundtrack.py` finds itself.
+The page previews the same way: `index.html?music=<path from promo/>&bpm=140`.
 
 ## Timing
 
 The scenes start on bars of the music (`T` at the top of the `<script>`), and every
 `A(target, keyframes, start, duration, easing)` call is one animation. `sfx(time, kind)` cues a
-sound; the kinds are in `SFX` in `soundtrack.py`. To change the slides, edit
+sound; the kinds are in `make()` in `soundtrack.py`. To change the slides, edit
 `slides/sources.json` and run `uv run --python 3.12 python promo/slides/prepare.py` from the
 repository root.

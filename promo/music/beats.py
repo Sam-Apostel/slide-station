@@ -16,7 +16,7 @@ import numpy as np
 SR = 11025
 HOP = 128
 FPS = SR / HOP
-FIRST_STEP_BARS = 3  # the video's first step starts 3 bars in (index.html, T.steps)
+FIRST_STEP_BARS = 4  # the video's first step starts 4 bars in (index.html, T.steps)
 
 
 def main(path: str) -> None:
@@ -52,7 +52,8 @@ def main(path: str) -> None:
     offset = drop - FIRST_STEP_BARS * bar
 
     print(f"tempo  {bpm:.2f} BPM (a bar is {bar:.3f} s)")
-    print(f"drop   {drop:.2f} s into the track")
+    print(f"bars   start at {phase:.3f} s (--first-beat for music/cut.py)")
+    print(f"drop   {drop:.2f} s into the track (bar {drop_bar})")
     print(f"offset {offset:.3f} s (the video starts {FIRST_STEP_BARS} bars before the drop)\n")
     print(f"node render.cjs --music {path} --bpm {bpm:.2f} --offset {offset:.3f} --out slide-station-youtube.mp4")
     print(f"preview: index.html?music={path}&bpm={bpm:.2f}&offset={offset:.3f}  (the path relative to promo/)")

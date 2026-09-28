@@ -485,9 +485,12 @@ const MUSIC = Q.has("music")
 // Everything below is timed for 115 BPM and played SPEED times as fast, so the cuts stay on the bars
 // of a track at any tempo (a very fast one counts in half time).
 const BAR = 4 * 60 / 115;
-const T = { steps: 3 * BAR, devices: 11 * BAR, more: 14 * BAR, end: 16 * BAR };
+const b = BAR / 4; // a beat
+// in bars: the intro 4 (the last is the hush before the drop), the four steps 2 each, the devices
+// 4, the features 4, the ending 4: 24 bars, in the 4- and 8-bar phrases the music moves in
+const T = { steps: 4 * BAR, devices: 12 * BAR, more: 16 * BAR, end: 20 * BAR };
 const SPEED = (MUSIC.bpm > 150 ? MUSIC.bpm / 2 : MUSIC.bpm) / 115;
-const DURATION = 19 * BAR; // at 115 BPM; the video lasts DURATION / SPEED
+const DURATION = 24 * BAR; // at 115 BPM; the video lasts DURATION / SPEED
 
 /* ============================================================ timeline */
 const EASE = {
@@ -526,7 +529,9 @@ function A(target, frames, start, dur, ease = "out", stagger = 0) {
 const fadeIn = (t, s, d = .6, e = "out", st = 0) => A(t, [{ opacity: 0 }, { opacity: 1 }], s, d, e, st);
 const fadeOut = (t, s, d = .4, e = "soft", st = 0) => A(t, [{ opacity: 1 }, { opacity: 0 }], s, d, e, st);
 const tick = (fn) => ticks.push(fn);
-const sfx = (t, kind) => SFX.push([+(t / SPEED).toFixed(3), kind]);
+/** Cue a sound at t: arg is its length in seconds (a riser, a sweep) or which one of a run it is
+ *  (the notes of a run climb). */
+const sfx = (t, kind, arg = 0) => SFX.push([+(t / SPEED).toFixed(3), kind, kind.match(/riser|whoosh|sweep|slide|swish|dust/) ? +(arg / SPEED).toFixed(3) : arg]);
 const clamp = (x, a = 0, b = 1) => Math.min(b, Math.max(a, x));
 const prog = (t, s, d) => clamp((t - s) / d);
 const easeOut = (x) => 1 - Math.pow(1 - x, 3);
@@ -880,7 +885,7 @@ function table(plane, seed, pick, both) {
   return drops;
 }
 
-/* ============================================================ 1 · the shoebox */
+/* ============================================================ 1 · the shoebox (4 bars: 3 quiet, 1 hush before the drop) */
 {
   const plane = $("#plane1");
   const drops = table(plane, 11, (r, c) => (r * 3 + c * 5 + (r % 2) * 7) % PHOTOS.length, true);
@@ -888,107 +893,113 @@ function table(plane, seed, pick, both) {
             { transform: "rotateX(50deg) rotateZ(-14deg) translate3d(60px, -40px, -160px)" }], 0, T.steps, "lin");
   // each slide drops onto the table, tumbling a little
   drops.forEach((d, i) => A(d.el, [{ opacity: 0, transform: `translateZ(420px) rotateX(${d.rx}deg) rotateY(${d.ry}deg)` },
-                                   { opacity: 1, transform: "translateZ(0) rotateX(0) rotateY(0)" }], i * .008, 1.0, "out"));
-  // vivid at first; then the developed picture fades off and leaves the faded scan, as the line says so
-  A($$(".photo.dev", plane), [{ opacity: 1 }, { opacity: 0 }], 2.7, 2.0, "soft");
-  A("#s1 .shade", [{ opacity: .6 }, { opacity: 1 }], 0, 1.5, "soft");
-
-  rise($("#l1"), .15, .7, .06);
-  rise($("#l2"), 1.04, .7, .06);
-  sink($("#l1"), 2.3, .35); sink($("#l2"), 2.33, .35);
-  rise($("#l3"), 2.6, .7, .07);
-  A("#fading", [{ filter: "blur(0px)", opacity: 1, letterSpacing: "0em" }, { filter: "blur(10px)", opacity: .12, letterSpacing: ".06em" }], 3.4, 1.6, "soft");
-  A("#l3", [{ opacity: 1 }, { opacity: 0 }], 5.5, .35, "soft");
-  A("#s1p", [{ transform: "scale(1)", opacity: 1 }, { transform: "scale(1.6)", opacity: 0 }], 5.55, .7, "in");
-  flash(T.steps, .55);
+                                   { opacity: 1, transform: "translateZ(0) rotateX(0) rotateY(0)" }], i * .01, 1.2, "out"));
+  A("#s1 .shade", [{ opacity: .6 }, { opacity: 1 }], 0, 4 * b, "soft");
+  rise($("#l1"), 1 * b, .7, .06);
+  rise($("#l2"), 3 * b, .7, .06);
+  sink($("#l1"), 6.5 * b, .3); sink($("#l2"), 6.55 * b, .3);
+  rise($("#l3"), 7 * b, .7, .07);
+  // the developed pictures fade off and leave the faded scans, as the line says so
+  A($$(".photo.dev", plane), [{ opacity: 1 }, { opacity: 0 }], 7 * b, 4 * b, "soft");
+  A("#fading", [{ filter: "blur(0px)", opacity: 1, letterSpacing: "0em" }, { filter: "blur(10px)", opacity: .12, letterSpacing: ".06em" }], 8 * b, 3.5 * b, "soft");
+  A("#l3", [{ opacity: 1 }, { opacity: 0 }], 12 * b, 1 * b, "soft");
+  // through the hush the table falls away, and the drop opens on the first step
+  A("#s1p", [{ transform: "scale(1)", opacity: 1 }, { transform: "scale(1.7)", opacity: 0 }], 12.5 * b, 3.5 * b, "in");
+  sfx(12 * b, "riser", 4 * b);
+  flash(T.steps, .6);
+  sfx(T.steps, "impact");
 }
 
-/* ============================================================ 2 · how it works */
+/* ============================================================ 2 · how it works (2 bars a step) */
 {
   const T0 = T.steps, STEP = 2 * BAR;
   ["#c1", "#c2", "#c3", "#c4"].forEach((sel, i) => {
     const s = T0 + i * STEP, cap = $(sel);
-    rise($(".step-title", cap), s + .05, .6, .05);
-    if (i < 3) A(cap, [{ opacity: 1, transform: "translateX(0)" }, { opacity: 0, transform: "translateX(-40px)" }], s + STEP - .25, .25, "in");
+    rise($(".step-title", cap), s, .5, .05);
+    if (i < 3) A(cap, [{ opacity: 1, transform: "translateX(0)" }, { opacity: 0, transform: "translateX(-40px)" }], s + STEP - .5 * b, .5 * b, "in");
     A($$("#progress b")[i], [{ transform: "scaleX(0)" }, { transform: "scaleX(1)" }], s, STEP, "lin");
   });
-  A("#cap, #progress", [{ opacity: 1 }, { opacity: 0 }], T.devices - .3, .3);
+  A("#cap, #progress", [{ opacity: 1 }, { opacity: 0 }], T.devices - .5 * b, .5 * b);
   ["#v1", "#v2", "#v3", "#v4"].forEach((sel, i) => {
     const s = T0 + i * STEP;
-    A(sel, [{ opacity: 0, transform: "translateX(100px)" }, { opacity: 1, transform: "translateX(0)" }], s, .45, "out");
-    if (i < 3) A(sel, [{ opacity: 1, transform: "translateX(0)" }, { opacity: 0, transform: "translateX(-100px)" }], s + STEP - .25, .25, "in");
-    if (i > 0) sfx(s - .05, "whoosh-soft");
+    A(sel, [{ opacity: 0, transform: "translateX(100px)" }, { opacity: 1, transform: "translateX(0)" }], s, .4, "out");
+    if (i < 3) A(sel, [{ opacity: 1, transform: "translateX(0)" }, { opacity: 0, transform: "translateX(-100px)" }], s + STEP - .5 * b, .5 * b, "in");
+    if (i > 0) sfx(s - .5 * b, "whoosh", .5 * b);
   });
-  A("#v4", [{ opacity: 1, transform: "scale(1)" }, { opacity: 0, transform: "scale(.95)" }], T.devices - .3, .3, "in");
+  A("#v4", [{ opacity: 1, transform: "scale(1)" }, { opacity: 0, transform: "scale(.95)" }], T.devices - .5 * b, .5 * b, "in");
 
-  /* ---- step 1: a slide drops into the holder, the holder slides into the scanner, then import */
+  /* ---- step 1: the slide lands in the holder on beat 1, the holder goes in on 2-3, click Import on 4 */
   {
     const s = T0;
     $("#scanscreen").innerHTML = photo(0, "scan");
     html($("#scanslide"), mount3d(0, 100, { scan: true, label: "Puget Sd." }));
     A("#scanslide", [{ transform: "translate3d(20px, -300px, 120px) rotateX(-40deg) rotateY(35deg) rotateZ(-20deg)", opacity: 0 },
-                     { transform: "translate3d(0, -60px, 30px) rotateX(-8deg) rotateY(6deg) rotateZ(-4deg)", opacity: 1, offset: .65 },
-                     { transform: "translate3d(0, 0, 0) rotateX(0) rotateY(0) rotateZ(0)", opacity: 1 }], s + .05, .75, "out");
-    sfx(s + .75, "thud");
-    A("#holder", [{ transform: "translateX(0)" }, { transform: "translateX(-250px)" }], s + 1.0, .55, "inOut");
-    sfx(s + 1.0, "slide");
-    A("#scanscreen .photo", [{ opacity: 0 }, { opacity: 1 }], s + 1.5, .2);
-    sfx(s + 1.5, "scan");
-    A("#scan-pill", [{ opacity: 0, transform: "scale(.85)" }, { opacity: 1, transform: "scale(1)" }], s + 1.6, .35, "back");
-    A("#cursor1", [{ transform: "translate(900px, 760px)", opacity: 0 }, { transform: "translate(900px, 760px)", opacity: 1, offset: .15 }, { transform: "translate(1036px, 170px)", opacity: 1 }], s + 1.3, .7, "inOut");
-    A("#imp-btn", [{ transform: "scale(1)" }, { transform: "scale(.9)" }, { transform: "scale(1)" }], s + 2.02, .2, "soft");
-    sfx(s + 2.05, "click");
-    A("#cursor1", [{ opacity: 1 }, { opacity: 0 }], s + 2.3, .2);
-    A("#imp-title, #imp-status, #imp-app .bar-track", [{ opacity: 0 }, { opacity: 1 }], s + 2.1, .2);
+                     { transform: "translate3d(0, -60px, 30px) rotateX(-8deg) rotateY(6deg) rotateZ(-4deg)", opacity: 1, offset: .7 },
+                     { transform: "translate3d(0, 0, 0) rotateX(0) rotateY(0) rotateZ(0)", opacity: 1 }], s, 1 * b, "out");
+    sfx(s + 1 * b, "thud");
+    A("#holder", [{ transform: "translateX(0)" }, { transform: "translateX(-250px)" }], s + 2 * b, 1 * b, "inOut");
+    sfx(s + 2 * b, "slide", 1 * b);
+    sfx(s + 3 * b, "latch");
+    A("#scanscreen .photo", [{ opacity: 0 }, { opacity: 1 }], s + 3 * b, .15);
+    A("#scan-pill", [{ opacity: 0, transform: "scale(.85)" }, { opacity: 1, transform: "scale(1)" }], s + 3 * b, .3, "back");
+    sfx(s + 3 * b, "scan");
+    A("#cursor1", [{ transform: "translate(900px, 760px)", opacity: 0 }, { transform: "translate(900px, 760px)", opacity: 1, offset: .15 }, { transform: "translate(1036px, 170px)", opacity: 1 }], s + 2.5 * b, 1.5 * b, "inOut");
+    A("#imp-btn", [{ transform: "scale(1)" }, { transform: "scale(.9)" }, { transform: "scale(1)" }], s + 4 * b, .5 * b, "soft");
+    sfx(s + 4 * b, "click");
+    A("#cursor1", [{ opacity: 1 }, { opacity: 0 }], s + 4.5 * b, .5 * b);
+    A("#imp-title, #imp-status, #imp-app .bar-track", [{ opacity: 0 }, { opacity: 1 }], s + 4 * b, .15);
     const grid = $("#imp-grid");
     for (let n = 0; n < 12; n++) {
       const th = html(grid, `<div class="thumb" style="width: auto">${photo((n * 5 + 1) % PHOTOS.length, "scan")}</div>`);
       const col = n % 4, row = Math.floor(n / 4);
       const dx = 166 - (580 + 26 + 55 + col * 119.5), dy = 498 - (150 + 196 + 35 + row * 80);
+      // one lands on every sixteenth from beat 5
       A(th, [{ transform: `translate(${dx}px, ${dy}px) scale(.4)`, opacity: 0 },
              { transform: `translate(${dx * .5}px, ${dy - 100}px) scale(.8)`, opacity: 1, offset: .5 },
-             { transform: "translate(0,0) scale(1)", opacity: 1 }], s + 2.15 + n * .07, .5, "soft");
+             { transform: "translate(0,0) scale(1)", opacity: 1 }], s + 4 * b + n * .25 * b, 1 * b, "soft");
+      if (n % 2 === 0) sfx(s + 5 * b + n * .25 * b, "tick");
     }
-    A("#imp-bar", [{ transform: "scaleX(0)" }, { transform: "scaleX(1)" }], s + 2.15, 1.3, "soft");
-    tick((t) => { $("#imp-status").innerHTML = t > s + 3.45 ? `<span style="color:var(--ok)">✓ 36 scans, grouped into 14 slides</span>` : `Importing ${Math.round(36 * easeInOut(prog(t, s + 2.15, 1.3)))} of 36 scans…`; });
+    A("#imp-bar", [{ transform: "scaleX(0)" }, { transform: "scaleX(1)" }], s + 4 * b, 3 * b, "soft");
+    tick((t) => { $("#imp-status").innerHTML = t > s + 7 * b ? `<span style="color:var(--ok)">✓ 36 scans, grouped into 14 slides</span>` : `Importing ${Math.round(36 * easeInOut(prog(t, s + 4 * b, 3 * b)))} of 36 scans…`; });
+    sfx(s + 7 * b, "ding", 0);
   }
 
-  /* ---- step 2: brackets blended, colour restored, turned upright */
+  /* ---- step 2: brackets meet on 2, the colour wipes in on 3-5, faces on 5, upright on 6 */
   {
     const s = T0 + STEP, K = FAMILY;
     $("#dev-faded").innerHTML = `<img src="${src(K, true)}" alt="">`;
     $("#dev-vivid").innerHTML = `<img src="${src(K)}" alt="">`;
     const br = $("#brackets");
-    [[.45, -300, -6], [1, 0, 0], [1.9, 300, 6]].forEach(([b, x, r], j) => {
-      const el = html(br, `<div class="big-pic" style="left: 160px; top: 150px; filter: brightness(${b})">${photo(K, "scan")}</div>`);
-      A(el, [{ transform: `translateX(${x * .7}px) rotate(${90 + r}deg) scale(.5)`, opacity: 0 }, { transform: `translateX(${x}px) rotate(${90 + r}deg) scale(.5)`, opacity: 1 }], s + .1 + j * .08, .4, "out");
-      A(el, [{ transform: `translateX(${x}px) rotate(${90 + r}deg) scale(.5)`, opacity: 1 }, { transform: "translateX(0) rotate(90deg) scale(.66)", opacity: 0 }], s + .7, .4, "inOut");
+    [[.45, -300, -6], [1, 0, 0], [1.9, 300, 6]].forEach(([bright, x, r], j) => {
+      const el = html(br, `<div class="big-pic" style="left: 160px; top: 150px; filter: brightness(${bright})">${photo(K, "scan")}</div>`);
+      A(el, [{ transform: `translateX(${x * .7}px) rotate(${90 + r}deg) scale(.5)`, opacity: 0 }, { transform: `translateX(${x}px) rotate(${90 + r}deg) scale(.5)`, opacity: 1 }], s + j * .5 * b, .4, "out");
+      A(el, [{ transform: `translateX(${x}px) rotate(${90 + r}deg) scale(.5)`, opacity: 1 }, { transform: "translateX(0) rotate(90deg) scale(.66)", opacity: 0 }], s + 1 * b, 1 * b, "in");
+      sfx(s + j * .5 * b, "tick");
     });
     A("#devpic-wrap", [{ transform: "rotate(90deg) scale(.66)" }, { transform: "rotate(90deg) scale(.66)" }], s, .01);
-    A("#devpic", [{ opacity: 0 }, { opacity: 1 }], s + 1.0, .2, "soft");
-    A("#flash", [{ opacity: 0 }, { opacity: .3, offset: .3 }, { opacity: 0 }], s + .98, .4, "soft");
-    sfx(s + 1.04, "pop");
-    A("#t-hdr", [{ opacity: 0, transform: "translateY(10px)" }, { opacity: 1, transform: "translateY(0)" }], s + 1.05, .3);
-    A("#t-hdr", [{ opacity: 1 }, { opacity: 0 }], s + 1.5, .2);
-    A("#dev-vivid", [{ clipPath: "inset(0 100% 0 0)" }, { clipPath: "inset(0 0% 0 0)" }], s + 1.55, .75, "inOut");
-    A("#wipe", [{ left: "0%", opacity: 1 }, { left: "100%", opacity: 1, offset: .95 }, { left: "100%", opacity: 0 }], s + 1.55, .8, "inOut");
-    sfx(s + 1.55, "sweep");
-    A("#t-col", [{ opacity: 0, transform: "translateY(10px)" }, { opacity: 1, transform: "translateY(0)" }], s + 1.8, .3);
-    A("#t-col", [{ opacity: 1 }, { opacity: 0 }], s + 2.4, .2);
+    A("#devpic", [{ opacity: 0 }, { opacity: 1 }], s + 2 * b, .12, "soft");
+    A("#flash", [{ opacity: 0 }, { opacity: .3, offset: .2 }, { opacity: 0 }], s + 2 * b - .03, .4, "soft");
+    sfx(s + 2 * b, "merge");
+    A("#t-hdr", [{ opacity: 0, transform: "translateY(10px)" }, { opacity: 1, transform: "translateY(0)" }], s + 2 * b, .25);
+    A("#t-hdr", [{ opacity: 1 }, { opacity: 0 }], s + 3 * b, .15);
+    A("#dev-vivid", [{ clipPath: "inset(0 100% 0 0)" }, { clipPath: "inset(0 0% 0 0)" }], s + 3 * b, 2 * b, "inOut");
+    A("#wipe", [{ left: "0%", opacity: 1 }, { left: "100%", opacity: 1, offset: .95 }, { left: "100%", opacity: 0 }], s + 3 * b, 2.1 * b, "inOut");
+    sfx(s + 3 * b, "sweep", 2 * b);
+    A("#t-col", [{ opacity: 0, transform: "translateY(10px)" }, { opacity: 1, transform: "translateY(0)" }], s + 3.5 * b, .25);
+    A("#t-col", [{ opacity: 1 }, { opacity: 0 }], s + 5 * b, .15);
     $("#nfaces").textContent = FACES[K].length;
     FACES[K].forEach(([x, y, w, h], j) => {
       const el = html($("#devpic"), `<div class="facebox" style="left: ${x * 780}px; top: ${y * 520}px; width: ${w * 780}px; height: ${h * 520}px"></div>`);
-      A(el, [{ opacity: 0, transform: "scale(1.5)" }, { opacity: 1, transform: "scale(1)" }], s + 2.45 + j * .06, .25, "back");
-      A(el, [{ opacity: 1 }, { opacity: 0 }], s + 3.6, .2);
-      sfx(s + 2.45 + j * .06, "tick");
+      A(el, [{ opacity: 0, transform: "scale(1.5)" }, { opacity: 1, transform: "scale(1)" }], s + 5 * b + j * .25 * b, .2, "back");
+      A(el, [{ opacity: 1 }, { opacity: 0 }], s + 7.25 * b, .2);
+      sfx(s + 5 * b + j * .25 * b, "face", j);
     });
-    A("#devpic-wrap", [{ transform: "rotate(90deg) scale(.66)" }, { transform: "rotate(0deg) scale(1)" }], s + 2.75, .55, "back");
-    sfx(s + 2.75, "whoosh-soft");
-    A("#t-rot", [{ opacity: 0, transform: "translateY(10px)" }, { opacity: 1, transform: "translateY(0)" }], s + 2.9, .3);
-    [1.05, 2.2, 3.2].forEach((dt) => sfx(s + dt, "ding"));
+    A("#devpic-wrap", [{ transform: "rotate(90deg) scale(.66)" }, { transform: "rotate(0deg) scale(1)" }], s + 6 * b, 1 * b, "back");
+    sfx(s + 6 * b, "whoosh", 1 * b);
+    A("#t-rot", [{ opacity: 0, transform: "translateY(10px)" }, { opacity: 1, transform: "translateY(0)" }], s + 6.5 * b, .25);
   }
 
-  /* ---- step 3: review with the keyboard */
+  /* ---- step 3: a key on every beat */
   {
     const s = T0 + 2 * STEP;
     const seq = ["modelt", "lake", "tahoe", "snowmobile", "rockport", "sunset", "tub", "toddler"];
@@ -998,7 +1009,6 @@ function table(plane, seed, pick, both) {
       html(track, `<div class="ftile" style="left: ${14 + j * TW}px">${photo(k)}<div class="badge ok" id="bk${j}" style="opacity:0">✓</div></div>`);
     });
     $("#fsel").style.left = "10px";
-    const b = BAR / 4; // on the beat
     const keys = [
       { t: b, key: "Space", say: "Looks good", next: true, badge: "ok" },
       { t: 2 * b, key: "R", say: "Turn", rot: true },
@@ -1015,71 +1025,71 @@ function table(plane, seed, pick, both) {
     keys.forEach((k, n) => {
       const t = s + k.t;
       const row = html(hud, `<div class="keyrow" style="opacity:0"><span class="keycap"${k.key === "Space" ? ' style="min-width: 260px"' : ""}>${k.key}</span><span>${k.say}</span></div>`);
-      A(row, [{ opacity: 0, transform: "translateY(14px)" }, { opacity: 1, transform: "translateY(0)" }], t - .05, .15, "out");
-      A($(".keycap", row), [{ transform: "translateY(0)", boxShadow: "0 6px 0 #0b0b0d, 0 10px 30px rgba(0,0,0,.5)" }, { transform: "translateY(5px)", boxShadow: "0 1px 0 #0b0b0d, 0 4px 14px rgba(0,0,0,.5)" }, { transform: "translateY(0)", boxShadow: "0 6px 0 #0b0b0d, 0 10px 30px rgba(0,0,0,.5)" }], t, .18, "soft");
-      A(row, [{ opacity: 1 }, { opacity: 0 }], n + 1 < keys.length ? s + keys[n + 1].t - .07 : s + STEP - .3, .1);
-      sfx(t, "key");
+      A(row, [{ opacity: 0, transform: "translateY(14px)" }, { opacity: 1, transform: "translateY(0)" }], t - .06, .12, "out");
+      A($(".keycap", row), [{ transform: "translateY(0)", boxShadow: "0 6px 0 #0b0b0d, 0 10px 30px rgba(0,0,0,.5)" }, { transform: "translateY(5px)", boxShadow: "0 1px 0 #0b0b0d, 0 4px 14px rgba(0,0,0,.5)", offset: .3 }, { transform: "translateY(0)", boxShadow: "0 6px 0 #0b0b0d, 0 10px 30px rgba(0,0,0,.5)" }], t - .03, .2, "soft");
+      A(row, [{ opacity: 1 }, { opacity: 0 }], n + 1 < keys.length ? s + keys[n + 1].t - .08 : s + STEP - .5 * b, .08);
+      sfx(t, k.key === "Space" ? "space" : "key");
       if (k.badge) {
         const bd = $("#bk" + cur);
-        if (k.badge === "skip") { bd.className = "badge skip"; bd.textContent = "✕"; A(bd.parentElement, [{ opacity: 1 }, { opacity: .35 }], t, .25); }
-        A(bd, [{ opacity: 0, transform: "scale(.3)" }, { opacity: 1, transform: "scale(1)" }], t, .25, "back");
+        if (k.badge === "skip") { bd.className = "badge skip"; bd.textContent = "✕"; A(bd.parentElement, [{ opacity: 1 }, { opacity: .35 }], t, .2); }
+        A(bd, [{ opacity: 0, transform: "scale(.3)" }, { opacity: 1, transform: "scale(1)" }], t, .2, "back");
       }
-      if (k.rot) A("#rv" + cur, [{ transform: "rotate(-90deg) scale(.67)" }, { transform: "rotate(0) scale(1)" }], t, .35, "back");
-      if (k.copy) knobs.forEach(([a, c], m) => A("#kn" + (m + 1), [{ left: a * 100 + "%" }, { left: c * 100 + "%" }], t + m * .03, .3, "out"));
+      if (k.rot) A("#rv" + cur, [{ transform: "rotate(-90deg) scale(.67)" }, { transform: "rotate(0) scale(1)" }], t, .3, "back");
+      if (k.copy) knobs.forEach(([a, c], m) => A("#kn" + (m + 1), [{ left: a * 100 + "%" }, { left: c * 100 + "%" }], t + m * .03, .25, "out"));
       if (k.next) {
-        A("#rv" + cur, [{ opacity: 1, transform: "translateX(0) scale(1)" }, { opacity: 0, transform: "translateX(-60px) scale(.96)" }], t + .03, .22, "soft");
+        A("#rv" + cur, [{ opacity: 1, transform: "translateX(0) scale(1)" }, { opacity: 0, transform: "translateX(-60px) scale(.96)" }], t, .2, "soft");
         cur++;
-        A("#rv" + cur, [{ opacity: 0 }, { opacity: 1 }], t + .03, .2, "soft");
-        if (cur > 1) A(track, [{ transform: `translateX(${-(cur - 2) * TW}px)` }, { transform: `translateX(${-(cur - 1) * TW}px)` }], t + .03, .25, "out");
+        A("#rv" + cur, [{ opacity: 0 }, { opacity: 1 }], t, .16, "soft");
+        if (cur > 1) A(track, [{ transform: `translateX(${-(cur - 2) * TW}px)` }, { transform: `translateX(${-(cur - 1) * TW}px)` }], t, .22, "out");
       }
     });
-    A("#fsel", [{ left: "10px" }, { left: `${10 + TW}px` }], s + b + .03, .25, "out");
+    A("#fsel", [{ left: "10px" }, { left: `${10 + TW}px` }], s + b, .22, "out");
     tick((t) => {
       $("#rv-n").textContent = 14 + keys.filter((k) => k.next && t >= s + k.t).length;
       $("#rv-rate").textContent = Math.round(390 + 50 * prog(t, s, STEP));
-      const copied = t >= s + 4 * b + .1;
+      const copied = t >= s + 4 * b + .05;
       $("#sv1").textContent = copied ? "+0.5" : "+0.2"; $("#sv2").textContent = copied ? "40" : "62"; $("#sv3").textContent = copied ? "+6" : "−8";
     });
   }
 
-  /* ---- step 4: upload to Immich, then clean the card */
+  /* ---- step 4: click Upload on 1, a photo lands on every sixteenth, done on 6, clean the card on 7 */
   {
     const s = T0 + 3 * STEP;
     const grid = $("#up-grid"), alb = $("#alb-grid"), fly = $("#flyers");
     const order = ["sunset", "tahoe", "lake", "toddler", "rockport", "modelt", "snowmobile", "tub", "tricycle", "gigharbor", "pyramid", "picnic"];
     order.forEach((k) => { html(grid, `<div class="thumb" style="width: 122px; height: 82px">${photo(k)}</div>`); html(alb, `<div class="cell"></div>`); });
-    A("#cursor2", [{ transform: "translate(300px, 780px)", opacity: 0 }, { transform: "translate(300px, 780px)", opacity: 1, offset: .2 }, { transform: "translate(150px, 610px)", opacity: 1 }], s + .05, .45, "inOut");
-    A("#up-btn", [{ transform: "scale(1)" }, { transform: "scale(.92)" }, { transform: "scale(1)" }], s + .5, .2, "soft");
-    sfx(s + .52, "click");
-    A("#cursor2", [{ transform: "translate(150px, 610px)" }, { transform: "translate(165px, 640px)" }], s + .7, 1.6, "soft");
+    A("#cursor2", [{ transform: "translate(300px, 780px)", opacity: 0 }, { transform: "translate(300px, 780px)", opacity: 1, offset: .2 }, { transform: "translate(150px, 610px)", opacity: 1 }], s, 1 * b, "inOut");
+    A("#up-btn", [{ transform: "scale(1)" }, { transform: "scale(.92)" }, { transform: "scale(1)" }], s + 1 * b, .5 * b, "soft");
+    sfx(s + 1 * b, "click");
+    A("#cursor2", [{ transform: "translate(150px, 610px)" }, { transform: "translate(165px, 640px)" }], s + 1.5 * b, 4 * b, "soft");
     const cells = $$(".cell", alb), thumbs = $$(".thumb", grid);
     order.forEach((k, j) => {
-      const t = s + .6 + j * .09;
+      const t = s + 1 * b + j * .25 * b, land = t + 1.25 * b;
       const col = j % 4, row = Math.floor(j / 4), x0 = col * 132.5, y0 = 160 + row * 92;
       const ac = j % 3, ar = Math.floor(j / 3), x1 = 642 + ac * 144.7 + 7.3, y1 = 316 + ar * 100 + 4.9;
       const f = html(fly, `<div class="thumb abs" style="left:0; top:0; width: 122px; height: 82px; opacity: 0">${photo(k)}</div>`);
       A(f, [{ transform: `translate(${x0}px, ${y0}px) scale(1)`, opacity: 1 },
             { transform: `translate(${(x0 + x1) / 2}px, ${Math.min(y0, y1) - 140}px) scale(1.1) rotate(-6deg)`, opacity: 1, offset: .5 },
             { transform: `translate(${x1}px, ${y1}px) scale(1.12) rotate(0)`, opacity: 1, offset: .98 },
-            { transform: `translate(${x1}px, ${y1}px) scale(1.12)`, opacity: 0 }], t, .6, "inOut");
-      A(thumbs[j], [{ opacity: 1 }, { opacity: .25 }], t, .15);
+            { transform: `translate(${x1}px, ${y1}px) scale(1.12)`, opacity: 0 }], t, land - t, "inOut");
+      A(thumbs[j], [{ opacity: 1 }, { opacity: .25 }], t, .12);
       cells[j].innerHTML = photo(k);
-      A($(".photo", cells[j]), [{ opacity: 0 }, { opacity: 1 }], t + .58, .1);
-      if (j % 2 === 0) sfx(t + .58, "tick");
+      A($(".photo", cells[j]), [{ opacity: 0 }, { opacity: 1 }], land - .03, .08);
+      sfx(land, "land", j);
     });
-    tick((t) => { $("#up-n").textContent = Math.round(36 * prog(t, s + .6, 12 * .09 + .6)); });
-    A("#up-done", [{ opacity: 0, transform: "translateY(10px)" }, { opacity: 1, transform: "translateY(0)" }], s + 2.35, .3, "back");
-    sfx(s + 2.35, "ding");
-    A("#clean-btn", [{ background: "#1d1d22", color: "#ebe8e2" }, { background: "#f2b34b", color: "#1a1305" }], s + 2.5, .25);
-    A("#shackle", [{ transform: "translate(0,0)" }, { transform: "translate(0,-3px)" }], s + 2.5, .25, "back");
-    A("#cursor2", [{ transform: "translate(165px, 640px)" }, { transform: "translate(160px, 680px)" }], s + 2.55, .4, "inOut");
-    A("#clean-btn", [{ transform: "scale(1)" }, { transform: "scale(.92)" }, { transform: "scale(1)" }], s + 3.0, .2, "soft");
-    sfx(s + 3.02, "click");
-    tick((t) => { $("#clean-txt").textContent = t > s + 3.1 ? "Card cleaned, safe to eject" : "Clean scanner card"; });
+    tick((t) => { $("#up-n").textContent = Math.round(36 * prog(t, s + 2.25 * b, 2.75 * b)); });
+    A("#up-done", [{ opacity: 0, transform: "translateY(10px)" }, { opacity: 1, transform: "translateY(0)" }], s + 6 * b, .25, "back");
+    sfx(s + 6 * b, "ding");
+    A("#clean-btn", [{ background: "#1d1d22", color: "#ebe8e2" }, { background: "#f2b34b", color: "#1a1305" }], s + 6 * b, .2);
+    A("#shackle", [{ transform: "translate(0,0)" }, { transform: "translate(0,-3px)" }], s + 6 * b, .2, "back");
+    A("#cursor2", [{ transform: "translate(165px, 640px)" }, { transform: "translate(160px, 680px)" }], s + 6 * b, 1 * b, "inOut");
+    A("#clean-btn", [{ transform: "scale(1)" }, { transform: "scale(.92)" }, { transform: "scale(1)" }], s + 7 * b, .5 * b, "soft");
+    sfx(s + 7 * b, "click");
+    tick((t) => { $("#clean-txt").textContent = t > s + 7 * b ? "Card cleaned, safe to eject" : "Clean scanner card"; });
   }
 }
 
-/* ============================================================ 3 · every device */
+/* ============================================================ 3 · every device (4 bars) */
 {
   const s = T.devices;
   const mini = (k) => `<div class="mini"><div class="mtop"><span class="lg"></span><span class="ttl"></span><span class="mb"></span></div>
@@ -1090,119 +1100,133 @@ function table(plane, seed, pick, both) {
     <div class="abs" style="left: 10%; right: 10%; bottom: 22%; height: 4%; border-radius: 3px; background: #2b2b33"></div></div>`;
   ["#d-laptop", "#d-browser", "#d-tablet"].forEach((id) => { $(id + " .scr").innerHTML = mini("sunset"); });
   $("#d-phone .scr").innerHTML = phoneMini("sunset");
-  rise($("#h4a"), s + .05, .6, .05);
-  [["#d-laptop", "translate(-160px, 40px)", .1], ["#d-browser", "translate(160px, -30px)", .22], ["#d-tablet", "translate(0, 200px)", .34],
-   ["#d-phone", "translate(-60px, 240px) rotate(-8deg)", .46], ["#d-server", "translate(160px, 80px)", .58]].forEach(([id, from, dt]) => {
-    A(id, [{ opacity: 0, transform: `${from} scale(.92)` }, { opacity: 1, transform: "translate(0,0) scale(1)" }], s + dt, .6, "out");
+  rise($("#h4a"), s, .5, .05);
+  // a device on every eighth
+  [["#d-laptop", "translate(-160px, 40px)", "-.6"], ["#d-browser", "translate(160px, -30px)", ".6"], ["#d-tablet", "translate(0, 200px)", "0"],
+   ["#d-phone", "translate(-60px, 240px) rotate(-8deg)", "-.3"], ["#d-server", "translate(160px, 80px)", ".8"]].forEach(([id, from, pan], j) => {
+    A(id, [{ opacity: 0, transform: `${from} scale(.92)` }, { opacity: 1, transform: "translate(0,0) scale(1)" }], s + j * .5 * b, 1.5 * b, "out");
+    sfx(s + j * .5 * b, "swish" + pan, 1 * b);
   });
-  sfx(s + .1, "whoosh-soft");
-  [["#lb-laptop", .6], ["#lb-browser", .72], ["#lb-tablet", .84], ["#lb-server", .96]].forEach(([id, dt]) => A(id, [{ opacity: 0, transform: "translateY(10px)" }, { opacity: 1, transform: "translateY(0)" }], s + dt, .35));
-  // a tap on the phone: the next slide shows up on every screen
-  const swapT = s + 1.9;
+  [["#lb-laptop", 2], ["#lb-browser", 2.5], ["#lb-tablet", 3], ["#lb-server", 3.5]].forEach(([id, k]) => A(id, [{ opacity: 0, transform: "translateY(10px)" }, { opacity: 1, transform: "translateY(0)" }], s + k * b, .3));
+  // a tap on the phone on beat 6; the next slide shows up on every other screen an eighth apart
   const tap = html($("#d-phone"), `<div class="abs" style="left: 50%; bottom: 13%; width: 70px; height: 70px; margin-left: -35px; border-radius: 50%; border: 3px solid #fff; opacity: 0; z-index: 6"></div>`);
-  A(tap, [{ opacity: .9, transform: "scale(.4)" }, { opacity: 0, transform: "scale(1.4)" }], swapT - .1, .4, "out");
+  A(tap, [{ opacity: .9, transform: "scale(.4)" }, { opacity: 0, transform: "scale(1.4)" }], s + 6 * b, .35, "out");
   ["#d-phone", "#d-laptop", "#d-browser", "#d-tablet"].forEach((id, j) => {
+    const at = s + 6 * b + (j ? .5 + j * .5 : 0) * b;
     const nxt = html($(id + " .mview"), `<div class="pic" style="${id === "#d-phone" ? "border-radius:0" : ""}">${photo("rockport")}</div>`);
-    const d = j === 0 ? 0 : .3 + j * .07;
-    A(nxt, [{ opacity: 0, transform: "scale(1.06)" }, { opacity: 1, transform: "scale(1)" }], swapT + d, .35, "out");
+    A(nxt, [{ opacity: 0, transform: "scale(1.06)" }, { opacity: 1, transform: "scale(1)" }], at, .3, "out");
     const badge = html($(id), `<div class="syncbadge" style="opacity:0; right: -14px; top: -14px">${CHECK}</div>`);
-    A(badge, [{ opacity: 0, transform: "scale(.3)" }, { opacity: 1, transform: "scale(1)" }], swapT + d + .08, .3, "back");
-    A(badge, [{ opacity: 1 }, { opacity: 0 }], s + 3.4, .2);
-    sfx(swapT + d + .08, j === 0 ? "click" : "ding");
+    A(badge, [{ opacity: 0, transform: "scale(.3)" }, { opacity: 1, transform: "scale(1)" }], at, .25, "back");
+    A(badge, [{ opacity: 1 }, { opacity: 0 }], s + 9.5 * b, .2);
+    sfx(at, j === 0 ? "tap" : "sync", j);
   });
-  // the library in the middle, every device wired to it
+  // on the next bar: the library in the middle, every device wired to it
   const links = $("#links");
   [[530, 500], [1420, 480], [1100, 730], [690, 765], [1690, 745]].forEach(([x, y], j) => {
     const p = document.createElementNS("http://www.w3.org/2000/svg", "path");
     p.setAttribute("d", `M910 540 Q ${(x + 910) / 2} ${(y + 540) / 2 - 60} ${x} ${y}`); links.appendChild(p);
-    A(p, [{ opacity: 0, strokeDashoffset: 0 }, { opacity: .9, strokeDashoffset: -44, offset: .2 }, { opacity: .9, strokeDashoffset: -160 }], s + 3.75 + j * .05, 2.5, "lin");
+    A(p, [{ opacity: 0, strokeDashoffset: 0 }, { opacity: .9, strokeDashoffset: -44, offset: .15 }, { opacity: .9, strokeDashoffset: -200 }], s + 10 * b + j * .25 * b, 6 * b, "lin");
   });
-  A("#d-laptop, #d-browser, #d-tablet, #d-phone, #d-server", [{ filter: "brightness(1)" }, { filter: "brightness(.45)" }], s + 3.6, .4, "soft");
-  A("#lib-node", [{ opacity: 0, transform: "scale(.3) rotate(-20deg)" }, { opacity: 1, transform: "scale(1) rotate(0)" }], s + 3.65, .45, "back");
-  sfx(s + 3.65, "chime");
-  sink($("#h4a"), s + 3.5, .3);
-  rise($("#h4b"), s + 3.7, .6, .05);
-  A("#s3 > .dev, #s3 > .dev-label, #links, #lib-node, #h4b", [{ opacity: 1 }, { opacity: 0 }], T.more - .3, .3);
+  A("#d-laptop, #d-browser, #d-tablet, #d-phone, #d-server", [{ filter: "brightness(1)" }, { filter: "brightness(.45)" }], s + 10 * b, .35, "soft");
+  A("#lib-node", [{ opacity: 0, transform: "scale(.3) rotate(-20deg)" }, { opacity: 1, transform: "scale(1) rotate(0)" }], s + 10 * b, .4, "back");
+  sfx(s + 10 * b, "chime");
+  sink($("#h4a"), s + 9.5 * b, .25);
+  rise($("#h4b"), s + 10 * b, .5, .05);
+  A("#s3 > .dev, #s3 > .dev-label, #links, #lib-node, #h4b", [{ opacity: 1 }, { opacity: 0 }], T.more - .5 * b, .5 * b);
 }
 
-/* ============================================================ 4 · more */
+/* ============================================================ 4 · more (4 bars: a card on each beat, then each one plays) */
 {
   const s = T.more;
-  A(".card", [{ opacity: 0, transform: "translateY(50px) scale(.95)" }, { opacity: 1, transform: "translateY(0) scale(1)" }], s + .05, .5, "out", .07);
-  for (let j = 0; j < 6; j++) sfx(s + .05 + j * .07, "tick");
-  const T1 = s + .6;
+  const cards = $$(".card");
+  cards.forEach((c, j) => {
+    A(c, [{ opacity: 0, transform: "translateY(50px) scale(.95)" }, { opacity: 1, transform: "translateY(0) scale(1)" }], s + j * b, .45, "out");
+    sfx(s + j * b, "card", j);
+  });
+  const at = (j) => s + (j + 1) * b; // card j's own animation starts a beat after it lands
   { // learns
+    const T1 = at(0);
     $("#f1a").innerHTML = `<div class="abs" style="left: 34px; right: 34px; top: 40px">${["Exposure", "Warmth", "Restore fade"].map((n, j) => `
       <div class="slider" style="margin-bottom: 30px"><div class="row" style="font-size: 17px"><span>${n}</span><span class="accent" style="opacity:0" id="lr${j}">from your edits</span></div><div class="trk"><div class="knob" id="lk${j}" style="left: 50%"></div></div></div>`).join("")}</div>`;
     [[.5, .68], [.5, .31], [.5, .8]].forEach(([a0, a1], j) => {
-      A("#lk" + j, [{ left: a0 * 100 + "%" }, { left: a1 * 100 + "%" }], T1 + j * .12, .7, "out");
-      A("#lr" + j, [{ opacity: 0 }, { opacity: 1 }], T1 + .4 + j * .12, .25);
+      A("#lk" + j, [{ left: a0 * 100 + "%" }, { left: a1 * 100 + "%" }], T1 + j * .5 * b, 1 * b, "out");
+      A("#lr" + j, [{ opacity: 0 }, { opacity: 1 }], T1 + (j + 1) * .5 * b, .2);
     });
   }
   { // people: the face Slide Station found on this slide
+    const T1 = at(1);
     const [x, y, w, h] = FACES.chicago[0];
     const W = 553, H = 226, ih = W / 1.5, oy = (ih - H) / 2; // the photo covers the art box: width fits, height is cropped
     $("#f2a").innerHTML = `<div class="abs" style="inset: 0">${photo("chicago")}</div>
       <div class="facebox abs" id="pf" style="left: ${x * W}px; top: ${y * ih - oy}px; width: ${w * W}px; height: ${h * ih}px"></div>
-      <div class="tag abs" id="pn" style="left: ${x * W + w * W + 14}px; top: ${y * ih - oy + h * ih / 2 - 20}px; height: 40px; font-size: 19px"><span id="pname"></span><span class="accent">|</span></div>`;
-    A("#pf", [{ opacity: 0, transform: "scale(1.5)" }, { opacity: 1, transform: "scale(1)" }], T1, .3, "back");
-    A("#pn", [{ opacity: 0, transform: "translateX(-8px)" }, { opacity: 1, transform: "translateX(0)" }], T1 + .25, .25);
-    tick((t) => { $("#pname").textContent = "Mom".slice(0, Math.round(3 * prog(t, T1 + .35, .45))); });
+      <div class="tag abs" id="pn" style="left: ${x * W + w * W + 14}px; top: ${y * ih - oy + h * ih / 2 - 24}px; height: 48px; font-size: 24px"><span id="pname"></span><span class="accent">|</span></div>`;
+    A("#pf", [{ opacity: 0, transform: "scale(1.5)" }, { opacity: 1, transform: "scale(1)" }], T1, .25, "back");
+    A("#pn", [{ opacity: 0, transform: "translateX(-8px)" }, { opacity: 1, transform: "translateX(0)" }], T1 + .5 * b, .2);
+    tick((t) => { $("#pname").textContent = "Mom".slice(0, Math.round(3 * prog(t, T1 + .5 * b, 1.5 * b))); });
   }
-  { // dust
-    const a = $("#f3a");
+  { // dust: specks go on the sixteenths
+    const T1 = at(2), a = $("#f3a");
     a.innerHTML = `<div class="abs" style="inset: 0">${photo("rangeley")}</div>`;
     let sd = 3; const rnd = () => ((sd = (sd * 16807) % 2147483647) / 2147483647);
-    for (let j = 0; j < 26; j++) {
+    for (let j = 0; j < 24; j++) {
       const r = 2 + rnd() * 5;
       const sp = html(a, `<div class="speck" style="left:${rnd() * 540}px; top:${rnd() * 220}px; width:${r}px; height:${r}px"></div>`);
-      A(sp, [{ opacity: 1, transform: "scale(1)" }, { opacity: 0, transform: "scale(0)" }], T1 + .1 + rnd() * 1.0, .2, "in");
+      A(sp, [{ opacity: 1, transform: "scale(1)" }, { opacity: 0, transform: "scale(0)" }], T1 + Math.floor(j / 3) * .25 * b, .15, "in");
     }
     const scratch = html(a, `<div class="abs" style="left: 330px; top: -10px; width: 2px; height: 250px; background: rgba(255,255,240,.7); transform: rotate(14deg)"></div>`);
-    A(scratch, [{ opacity: 1 }, { opacity: 0 }], T1 + .7, .4);
+    A(scratch, [{ opacity: 1 }, { opacity: 0 }], T1 + 2 * b, .3);
+    sfx(T1, "dust", 2 * b);
   }
   { // signs: the sign in the photo is read, and the place pinned
+    const T1 = at(3);
     $("#f4a").innerHTML = `<div class="abs" style="inset: 0">${photo("helen")}</div>
       <div class="abs" id="signbox" style="left: 328px; top: 112px; width: 210px; height: 124px; border: 3px solid var(--accent); border-radius: 8px; box-shadow: 0 0 20px rgba(242,179,75,.5)"></div>
       <div class="abs" id="scanline" style="left: 328px; width: 210px; top: 112px; height: 3px; background: var(--accent); box-shadow: 0 0 16px var(--accent)"></div>
-      <div class="tag abs" id="place" style="left: 24px; top: 24px; height: 42px; font-size: 19px"><svg width="16" height="20" viewBox="0 0 24 30"><path d="M12 29 C12 29 22 18 22 11 A10 10 0 0 0 2 11 C2 18 12 29 12 29Z" fill="#e2675c"/><circle cx="12" cy="11" r="4" fill="#fff"/></svg>Helen, Georgia</div>`;
-    A("#signbox", [{ opacity: 0 }, { opacity: 1 }], T1, .2);
-    A("#scanline", [{ transform: "translateY(0)", opacity: 1 }, { transform: "translateY(110px)", opacity: 1, offset: .9 }, { transform: "translateY(110px)", opacity: 0 }], T1, .6, "inOut");
-    A("#place", [{ opacity: 0, transform: "translateY(-10px)" }, { opacity: 1, transform: "translateY(0)" }], T1 + .6, .3, "back");
+      <div class="tag abs" id="place" style="left: 24px; top: 24px; height: 52px; font-size: 24px"><svg width="18" height="23" viewBox="0 0 24 30"><path d="M12 29 C12 29 22 18 22 11 A10 10 0 0 0 2 11 C2 18 12 29 12 29Z" fill="#e2675c"/><circle cx="12" cy="11" r="4" fill="#fff"/></svg>Helen, Georgia</div>`;
+    A("#signbox", [{ opacity: 0 }, { opacity: 1 }], T1, .15);
+    A("#scanline", [{ transform: "translateY(0)", opacity: 1 }, { transform: "translateY(110px)", opacity: 1, offset: .9 }, { transform: "translateY(110px)", opacity: 0 }], T1, 2 * b, "inOut");
+    A("#place", [{ opacity: 0, transform: "translateY(-10px)" }, { opacity: 1, transform: "translateY(0)" }], T1 + 2 * b, .25, "back");
+    sfx(T1 + 2 * b, "pin");
   }
-  { // tags
-    const a = $("#f5a");
-    a.innerHTML = `<div class="abs" style="left: 30px; right: 30px; top: 44px; display: flex; flex-wrap: wrap; gap: 12px">
-      ${["beach", "sunset", "family", "Kodachrome", "July 1973", "Lake Tahoe"].map((n) => `<span class="sug"><span class="ck">✓</span>${n}</span>`).join("")}</div>`;
-    A($$(".sug", a), [{ opacity: 0, transform: "scale(.7)" }, { opacity: 1, transform: "scale(1)" }], T1, .3, "back", .1);
+  { // tags: one on each eighth
+    const T1 = at(4), a = $("#f5a");
+    a.innerHTML = `<div class="abs" style="left: 30px; right: 30px; top: 40px; display: flex; flex-wrap: wrap; gap: 14px">
+      ${["beach", "sunset", "family", "Kodachrome", "July 1973", "Lake Tahoe"].map((n) => `<span class="sug" style="height: 48px; font-size: 23px">${n === "" ? "" : `<span class="ck">✓</span>${n}`}</span>`).join("")}</div>`;
+    $$(".sug", a).forEach((el, j) => {
+      A(el, [{ opacity: 0, transform: "scale(.7)" }, { opacity: 1, transform: "scale(1)" }], T1 + j * .5 * b, .25, "back");
+      sfx(T1 + j * .5 * b, "blip", j);
+    });
   }
   { // private
-    const a = $("#f6a");
+    const T1 = at(5), a = $("#f6a");
     a.innerHTML = `<div class="abs" style="left: 0; right: 0; top: 30px; display: flex; justify-content: center">
       <div id="shield" style="width: 104px; height: 104px; border-radius: 30px; display: grid; place-items: center; background: radial-gradient(circle, rgba(242,179,75,.22), transparent 70%)">
-      <svg width="56" height="56" viewBox="0 0 24 24" fill="none" stroke="#f2b34b" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg></div></div>
-      <div class="abs" style="left: 0; right: 0; top: 156px; display: flex; justify-content: center; gap: 10px">${["No account", "No cloud", "Your own Immich"].map((n) => `<span class="sug" style="height: 36px; font-size: 17px">${n}</span>`).join("")}</div>`;
-    A("#shield", [{ transform: "scale(.6)", opacity: 0 }, { transform: "scale(1)", opacity: 1 }], T1, .4, "back");
-    A($$(".sug", a), [{ opacity: 0, transform: "translateY(10px)" }, { opacity: 1, transform: "translateY(0)" }], T1 + .3, .3, "out", .1);
+      <svg width="56" height="56" viewBox="0 0 24 24" fill="none" stroke="#f2b34b" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="11" width="16" height="10" rx="2"/><path id="shk2" d="M8 11V7a4 4 0 0 1 8 0v4"/></svg></div></div>
+      <div class="abs" style="left: 0; right: 0; top: 150px; display: flex; justify-content: center; gap: 10px">${["No account", "No cloud", "Your Immich"].map((n) => `<span class="sug" style="height: 44px; font-size: 21px">${n}</span>`).join("")}</div>`;
+    A("#shield", [{ transform: "scale(.6)", opacity: 0 }, { transform: "scale(1)", opacity: 1 }], T1, .3, "back");
+    A("#shk2", [{ transform: "translateY(-3px)" }, { transform: "translateY(0)" }], T1 + 1 * b, .15, "in");
+    sfx(T1 + 1 * b, "lock");
+    $$(".sug", a).forEach((el, j) => A(el, [{ opacity: 0, transform: "translateY(10px)" }, { opacity: 1, transform: "translateY(0)" }], T1 + (1.5 + j * .5) * b, .25, "out"));
   }
-  A(".card", [{ opacity: 1, transform: "translateY(0) scale(1)" }, { opacity: 0, transform: "translateY(-30px) scale(.96)" }], T.end - .35, .3, "in", .02);
+  A(".card", [{ opacity: 1, transform: "translateY(0) scale(1)" }, { opacity: 0, transform: "translateY(-30px) scale(.96)" }], T.end - .5 * b, .5 * b, "in", .02);
 }
 
-/* ============================================================ 5 · ending */
+/* ============================================================ 5 · ending (4 bars on the song's outro) */
 {
   const s = T.end;
-  flash(s, .5);
+  flash(s, .45);
   $("#logo-icon").innerHTML = logoSVG();
   const plane = $("#plane2");
   const drops = table(plane, 29, (r, c) => (r * 5 + c * 3 + (c % 2) * 11) % PHOTOS.length, false);
   A(plane, [{ transform: "rotateX(50deg) rotateZ(14deg) translate3d(80px, 40px, -300px)" }, { transform: "rotateX(50deg) rotateZ(18deg) translate3d(-60px, -60px, -160px)" }], s, DURATION - s, "lin");
   drops.forEach((d, i) => A(d.el, [{ opacity: 0, transform: `translateZ(420px) rotateX(${d.rx}deg) rotateY(${d.ry}deg)` },
-                                   { opacity: 1, transform: "translateZ(0) rotateX(0) rotateY(0)" }], s + i * .006, .9, "out"));
-  A("#logo-icon", [{ opacity: 0, transform: "scale(.5) rotate(-10deg)" }, { opacity: 1, transform: "scale(1) rotate(0)" }], s + .1, .7, "back");
-  rise($("#wm"), s + .3, .7, .08);
-  rise($("#tl"), s + .8, .7, .05);
-  A("#oss", [{ opacity: 0, transform: "translateY(12px)" }, { opacity: 1, transform: "translateY(0)" }], s + 1.4, .5);
-  A("#fadeout", [{ opacity: 0 }, { opacity: 1 }], DURATION - .7, .7, "soft");
+                                   { opacity: 1, transform: "translateZ(0) rotateX(0) rotateY(0)" }], s + i * .008, 1.1, "out"));
+  A("#logo-icon", [{ opacity: 0, transform: "scale(.5) rotate(-10deg)" }, { opacity: 1, transform: "scale(1) rotate(0)" }], s, .6, "back");
+  sfx(s, "logo");
+  rise($("#wm"), s + 1 * b, .6, .08);
+  rise($("#tl"), s + 3 * b, .6, .05);
+  A("#oss", [{ opacity: 0, transform: "translateY(12px)" }, { opacity: 1, transform: "translateY(0)" }], s + 5 * b, .45);
+  A("#fadeout", [{ opacity: 0 }, { opacity: 1 }], DURATION - 2 * b, 2 * b, "soft");
 }
 
 /* ============================================================ player */
