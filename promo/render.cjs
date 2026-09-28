@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Renders index.html into slide-station-launch.mp4: every frame is stepped with window.seek(t)
-// in headless Chromium, screenshotted and piped into ffmpeg; soundtrack.py writes the music and
-// the sound effects from the cues the page lists (window.SFX), and ffmpeg muxes the two.
+// in headless Chromium, screenshotted and piped into ffmpeg; soundtrack.py mixes the music with the
+// sound effects the page cues (window.SFX), and ffmpeg muxes the two.
 //
 //   npm install && npm run render            the whole video
 //   node render.cjs --stills 3.5,12,20       PNGs of single moments into stills/, to check a layout
@@ -42,7 +42,7 @@ async function video() {
   const out = path.join(here, arg("--out") || "slide-station-launch.mp4");
   const silent = path.join(here, ".video.mp4");
   const { browser, page } = await open();
-  const { duration, fps, sfx, bpm } = await page.evaluate(() => ({ duration: window.DURATION, fps: window.FPS, sfx: window.SFX, bpm: window.BPM }));
+  const { duration, fps, sfx, music } = await page.evaluate(() => ({ duration: window.DURATION, fps: window.FPS, sfx: window.SFX, music: window.MUSIC.file }));
   const frames = Math.round(duration * fps);
 
   const enc = spawn(FFMPEG, ["-y", "-loglevel", "error", "-f", "image2pipe", "-framerate", String(fps), "-c:v", "mjpeg", "-i", "-",
@@ -61,8 +61,8 @@ async function video() {
 
   const cues = path.join(here, ".cues.json");
   const wav = path.join(here, ".soundtrack.wav");
-  fs.writeFileSync(cues, JSON.stringify({ duration, bpm, sfx }));
-  const py = spawnSync(process.env.PYTHON || "python3", [path.join(here, "soundtrack.py"), cues, wav], { stdio: "inherit" });
+  fs.writeFileSync(cues, JSON.stringify({ duration, sfx, music: path.join(here, music) }));
+  const py = spawnSync(process.env.PYTHON || "python3", [path.join(here, "soundtrack.py"), cues, wav], { stdio: "inherit", env: { ...process.env, FFMPEG } });
   if (py.status === 0) {
     spawnSync(FFMPEG, ["-y", "-loglevel", "error", "-i", silent, "-i", wav, "-c:v", "copy", "-c:a", "aac", "-b:a", "192k", "-shortest", "-movflags", "+faststart", out], { stdio: "inherit" });
     fs.rmSync(wav);
