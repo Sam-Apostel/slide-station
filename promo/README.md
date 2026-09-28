@@ -1,8 +1,9 @@
 # Launch video
 
-`slide-station-launch.mp4`: 1920×1080, 30 fps, with music: 50 seconds on the public-domain track
-committed here, 41 on a 140 BPM one. The video is 24 bars long and every cut and every move sits
-on the music's bars and beats: a key on each beat, a photo landing on each sixteenth.
+A 1920×1080, 30 fps launch video, rendered here from `index.html`. It is 24 bars long and every cut
+and every move sits on the music's bars and beats: a key on each beat, a photo landing on each
+sixteenth. No music or rendered video is committed: the track is licensed for YouTube only, so the
+video is rendered locally with it (see "Music" below); about 41 seconds at 140 BPM.
 
 | Bars | Scene |
 | --- | --- |
@@ -19,12 +20,12 @@ The slides are real: 35 mm Kodachromes and Ektachromes from the EPA's DOCUMERICA
 (1971–1977), public domain, fetched from the National Archives and developed by Slide Station
 itself: `slides/prepare.py` runs the app's `develop` with its default settings and its face
 detector on each scan, so the before/after and the face boxes in the video are the app's own
-output. Credits are in `slides/CREDITS.md`. The music is public domain too (`music/CREDITS.md`).
+output. Credits are in `slides/CREDITS.md`.
 
 ## Editing it
 
 It's all in `index.html`: HTML and CSS for the scenes, with every animation on one timeline that
-can be stepped to any moment. The slides are in `slides/`, the music in `music/` and the fonts
+can be stepped to any moment. The slides are in `slides/`, the music tools in `music/` and the fonts
 (Inter, Fraunces, Caveat, JetBrains Mono, all under the SIL Open Font License) in `fonts/`, so
 nothing loads from the network. `soundtrack.py` mixes the music with sound effects it synthesises (key presses, clicks,
 the slide landing in the holder), cued by the page.
@@ -36,7 +37,7 @@ Open `index.html` in a browser to play it (click for sound, Space pauses, ←/�
 cd promo
 npm install && npx playwright install chromium
 npm run stills -- 12,21.5      # PNGs of single moments into stills/, to check a layout
-npm run render                 # slide-station-launch.mp4
+node render.cjs --music edit.wav --bpm 140 --out slide-station.mp4   # see Music
 ```
 
 Rendering needs `ffmpeg` on the PATH (or `FFMPEG=/path/to/ffmpeg`), and Python 3 with `numpy`

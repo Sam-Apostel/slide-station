@@ -419,7 +419,7 @@ body { display: grid; place-items: center; font-family: "Inter", sans-serif; col
     <div class="headline" id="h4b" style="top: 50px">One library.</div>
     <svg id="links" viewBox="0 0 1920 1080"></svg>
     <div class="dev browser" id="d-browser" style="left: 1040px; top: 250px; width: 760px; height: 470px">
-      <div class="url"><div class="dots"><i></i><i></i><i></i></div><div class="field">🔒 photos.example.com/slide-station</div></div>
+      <div class="url"><div class="dots"><i></i><i></i><i></i></div><div class="field">🔒 slide-station.sams.land/app/</div></div>
       <div class="scr"></div>
     </div>
     <div class="dev laptop" id="d-laptop" style="left: 150px; top: 250px; width: 760px; height: 506px">
@@ -459,7 +459,7 @@ body { display: grid; place-items: center; font-family: "Inter", sans-serif; col
       <svg id="logo-icon" viewBox="0 0 64 64" style="width: 170px; height: 170px; filter: drop-shadow(0 24px 50px rgba(242,179,75,.3))"></svg>
       <div id="wm" class="serif" style="font-size: 150px; font-weight: 600; letter-spacing: -.035em; margin-top: 20px; line-height: 1">Slide Station</div>
       <div id="tl" class="serif" style="font-size: 62px; font-style: italic; color: var(--accent); margin-top: 22px">Bring your slides back to life.</div>
-      <div id="oss" style="margin-top: 60px; font-size: 36px; color: var(--muted)">Free and open source<br><span style="color: var(--text); font-weight: 600">github.com/Sam-Apostel/slide-station</span></div>
+      <div id="oss" style="margin-top: 56px; font-size: 30px; color: var(--muted)"><span style="display: block; font-size: 44px; color: var(--text); font-weight: 600; margin-bottom: 10px">slide-station.sams.land</span>Free and open source</div>
     </div>
   </section>
 
@@ -474,14 +474,11 @@ body { display: grid; place-items: center; font-family: "Inter", sans-serif; col
 <script>
 "use strict";
 const FPS = 30;
-// The cuts sit on the music's bars. The default is "New Friendly" (public domain) at 115 BPM,
-// music/new-friendly.mp3 starting 7 bars in so its drop lands on the first step. Any other track
-// can be used without committing it: ?music=<file>&bpm=<tempo>&offset=<seconds into the file where
-// the video starts> (render.cjs --music/--bpm/--offset; music/beats.py finds the tempo and drop).
+// The cuts sit on the music's bars: ?music=<file>&bpm=<tempo>&offset=<seconds into the file where
+// the video starts> (render.cjs --music/--bpm/--offset; music/beats.py finds a track's tempo and
+// drop, music/cut.py cuts it to the video's 24 bars). Without music the page plays silently.
 const Q = new URLSearchParams(location.search);
-const MUSIC = Q.has("music")
-  ? { file: Q.get("music"), bpm: +Q.get("bpm") || 120, offset: +Q.get("offset") || 0 }
-  : { file: "music/new-friendly.mp3", bpm: 115, offset: 0 };
+const MUSIC = { file: Q.get("music") || "", bpm: +Q.get("bpm") || 115, offset: +Q.get("offset") || 0 };
 // Everything below is timed for 115 BPM and played SPEED times as fast, so the cuts stay on the bars
 // of a track at any tempo (a very fast one counts in half time).
 const BAR = 4 * 60 / 115;
@@ -906,7 +903,7 @@ function table(plane, seed, pick, both) {
   // through the hush the table falls away, and the drop opens on the first step
   A("#s1p", [{ transform: "scale(1)", opacity: 1 }, { transform: "scale(1.7)", opacity: 0 }], 12.5 * b, 3.5 * b, "in");
   sfx(12 * b, "riser", 4 * b);
-  flash(T.steps, .6);
+  flash(T.steps, .35);
   sfx(T.steps, "impact");
 }
 
@@ -1239,6 +1236,8 @@ window.seek = seek;
 window.DURATION = DURATION / SPEED;
 window.FPS = FPS;
 window.MUSIC = MUSIC;
+// the music's level over time (real seconds): the drop comes in lower and swells to full over two bars
+window.MUSIC_GAIN = [[0, 1], [T.steps / SPEED - .02, 1], [T.steps / SPEED, .5], [(T.steps + 2 * BAR) / SPEED, 1]];
 window.SFX = SFX.sort((a, b) => a[0] - b[0]);
 window.ready = Promise.all([document.fonts.ready, ...$$("img").map((im) => im.decode().catch(() => {}))]).then(() => true);
 
@@ -1250,7 +1249,7 @@ if (params.has("render")) {
   // preview: fit the 1920×1080 stage to the window and play, with the music
   const fit = () => { $("#stage").style.transform = `scale(${Math.min(innerWidth / 1920, innerHeight / 1080)})`; };
   addEventListener("resize", fit); fit();
-  const audio = new Audio(MUSIC.file);
+  const audio = new Audio(MUSIC.file || undefined);
   let t = +params.get("t") || 0, playing = true, last = performance.now();
   const sync = () => { audio.currentTime = t + MUSIC.offset; if (playing) audio.play().catch(() => {}); else audio.pause(); };
   addEventListener("keydown", (e) => {
@@ -1264,6 +1263,8 @@ if (params.has("render")) {
     if (playing) t += (now - last) / 1000;
     if (t > DURATION / SPEED) { t = 0; sync(); }
     last = now; seek(t);
+    const g = window.MUSIC_GAIN, k = g.findIndex(([at]) => at > t);
+    audio.volume = k < 0 ? g[g.length - 1][1] : k === 0 ? g[0][1] : g[k - 1][1] + (g[k][1] - g[k - 1][1]) * (t - g[k - 1][0]) / (g[k][0] - g[k - 1][0]);
     hud.textContent = `${t.toFixed(2)} s · click for sound · space pause · ←/→ scrub`;
     requestAnimationFrame(loop);
   };

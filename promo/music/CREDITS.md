@@ -1,6 +1,14 @@
 # Music
 
-`new-friendly.mp3` is an excerpt of **"New Friendly"** by Kevin MacLeod, released into the public
-domain (CC0 1.0) through FreePD; taken from the Internet Archive's copy of that collection:
-<https://archive.org/details/KevinMacLeod> (`Electronica/New Friendly.mp3`). It starts 7 bars
-(14.61 s) into the track, so the drop lands on the first step of the video, and fades out at the end.
+No music is committed: the video is scored with a track that may only be used where its licence
+allows, rendered locally (see ../README.md, "Music").
+
+The launch video uses **"Long Past, and Yet to Come"** by Approaching Nirvana, from their
+"[AN Originals] No Copyright - Free to Use!" playlist, cut with `cut.py` to bars 13–32 and
+114–117. Their licence (https://www.approachingnirvana.com/youtube) covers YouTube videos, with
+this credit in the description:
+
+    Music by Approaching Nirvana
+    http://youtube.com/c/approachingnirvana
+    Song: Long Past, and Yet to Come
+    Listen on Spotify: <link to the track>

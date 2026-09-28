@@ -140,13 +140,13 @@ def make(kind, arg, s):
         t = t_(1.4)
         sub = np.sin(2 * np.pi * np.cumsum(38 + 50 * np.exp(-t / 0.08)) / SR) * np.exp(-t / 0.45)
         air = lp(noise(1.4), 3000) * np.exp(-t / 0.15) * 0.35
-        return cat((0, (sub * 0.9 + air) * 0.8), (0, click(0.006, 800, 8000, 0.6)))
+        return cat((0, (sub * 0.6 + air * 0.6) * 0.45), (0, click(0.006, 800, 8000, 0.3)))
     if kind == "riser":  # noise that climbs and swells through the hush, cut just before the drop
         d = max(arg, 0.5)
         t = t_(d)
         x = sweep_noise(d, 250, 9000, lambda u: u ** 2.2)
         tone = np.sin(2 * np.pi * np.cumsum(midi(s.note(0, 3)) * 2 ** (2 * t / d)) / SR) * (t / d) ** 3
-        out = x * 0.35 + tone * 0.1
+        out = x * 0.2 + tone * 0.06
         out[-int(0.02 * SR):] *= np.linspace(1, 0, int(0.02 * SR))
         return out
     if kind in ("whoosh", "sweep") or kind.startswith("swish"):
@@ -245,12 +245,16 @@ def main(cues_path, out_path):
     dur = cues["duration"]
     total = int(dur * SR)
     music = np.zeros((2, total))
-    m = load_music(cues["music"], dur, cues.get("offset", 0))
-    music[:, : m.shape[1]] = m[:, :total]
+    if cues.get("music"):
+        m = load_music(cues["music"], dur, cues.get("offset", 0))
+        music[:, : m.shape[1]] = m[:, :total]
+    if cues.get("gain"):  # the page's level automation, e.g. the drop coming in lower
+        at, g = zip(*cues["gain"])
+        music *= np.interp(np.arange(total) / SR, at, g)
     n = int(0.6 * SR)  # a short fade at the very end in case the track doesn't end there itself
     music[:, total - n:] *= np.linspace(1, 0, n) ** 0.5
 
-    scale = Scale(*find_key(music))
+    scale = Scale(*find_key(music)) if np.abs(music).max() > 0 else Scale(9, "minor")
     print(f"effects tuned to {NAMES[scale.tonic]} {scale.mode}")
 
     fx = np.zeros((2, total + 3 * SR))

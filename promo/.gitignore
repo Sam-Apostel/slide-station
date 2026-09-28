@@ -1,6 +1,9 @@
-node_modules/
-stills/
-.video.mp4
+*.mp4
+*.wav
 .cues.json
 .soundtrack.wav
+.video.mp4
+music/*.mp3
+node_modules/
 slide-station-youtube.mp4
+stills/
