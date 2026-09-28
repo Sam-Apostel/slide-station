@@ -248,13 +248,18 @@ def main(cues_path, out_path):
     if cues.get("music"):
         m = load_music(cues["music"], dur, cues.get("offset", 0))
         music[:, : m.shape[1]] = m[:, :total]
+    # the key is read from the track as it is, before the level automation reweights its sections
+    if cues.get("key"):  # e.g. "G minor", when a cut leans on sections that fool the key finder
+        name, mode = cues["key"].split()
+        scale = Scale(NAMES.index(name), mode)
+    else:
+        scale = Scale(*find_key(music)) if np.abs(music).max() > 0 else Scale(9, "minor")
     if cues.get("gain"):  # the page's level automation, e.g. the drop coming in lower
         at, g = zip(*cues["gain"])
         music *= np.interp(np.arange(total) / SR, at, g)
     n = int(0.6 * SR)  # a short fade at the very end in case the track doesn't end there itself
     music[:, total - n:] *= np.linspace(1, 0, n) ** 0.5
 
-    scale = Scale(*find_key(music)) if np.abs(music).max() > 0 else Scale(9, "minor")
     print(f"effects tuned to {NAMES[scale.tonic]} {scale.mode}")
 
     fx = np.zeros((2, total + 3 * SR))
@@ -281,9 +286,11 @@ def main(cues_path, out_path):
     fx = reverb(fx, 1.4, 0.2)[:, :total]
 
     mix = music * 0.82 * duck[:total] + fx * 0.75
-    peak = np.max(np.abs(mix))
-    if peak > 0.9:  # a soft limiter rather than turning the whole mix down
-        mix = np.tanh(mix / peak * 1.3) / np.tanh(1.3) * 0.9
+    # up to a peak of -1 dB (a platform turns loud videos down but quiet ones not up), and a soft
+    # limiter on the few peaks above what the music's own peaks allow
+    loud = np.percentile(np.abs(mix), 99.95)  # the music's loud parts, not its rarest peaks
+    top = np.max(np.abs(mix)) / loud
+    mix = np.tanh(mix / loud * 0.85) / np.tanh(top * 0.85) * 0.89  # the highest peak lands on -1 dB
     pcm = (np.clip(mix, -1, 1).T * 32767).astype("<i2")
     with wave.open(out_path, "wb") as w:
         w.setnchannels(2)

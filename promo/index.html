@@ -298,6 +298,7 @@ body { display: grid; place-items: center; font-family: "Inter", sans-serif; col
     <div class="line" id="l1" style="top: 350px">Thousands of slides.</div>
     <div class="line" id="l2" style="top: 520px"><i>In a shoebox.</i></div>
     <div class="line" id="l3" style="top: 440px">Slowly <span id="fading" style="display:inline-block">fading.</span></div>
+    <div class="line" id="l4" style="top: 440px"><i>Slide Station</i> brings them back.</div>
   </section>
 
   <!-- 2 · how it works -->
@@ -313,7 +314,7 @@ body { display: grid; place-items: center; font-family: "Inter", sans-serif; col
         <div class="step-title">Review at speed.</div>
       </div>
       <div class="step-cap" id="c4">
-        <div class="step-title">Into Immich.</div>
+        <div class="step-title">Into your photo library.</div>
       </div>
     </div>
     <div id="progress"><i><b></b></i><i><b></b></i><i><b></b></i><i><b></b></i></div>
@@ -483,11 +484,11 @@ const MUSIC = { file: Q.get("music") || "", bpm: +Q.get("bpm") || 115, offset: +
 // of a track at any tempo (a very fast one counts in half time).
 const BAR = 4 * 60 / 115;
 const b = BAR / 4; // a beat
-// in bars: the intro 4 (the last is the hush before the drop), the four steps 2 each, the devices
-// 4, the features 4, the ending 4: 24 bars, in the 4- and 8-bar phrases the music moves in
-const T = { steps: 4 * BAR, devices: 12 * BAR, more: 16 * BAR, end: 20 * BAR };
+// in bars: the intro 4 (the last is the hush before the drop), the four steps 4 each (the drop's
+// 16-bar phrase), the devices 4, the features 4, the ending 4: 32 bars, in the music's phrases
+const T = { steps: 4 * BAR, devices: 20 * BAR, more: 24 * BAR, end: 28 * BAR };
 const SPEED = (MUSIC.bpm > 150 ? MUSIC.bpm / 2 : MUSIC.bpm) / 115;
-const DURATION = 24 * BAR; // at 115 BPM; the video lasts DURATION / SPEED
+const DURATION = 32 * BAR; // at 115 BPM; the video lasts DURATION / SPEED
 
 /* ============================================================ timeline */
 const EASE = {
@@ -898,8 +899,11 @@ function table(plane, seed, pick, both) {
   rise($("#l3"), 7 * b, .7, .07);
   // the developed pictures fade off and leave the faded scans, as the line says so
   A($$(".photo.dev", plane), [{ opacity: 1 }, { opacity: 0 }], 7 * b, 4 * b, "soft");
-  A("#fading", [{ filter: "blur(0px)", opacity: 1, letterSpacing: "0em" }, { filter: "blur(10px)", opacity: .12, letterSpacing: ".06em" }], 8 * b, 3.5 * b, "soft");
-  A("#l3", [{ opacity: 1 }, { opacity: 0 }], 12 * b, 1 * b, "soft");
+  A("#fading", [{ filter: "blur(0px)", opacity: 1, letterSpacing: "0em" }, { filter: "blur(10px)", opacity: .12, letterSpacing: ".06em" }], 8 * b, 2.5 * b, "soft");
+  A("#l3", [{ opacity: 1 }, { opacity: 0 }], 10.5 * b, .5 * b, "soft");
+  // what this is, said once before the drop, over the hush
+  rise($("#l4"), 11 * b, .7, .06);
+  A("#l4", [{ opacity: 1, filter: "blur(0px)" }, { opacity: 0, filter: "blur(6px)" }], 15.25 * b, .75 * b, "in");
   // through the hush the table falls away, and the drop opens on the first step
   A("#s1p", [{ transform: "scale(1)", opacity: 1 }, { transform: "scale(1.7)", opacity: 0 }], 12.5 * b, 3.5 * b, "in");
   sfx(12 * b, "riser", 4 * b);
@@ -907,23 +911,24 @@ function table(plane, seed, pick, both) {
   sfx(T.steps, "impact");
 }
 
-/* ============================================================ 2 · how it works (2 bars a step) */
+/* ============================================================ 2 · how it works (4 bars a step) */
 {
-  const T0 = T.steps, STEP = 2 * BAR;
+  // a step is 4 bars; its moves are counted in half bars ("sb": two beats), a key or a landing on each
+  const T0 = T.steps, STEP = 4 * BAR, sb = 2 * b;
   ["#c1", "#c2", "#c3", "#c4"].forEach((sel, i) => {
     const s = T0 + i * STEP, cap = $(sel);
     rise($(".step-title", cap), s, .5, .05);
-    if (i < 3) A(cap, [{ opacity: 1, transform: "translateX(0)" }, { opacity: 0, transform: "translateX(-40px)" }], s + STEP - .5 * b, .5 * b, "in");
+    if (i < 3) A(cap, [{ opacity: 1, transform: "translateX(0)" }, { opacity: 0, transform: "translateX(-40px)" }], s + STEP - .5 * sb, .5 * sb, "in");
     A($$("#progress b")[i], [{ transform: "scaleX(0)" }, { transform: "scaleX(1)" }], s, STEP, "lin");
   });
-  A("#cap, #progress", [{ opacity: 1 }, { opacity: 0 }], T.devices - .5 * b, .5 * b);
+  A("#cap, #progress", [{ opacity: 1 }, { opacity: 0 }], T.devices - .5 * sb, .5 * sb);
   ["#v1", "#v2", "#v3", "#v4"].forEach((sel, i) => {
     const s = T0 + i * STEP;
     A(sel, [{ opacity: 0, transform: "translateX(100px)" }, { opacity: 1, transform: "translateX(0)" }], s, .4, "out");
-    if (i < 3) A(sel, [{ opacity: 1, transform: "translateX(0)" }, { opacity: 0, transform: "translateX(-100px)" }], s + STEP - .5 * b, .5 * b, "in");
-    if (i > 0) sfx(s - .5 * b, "whoosh", .5 * b);
+    if (i < 3) A(sel, [{ opacity: 1, transform: "translateX(0)" }, { opacity: 0, transform: "translateX(-100px)" }], s + STEP - .5 * sb, .5 * sb, "in");
+    if (i > 0) sfx(s - .5 * sb, "whoosh", .5 * sb);
   });
-  A("#v4", [{ opacity: 1, transform: "scale(1)" }, { opacity: 0, transform: "scale(.95)" }], T.devices - .5 * b, .5 * b, "in");
+  A("#v4", [{ opacity: 1, transform: "scale(1)" }, { opacity: 0, transform: "scale(.95)" }], T.devices - .5 * sb, .5 * sb, "in");
 
   /* ---- step 1: the slide lands in the holder on beat 1, the holder goes in on 2-3, click Import on 4 */
   {
@@ -932,19 +937,19 @@ function table(plane, seed, pick, both) {
     html($("#scanslide"), mount3d(0, 100, { scan: true, label: "Puget Sd." }));
     A("#scanslide", [{ transform: "translate3d(20px, -300px, 120px) rotateX(-40deg) rotateY(35deg) rotateZ(-20deg)", opacity: 0 },
                      { transform: "translate3d(0, -60px, 30px) rotateX(-8deg) rotateY(6deg) rotateZ(-4deg)", opacity: 1, offset: .7 },
-                     { transform: "translate3d(0, 0, 0) rotateX(0) rotateY(0) rotateZ(0)", opacity: 1 }], s, 1 * b, "out");
-    sfx(s + 1 * b, "thud");
-    A("#holder", [{ transform: "translateX(0)" }, { transform: "translateX(-250px)" }], s + 2 * b, 1 * b, "inOut");
-    sfx(s + 2 * b, "slide", 1 * b);
-    sfx(s + 3 * b, "latch");
-    A("#scanscreen .photo", [{ opacity: 0 }, { opacity: 1 }], s + 3 * b, .15);
-    A("#scan-pill", [{ opacity: 0, transform: "scale(.85)" }, { opacity: 1, transform: "scale(1)" }], s + 3 * b, .3, "back");
-    sfx(s + 3 * b, "scan");
-    A("#cursor1", [{ transform: "translate(900px, 760px)", opacity: 0 }, { transform: "translate(900px, 760px)", opacity: 1, offset: .15 }, { transform: "translate(1036px, 170px)", opacity: 1 }], s + 2.5 * b, 1.5 * b, "inOut");
-    A("#imp-btn", [{ transform: "scale(1)" }, { transform: "scale(.9)" }, { transform: "scale(1)" }], s + 4 * b, .5 * b, "soft");
-    sfx(s + 4 * b, "click");
-    A("#cursor1", [{ opacity: 1 }, { opacity: 0 }], s + 4.5 * b, .5 * b);
-    A("#imp-title, #imp-status, #imp-app .bar-track", [{ opacity: 0 }, { opacity: 1 }], s + 4 * b, .15);
+                     { transform: "translate3d(0, 0, 0) rotateX(0) rotateY(0) rotateZ(0)", opacity: 1 }], s, 1 * sb, "out");
+    sfx(s + 1 * sb, "thud");
+    A("#holder", [{ transform: "translateX(0)" }, { transform: "translateX(-250px)" }], s + 2 * sb, 1 * sb, "inOut");
+    sfx(s + 2 * sb, "slide", 1 * sb);
+    sfx(s + 3 * sb, "latch");
+    A("#scanscreen .photo", [{ opacity: 0 }, { opacity: 1 }], s + 3 * sb, .15);
+    A("#scan-pill", [{ opacity: 0, transform: "scale(.85)" }, { opacity: 1, transform: "scale(1)" }], s + 3 * sb, .3, "back");
+    sfx(s + 3 * sb, "scan");
+    A("#cursor1", [{ transform: "translate(900px, 760px)", opacity: 0 }, { transform: "translate(900px, 760px)", opacity: 1, offset: .15 }, { transform: "translate(1036px, 170px)", opacity: 1 }], s + 2.5 * sb, 1.5 * sb, "inOut");
+    A("#imp-btn", [{ transform: "scale(1)" }, { transform: "scale(.9)" }, { transform: "scale(1)" }], s + 4 * sb, .5 * sb, "soft");
+    sfx(s + 4 * sb, "click");
+    A("#cursor1", [{ opacity: 1 }, { opacity: 0 }], s + 4.5 * sb, .5 * sb);
+    A("#imp-title, #imp-status, #imp-app .bar-track", [{ opacity: 0 }, { opacity: 1 }], s + 4 * sb, .15);
     const grid = $("#imp-grid");
     for (let n = 0; n < 12; n++) {
       const th = html(grid, `<div class="thumb" style="width: auto">${photo((n * 5 + 1) % PHOTOS.length, "scan")}</div>`);
@@ -953,12 +958,12 @@ function table(plane, seed, pick, both) {
       // one lands on every sixteenth from beat 5
       A(th, [{ transform: `translate(${dx}px, ${dy}px) scale(.4)`, opacity: 0 },
              { transform: `translate(${dx * .5}px, ${dy - 100}px) scale(.8)`, opacity: 1, offset: .5 },
-             { transform: "translate(0,0) scale(1)", opacity: 1 }], s + 4 * b + n * .25 * b, 1 * b, "soft");
-      if (n % 2 === 0) sfx(s + 5 * b + n * .25 * b, "tick");
+             { transform: "translate(0,0) scale(1)", opacity: 1 }], s + 4 * sb + n * .25 * sb, 1 * sb, "soft");
+      if (n % 2 === 0) sfx(s + 5 * sb + n * .25 * sb, "tick");
     }
-    A("#imp-bar", [{ transform: "scaleX(0)" }, { transform: "scaleX(1)" }], s + 4 * b, 3 * b, "soft");
-    tick((t) => { $("#imp-status").innerHTML = t > s + 7 * b ? `<span style="color:var(--ok)">✓ 36 scans, grouped into 14 slides</span>` : `Importing ${Math.round(36 * easeInOut(prog(t, s + 4 * b, 3 * b)))} of 36 scans…`; });
-    sfx(s + 7 * b, "ding", 0);
+    A("#imp-bar", [{ transform: "scaleX(0)" }, { transform: "scaleX(1)" }], s + 4 * sb, 3 * sb, "soft");
+    tick((t) => { $("#imp-status").innerHTML = t > s + 7 * sb ? `<span style="color:var(--ok)">✓ 36 scans, grouped into 14 slides</span>` : `Importing ${Math.round(36 * easeInOut(prog(t, s + 4 * sb, 3 * sb)))} of 36 scans…`; });
+    sfx(s + 7 * sb, "ding", 0);
   }
 
   /* ---- step 2: brackets meet on 2, the colour wipes in on 3-5, faces on 5, upright on 6 */
@@ -969,31 +974,31 @@ function table(plane, seed, pick, both) {
     const br = $("#brackets");
     [[.45, -300, -6], [1, 0, 0], [1.9, 300, 6]].forEach(([bright, x, r], j) => {
       const el = html(br, `<div class="big-pic" style="left: 160px; top: 150px; filter: brightness(${bright})">${photo(K, "scan")}</div>`);
-      A(el, [{ transform: `translateX(${x * .7}px) rotate(${90 + r}deg) scale(.5)`, opacity: 0 }, { transform: `translateX(${x}px) rotate(${90 + r}deg) scale(.5)`, opacity: 1 }], s + j * .5 * b, .4, "out");
-      A(el, [{ transform: `translateX(${x}px) rotate(${90 + r}deg) scale(.5)`, opacity: 1 }, { transform: "translateX(0) rotate(90deg) scale(.66)", opacity: 0 }], s + 1 * b, 1 * b, "in");
-      sfx(s + j * .5 * b, "tick");
+      A(el, [{ transform: `translateX(${x * .7}px) rotate(${90 + r}deg) scale(.5)`, opacity: 0 }, { transform: `translateX(${x}px) rotate(${90 + r}deg) scale(.5)`, opacity: 1 }], s + j * .5 * sb, .4, "out");
+      A(el, [{ transform: `translateX(${x}px) rotate(${90 + r}deg) scale(.5)`, opacity: 1 }, { transform: "translateX(0) rotate(90deg) scale(.66)", opacity: 0 }], s + 1 * sb, 1 * sb, "in");
+      sfx(s + j * .5 * sb, "tick");
     });
     A("#devpic-wrap", [{ transform: "rotate(90deg) scale(.66)" }, { transform: "rotate(90deg) scale(.66)" }], s, .01);
-    A("#devpic", [{ opacity: 0 }, { opacity: 1 }], s + 2 * b, .12, "soft");
-    A("#flash", [{ opacity: 0 }, { opacity: .3, offset: .2 }, { opacity: 0 }], s + 2 * b - .03, .4, "soft");
-    sfx(s + 2 * b, "merge");
-    A("#t-hdr", [{ opacity: 0, transform: "translateY(10px)" }, { opacity: 1, transform: "translateY(0)" }], s + 2 * b, .25);
-    A("#t-hdr", [{ opacity: 1 }, { opacity: 0 }], s + 3 * b, .15);
-    A("#dev-vivid", [{ clipPath: "inset(0 100% 0 0)" }, { clipPath: "inset(0 0% 0 0)" }], s + 3 * b, 2 * b, "inOut");
-    A("#wipe", [{ left: "0%", opacity: 1 }, { left: "100%", opacity: 1, offset: .95 }, { left: "100%", opacity: 0 }], s + 3 * b, 2.1 * b, "inOut");
-    sfx(s + 3 * b, "sweep", 2 * b);
-    A("#t-col", [{ opacity: 0, transform: "translateY(10px)" }, { opacity: 1, transform: "translateY(0)" }], s + 3.5 * b, .25);
-    A("#t-col", [{ opacity: 1 }, { opacity: 0 }], s + 5 * b, .15);
+    A("#devpic", [{ opacity: 0 }, { opacity: 1 }], s + 2 * sb, .12, "soft");
+    A("#flash", [{ opacity: 0 }, { opacity: .3, offset: .2 }, { opacity: 0 }], s + 2 * sb - .03, .4, "soft");
+    sfx(s + 2 * sb, "merge");
+    A("#t-hdr", [{ opacity: 0, transform: "translateY(10px)" }, { opacity: 1, transform: "translateY(0)" }], s + 2 * sb, .25);
+    A("#t-hdr", [{ opacity: 1 }, { opacity: 0 }], s + 3 * sb, .15);
+    A("#dev-vivid", [{ clipPath: "inset(0 100% 0 0)" }, { clipPath: "inset(0 0% 0 0)" }], s + 3 * sb, 2 * sb, "inOut");
+    A("#wipe", [{ left: "0%", opacity: 1 }, { left: "100%", opacity: 1, offset: .95 }, { left: "100%", opacity: 0 }], s + 3 * sb, 2.1 * sb, "inOut");
+    sfx(s + 3 * sb, "sweep", 2 * sb);
+    A("#t-col", [{ opacity: 0, transform: "translateY(10px)" }, { opacity: 1, transform: "translateY(0)" }], s + 3.5 * sb, .25);
+    A("#t-col", [{ opacity: 1 }, { opacity: 0 }], s + 5 * sb, .15);
     $("#nfaces").textContent = FACES[K].length;
     FACES[K].forEach(([x, y, w, h], j) => {
       const el = html($("#devpic"), `<div class="facebox" style="left: ${x * 780}px; top: ${y * 520}px; width: ${w * 780}px; height: ${h * 520}px"></div>`);
-      A(el, [{ opacity: 0, transform: "scale(1.5)" }, { opacity: 1, transform: "scale(1)" }], s + 5 * b + j * .25 * b, .2, "back");
-      A(el, [{ opacity: 1 }, { opacity: 0 }], s + 7.25 * b, .2);
-      sfx(s + 5 * b + j * .25 * b, "face", j);
+      A(el, [{ opacity: 0, transform: "scale(1.5)" }, { opacity: 1, transform: "scale(1)" }], s + 5 * sb + j * .25 * sb, .2, "back");
+      A(el, [{ opacity: 1 }, { opacity: 0 }], s + 7.25 * sb, .2);
+      sfx(s + 5 * sb + j * .25 * sb, "face", j);
     });
-    A("#devpic-wrap", [{ transform: "rotate(90deg) scale(.66)" }, { transform: "rotate(0deg) scale(1)" }], s + 6 * b, 1 * b, "back");
-    sfx(s + 6 * b, "whoosh", 1 * b);
-    A("#t-rot", [{ opacity: 0, transform: "translateY(10px)" }, { opacity: 1, transform: "translateY(0)" }], s + 6.5 * b, .25);
+    A("#devpic-wrap", [{ transform: "rotate(90deg) scale(.66)" }, { transform: "rotate(0deg) scale(1)" }], s + 6 * sb, 1 * sb, "back");
+    sfx(s + 6 * sb, "whoosh", 1 * sb);
+    A("#t-rot", [{ opacity: 0, transform: "translateY(10px)" }, { opacity: 1, transform: "translateY(0)" }], s + 6.5 * sb, .25);
   }
 
   /* ---- step 3: a key on every beat */
@@ -1007,13 +1012,13 @@ function table(plane, seed, pick, both) {
     });
     $("#fsel").style.left = "10px";
     const keys = [
-      { t: b, key: "Space", say: "Looks good", next: true, badge: "ok" },
-      { t: 2 * b, key: "R", say: "Turn", rot: true },
-      { t: 3 * b, key: "Space", say: "Looks good", next: true, badge: "ok" },
-      { t: 4 * b, key: "C", say: "Copy colour", copy: true },
-      { t: 5 * b, key: "Space", say: "Looks good", next: true, badge: "ok" },
-      { t: 6 * b, key: "X", say: "Skip", next: true, badge: "skip" },
-      { t: 7 * b, key: "Space", say: "Looks good", next: true, badge: "ok" },
+      { t: sb, key: "Space", say: "Looks good", next: true, badge: "ok" },
+      { t: 2 * sb, key: "R", say: "Turn", rot: true },
+      { t: 3 * sb, key: "Space", say: "Looks good", next: true, badge: "ok" },
+      { t: 4 * sb, key: "C", say: "Copy colour", copy: true },
+      { t: 5 * sb, key: "Space", say: "Looks good", next: true, badge: "ok" },
+      { t: 6 * sb, key: "X", say: "Skip", next: true, badge: "skip" },
+      { t: 7 * sb, key: "Space", say: "Looks good", next: true, badge: "ok" },
     ];
     const hud = $("#keyhud");
     let cur = 0;
@@ -1024,7 +1029,7 @@ function table(plane, seed, pick, both) {
       const row = html(hud, `<div class="keyrow" style="opacity:0"><span class="keycap"${k.key === "Space" ? ' style="min-width: 260px"' : ""}>${k.key}</span><span>${k.say}</span></div>`);
       A(row, [{ opacity: 0, transform: "translateY(14px)" }, { opacity: 1, transform: "translateY(0)" }], t - .06, .12, "out");
       A($(".keycap", row), [{ transform: "translateY(0)", boxShadow: "0 6px 0 #0b0b0d, 0 10px 30px rgba(0,0,0,.5)" }, { transform: "translateY(5px)", boxShadow: "0 1px 0 #0b0b0d, 0 4px 14px rgba(0,0,0,.5)", offset: .3 }, { transform: "translateY(0)", boxShadow: "0 6px 0 #0b0b0d, 0 10px 30px rgba(0,0,0,.5)" }], t - .03, .2, "soft");
-      A(row, [{ opacity: 1 }, { opacity: 0 }], n + 1 < keys.length ? s + keys[n + 1].t - .08 : s + STEP - .5 * b, .08);
+      A(row, [{ opacity: 1 }, { opacity: 0 }], n + 1 < keys.length ? s + keys[n + 1].t - .08 : s + STEP - .5 * sb, .08);
       sfx(t, k.key === "Space" ? "space" : "key");
       if (k.badge) {
         const bd = $("#bk" + cur);
@@ -1040,11 +1045,11 @@ function table(plane, seed, pick, both) {
         if (cur > 1) A(track, [{ transform: `translateX(${-(cur - 2) * TW}px)` }, { transform: `translateX(${-(cur - 1) * TW}px)` }], t, .22, "out");
       }
     });
-    A("#fsel", [{ left: "10px" }, { left: `${10 + TW}px` }], s + b, .22, "out");
+    A("#fsel", [{ left: "10px" }, { left: `${10 + TW}px` }], s + sb, .22, "out");
     tick((t) => {
       $("#rv-n").textContent = 14 + keys.filter((k) => k.next && t >= s + k.t).length;
       $("#rv-rate").textContent = Math.round(390 + 50 * prog(t, s, STEP));
-      const copied = t >= s + 4 * b + .05;
+      const copied = t >= s + 4 * sb + .05;
       $("#sv1").textContent = copied ? "+0.5" : "+0.2"; $("#sv2").textContent = copied ? "40" : "62"; $("#sv3").textContent = copied ? "+6" : "−8";
     });
   }
@@ -1055,13 +1060,13 @@ function table(plane, seed, pick, both) {
     const grid = $("#up-grid"), alb = $("#alb-grid"), fly = $("#flyers");
     const order = ["sunset", "tahoe", "lake", "toddler", "rockport", "modelt", "snowmobile", "tub", "tricycle", "gigharbor", "pyramid", "picnic"];
     order.forEach((k) => { html(grid, `<div class="thumb" style="width: 122px; height: 82px">${photo(k)}</div>`); html(alb, `<div class="cell"></div>`); });
-    A("#cursor2", [{ transform: "translate(300px, 780px)", opacity: 0 }, { transform: "translate(300px, 780px)", opacity: 1, offset: .2 }, { transform: "translate(150px, 610px)", opacity: 1 }], s, 1 * b, "inOut");
-    A("#up-btn", [{ transform: "scale(1)" }, { transform: "scale(.92)" }, { transform: "scale(1)" }], s + 1 * b, .5 * b, "soft");
-    sfx(s + 1 * b, "click");
-    A("#cursor2", [{ transform: "translate(150px, 610px)" }, { transform: "translate(165px, 640px)" }], s + 1.5 * b, 4 * b, "soft");
+    A("#cursor2", [{ transform: "translate(300px, 780px)", opacity: 0 }, { transform: "translate(300px, 780px)", opacity: 1, offset: .2 }, { transform: "translate(150px, 610px)", opacity: 1 }], s, 1 * sb, "inOut");
+    A("#up-btn", [{ transform: "scale(1)" }, { transform: "scale(.92)" }, { transform: "scale(1)" }], s + 1 * sb, .5 * sb, "soft");
+    sfx(s + 1 * sb, "click");
+    A("#cursor2", [{ transform: "translate(150px, 610px)" }, { transform: "translate(165px, 640px)" }], s + 1.5 * sb, 4 * sb, "soft");
     const cells = $$(".cell", alb), thumbs = $$(".thumb", grid);
     order.forEach((k, j) => {
-      const t = s + 1 * b + j * .25 * b, land = t + 1.25 * b;
+      const t = s + 1 * sb + j * .25 * sb, land = t + 1.25 * sb;
       const col = j % 4, row = Math.floor(j / 4), x0 = col * 132.5, y0 = 160 + row * 92;
       const ac = j % 3, ar = Math.floor(j / 3), x1 = 642 + ac * 144.7 + 7.3, y1 = 316 + ar * 100 + 4.9;
       const f = html(fly, `<div class="thumb abs" style="left:0; top:0; width: 122px; height: 82px; opacity: 0">${photo(k)}</div>`);
@@ -1074,15 +1079,15 @@ function table(plane, seed, pick, both) {
       A($(".photo", cells[j]), [{ opacity: 0 }, { opacity: 1 }], land - .03, .08);
       sfx(land, "land", j);
     });
-    tick((t) => { $("#up-n").textContent = Math.round(36 * prog(t, s + 2.25 * b, 2.75 * b)); });
-    A("#up-done", [{ opacity: 0, transform: "translateY(10px)" }, { opacity: 1, transform: "translateY(0)" }], s + 6 * b, .25, "back");
-    sfx(s + 6 * b, "ding");
-    A("#clean-btn", [{ background: "#1d1d22", color: "#ebe8e2" }, { background: "#f2b34b", color: "#1a1305" }], s + 6 * b, .2);
-    A("#shackle", [{ transform: "translate(0,0)" }, { transform: "translate(0,-3px)" }], s + 6 * b, .2, "back");
-    A("#cursor2", [{ transform: "translate(165px, 640px)" }, { transform: "translate(160px, 680px)" }], s + 6 * b, 1 * b, "inOut");
-    A("#clean-btn", [{ transform: "scale(1)" }, { transform: "scale(.92)" }, { transform: "scale(1)" }], s + 7 * b, .5 * b, "soft");
-    sfx(s + 7 * b, "click");
-    tick((t) => { $("#clean-txt").textContent = t > s + 7 * b ? "Card cleaned, safe to eject" : "Clean scanner card"; });
+    tick((t) => { $("#up-n").textContent = Math.round(36 * prog(t, s + 2.25 * sb, 2.75 * sb)); });
+    A("#up-done", [{ opacity: 0, transform: "translateY(10px)" }, { opacity: 1, transform: "translateY(0)" }], s + 6 * sb, .25, "back");
+    sfx(s + 6 * sb, "ding");
+    A("#clean-btn", [{ background: "#1d1d22", color: "#ebe8e2" }, { background: "#f2b34b", color: "#1a1305" }], s + 6 * sb, .2);
+    A("#shackle", [{ transform: "translate(0,0)" }, { transform: "translate(0,-3px)" }], s + 6 * sb, .2, "back");
+    A("#cursor2", [{ transform: "translate(165px, 640px)" }, { transform: "translate(160px, 680px)" }], s + 6 * sb, 1 * sb, "inOut");
+    A("#clean-btn", [{ transform: "scale(1)" }, { transform: "scale(.92)" }, { transform: "scale(1)" }], s + 7 * sb, .5 * sb, "soft");
+    sfx(s + 7 * sb, "click");
+    tick((t) => { $("#clean-txt").textContent = t > s + 7 * sb ? "Card cleaned, safe to eject" : "Clean scanner card"; });
   }
 }
 
@@ -1237,7 +1242,10 @@ window.DURATION = DURATION / SPEED;
 window.FPS = FPS;
 window.MUSIC = MUSIC;
 // the music's level over time (real seconds): the drop comes in lower and swells to full over two bars
-window.MUSIC_GAIN = [[0, 1], [T.steps / SPEED - .02, 1], [T.steps / SPEED, .5], [(T.steps + 2 * BAR) / SPEED, 1]];
+// the opening: half a bar with only the slides landing, then the music fades in over a bar and stays
+// a little lower through the intro; the drop comes in at 40 % and swells to full over four bars
+window.MUSIC_GAIN = [[0, 0], [2 * b / SPEED, 0], [6 * b / SPEED, .7], [T.steps / SPEED - .02, .7],
+  [T.steps / SPEED, .4], [(T.steps + 4 * BAR) / SPEED, 1]];
 window.SFX = SFX.sort((a, b) => a[0] - b[0]);
 window.ready = Promise.all([document.fonts.ready, ...$$("img").map((im) => im.decode().catch(() => {}))]).then(() => true);
 

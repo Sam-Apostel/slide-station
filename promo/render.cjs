@@ -18,7 +18,8 @@ const path = require("node:path");
 const FFMPEG = process.env.FFMPEG || "ffmpeg";
 const here = __dirname;
 const arg = (name) => { const i = process.argv.indexOf(name); return i > 0 ? process.argv[i + 1] : undefined; };
-// --music <file> --bpm <tempo> --offset <seconds>: another track, not committed (see music/beats.py)
+// --music <file> --bpm <tempo> --offset <seconds>: the track, not committed (see music/beats.py);
+// --key "G minor" tunes the sound effects when the key finder is fooled by a cut
 const query = new URLSearchParams({ render: "" });
 if (arg("--music")) {
   query.set("music", path.relative(here, path.resolve(arg("--music"))));
@@ -70,7 +71,7 @@ async function video() {
 
   const cues = path.join(here, ".cues.json");
   const wav = path.join(here, ".soundtrack.wav");
-  fs.writeFileSync(cues, JSON.stringify({ duration, sfx, gain, music: music.file ? path.join(here, music.file) : "", offset: music.offset }));
+  fs.writeFileSync(cues, JSON.stringify({ duration, sfx, gain, key: arg("--key"), music: music.file ? path.join(here, music.file) : "", offset: music.offset }));
   const py = spawnSync(process.env.PYTHON || "python3", [path.join(here, "soundtrack.py"), cues, wav], { stdio: "inherit", env: { ...process.env, FFMPEG } });
   if (py.status === 0) {
     spawnSync(FFMPEG, ["-y", "-loglevel", "error", "-i", silent, "-i", wav, "-c:v", "copy", "-c:a", "aac", "-b:a", "192k", "-shortest", "-movflags", "+faststart", out], { stdio: "inherit" });
