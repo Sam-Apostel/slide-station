@@ -1,0 +1,5 @@
+node_modules/
+stills/
+.video.mp4
+.cues.json
+.soundtrack.wav

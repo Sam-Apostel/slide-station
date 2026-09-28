@@ -1,0 +1,1121 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Slide Station launch video</title>
+<!--
+  The launch video, as one page of motion graphics. Every animation is a paused Web Animation on
+  one timeline, so the page can be played live (open it in a browser: Space pauses, ←/→ scrub) or
+  stepped frame by frame by render.cjs, which turns it into an MP4. Nothing here is loaded from
+  the network: the pictures are drawn in SVG, the fonts are in fonts/.
+-->
+<style>
+@font-face { font-family: "Inter"; src: url(fonts/inter-latin-wght-normal.woff2) format("woff2"); font-weight: 100 900; }
+@font-face { font-family: "Fraunces"; src: url(fonts/fraunces-latin-wght-normal.woff2) format("woff2"); font-weight: 100 900; }
+@font-face { font-family: "Fraunces"; src: url(fonts/fraunces-latin-wght-italic.woff2) format("woff2"); font-weight: 100 900; font-style: italic; }
+@font-face { font-family: "JetBrains Mono"; src: url(fonts/jetbrains-mono-latin-500-normal.woff2) format("woff2"); font-weight: 500; }
+
+:root {
+  /* the app's palette (frontend/src/theme.css) */
+  --bg: #0e0e10; --sunken: #0a0a0b; --rail: #111114; --bar: #131316; --panel: #16161a;
+  --panel-2: #1d1d22; --line: #2a2a31; --text: #ebe8e2; --muted: #9b978e; --dim: #6f6c66;
+  --accent: #f2b34b; --ink: #1a1305; --ok: #6cc28a; --bad: #e2675c;
+  --mount: #ece5d3; --mount-edge: #cfc5ad;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { width: 100%; height: 100%; background: #000; overflow: hidden; }
+body { display: grid; place-items: center; font-family: "Inter", sans-serif; color: var(--text); }
+#stage {
+  position: relative; width: 1920px; height: 1080px; overflow: hidden; flex: none;
+  background: radial-gradient(120% 90% at 50% 40%, #16151a 0%, var(--bg) 55%, #070708 100%);
+  transform-origin: 50% 50%;
+}
+.render #stage { transform: none !important; }
+.scene { position: absolute; inset: 0; visibility: hidden; }
+.abs { position: absolute !important; }
+.serif { font-family: "Fraunces", serif; }
+.mono { font-family: "JetBrains Mono", monospace; }
+.center { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; }
+
+/* masked word reveals */
+.w { display: inline-block; overflow: hidden; vertical-align: top; padding: 0 .04em .08em; margin: 0 -.04em -.08em; }
+.wi { display: inline-block; will-change: transform; }
+
+/* ---------------------------------------------------------------- slide mounts */
+.mount {
+  --s: 200px;
+  position: relative; width: var(--s); height: var(--s); border-radius: calc(var(--s) * .055);
+  background: linear-gradient(160deg, #f6f0e0, var(--mount) 45%, #ddd4bd);
+  box-shadow: 0 calc(var(--s) * .04) calc(var(--s) * .12) rgba(0,0,0,.45), inset 0 0 0 calc(var(--s) * .006) rgba(255,255,255,.6);
+  flex: none;
+}
+.mount .win {
+  position: absolute; left: 14%; top: 24%; width: 72%; height: 48%; overflow: hidden;
+  border-radius: calc(var(--s) * .015); background: #111;
+  box-shadow: inset 0 0 0 calc(var(--s) * .006) rgba(60,40,10,.5);
+}
+.mount .lbl {
+  position: absolute; left: 0; right: 0; bottom: 9%; text-align: center; white-space: nowrap;
+  font: italic 500 calc(var(--s) * .085) "Fraunces", serif; color: #6a5a3c; opacity: .85;
+}
+.mount .no {
+  position: absolute; left: 0; right: 0; top: 8%; text-align: center;
+  font: 500 calc(var(--s) * .055) "JetBrains Mono", monospace; color: #9b8c6c; letter-spacing: .1em;
+}
+.photo { position: absolute; inset: 0; }
+.photo svg { display: block; width: 100%; height: 100%; }
+.faded .photo, .photo.faded { filter: sepia(.45) saturate(.5) hue-rotate(-22deg) contrast(.78) brightness(1.12); }
+
+/* bare photos (no mount) */
+.pic { position: relative; overflow: hidden; border-radius: 6px; background: #111; }
+
+/* ---------------------------------------------------------------- app chrome */
+.win-app {
+  position: absolute; background: var(--rail); border-radius: 14px; overflow: hidden;
+  box-shadow: 0 40px 120px rgba(0,0,0,.6), 0 0 0 1px var(--line);
+}
+.topbar {
+  position: absolute; left: 0; right: 0; top: 0; height: 52px; background: var(--bar);
+  border-bottom: 1px solid var(--line); display: flex; align-items: center; gap: 14px; padding: 0 18px;
+  font-size: 17px;
+}
+.dots { display: flex; gap: 8px; margin-right: 6px; }
+.dots i { width: 13px; height: 13px; border-radius: 50%; background: #3a3a42; display: block; }
+.dots i:nth-child(1) { background: #e2675c; } .dots i:nth-child(2) { background: #e8a13a; } .dots i:nth-child(3) { background: #6cc28a; }
+.pill {
+  display: inline-flex; align-items: center; gap: 10px; height: 34px; padding: 0 14px; border-radius: 17px;
+  background: var(--panel-2); border: 1px solid var(--line); color: var(--text); font-size: 16px; white-space: nowrap;
+}
+.btn {
+  display: inline-flex; align-items: center; gap: 8px; height: 36px; padding: 0 16px; border-radius: 8px;
+  background: var(--accent); color: var(--ink); font-weight: 650; font-size: 16px; white-space: nowrap;
+}
+.btn.ghost { background: var(--panel-2); color: var(--text); border: 1px solid var(--line); font-weight: 550; }
+.dot-live { width: 9px; height: 9px; border-radius: 50%; background: var(--ok); box-shadow: 0 0 10px var(--ok); }
+.muted { color: var(--muted); }
+.accent { color: var(--accent); }
+
+.keycap {
+  display: inline-flex; align-items: center; justify-content: center; min-width: 84px; height: 84px; padding: 0 24px;
+  border-radius: 14px; background: linear-gradient(#2a2a31, #1d1d22); border: 1px solid #3a3a44;
+  box-shadow: 0 6px 0 #0b0b0d, 0 10px 30px rgba(0,0,0,.5); font: 600 32px "Inter"; color: var(--text);
+}
+
+/* ---------------------------------------------------------------- scene 1: the shoebox */
+#grid-plane {
+  position: absolute; left: 50%; top: 50%; width: 2600px; height: 2000px; margin: -1000px 0 0 -1300px;
+  display: flex; flex-wrap: wrap; gap: 36px; align-content: center; justify-content: center;
+}
+#s1 .persp { position: absolute; inset: 0; perspective: 1700px; }
+#s1 .shade { position: absolute; inset: 0; background: radial-gradient(60% 60% at 50% 50%, rgba(14,14,16,.2), rgba(14,14,16,.92) 80%); }
+#s1 .line { position: absolute; left: 0; right: 0; text-align: center; font-family: "Fraunces"; font-weight: 500; font-size: 118px; letter-spacing: -.02em; line-height: 1.05; }
+
+/* ---------------------------------------------------------------- scene 2: logo */
+#beam {
+  position: absolute; left: 50%; top: -200px; width: 1800px; height: 1500px; margin-left: -900px;
+  background: conic-gradient(from 180deg at 50% 0%, transparent 160deg, rgba(255,214,140,.10) 172deg, rgba(255,226,170,.22) 180deg, rgba(255,214,140,.10) 188deg, transparent 200deg);
+  filter: blur(6px); transform-origin: 50% 0;
+}
+#logo-wrap { display: flex; flex-direction: column; align-items: center; }
+#logo-icon { width: 240px; height: 240px; filter: drop-shadow(0 30px 60px rgba(242,179,75,.25)); }
+#wordmark { font-family: "Fraunces"; font-weight: 600; font-size: 150px; letter-spacing: -.035em; margin-top: 26px; line-height: 1; }
+#tagline { font-size: 38px; color: var(--muted); margin-top: 26px; font-weight: 450; }
+#tagline b { color: var(--text); font-weight: 600; }
+.chips { display: flex; gap: 16px; margin-top: 46px; }
+.chip { height: 48px; padding: 0 22px; border-radius: 24px; border: 1px solid var(--line); background: rgba(29,29,34,.8); display: inline-flex; align-items: center; gap: 10px; font-size: 22px; color: var(--text); }
+.chip .n { font: 500 17px "JetBrains Mono"; color: var(--accent); }
+
+/* ---------------------------------------------------------------- scene 3: how it works */
+#cap { position: absolute; left: 110px; top: 0; bottom: 0; width: 560px; }
+.step-cap { position: absolute; left: 0; top: 330px; width: 560px; }
+.step-no { font: 500 30px "JetBrains Mono"; color: var(--accent); letter-spacing: .14em; }
+.step-title { font-family: "Fraunces"; font-weight: 600; font-size: 76px; letter-spacing: -.025em; line-height: 1.02; margin-top: 22px; }
+.step-sub { font-size: 27px; line-height: 1.45; color: var(--muted); margin-top: 26px; }
+.checks { margin-top: 30px; display: flex; flex-direction: column; gap: 16px; }
+.checks div { display: flex; align-items: center; gap: 14px; font-size: 26px; color: var(--muted); }
+.checks .tick { width: 30px; height: 30px; border-radius: 50%; border: 2px solid var(--line); display: grid; place-items: center; }
+.checks .tick svg { width: 17px; height: 17px; }
+#progress { position: absolute; left: 110px; bottom: 110px; display: flex; gap: 12px; }
+#progress i { display: block; height: 6px; width: 36px; border-radius: 3px; background: var(--line); overflow: hidden; position: relative; }
+#progress i b { position: absolute; inset: 0; background: var(--accent); transform-origin: 0 50%; transform: scaleX(0); }
+.vis { position: absolute; left: 730px; top: 110px; width: 1100px; height: 860px; }
+
+/* scanner */
+#scanner { position: absolute; left: 0; top: 330px; width: 380px; height: 360px; }
+#scanner .body {
+  position: absolute; left: 0; top: 70px; width: 380px; height: 290px; border-radius: 26px;
+  background: linear-gradient(170deg, #3b3b43, #232329 60%, #1b1b20); box-shadow: 0 30px 70px rgba(0,0,0,.6), inset 0 1px 0 rgba(255,255,255,.12);
+}
+#scanner .screen { position: absolute; left: 40px; top: 40px; width: 300px; height: 200px; border-radius: 10px; background: #050506; overflow: hidden; box-shadow: inset 0 0 0 3px #111; }
+#scanner .slot { position: absolute; left: 70px; top: 58px; width: 240px; height: 16px; border-radius: 8px; background: #0a0a0c; }
+#scanner .led { position: absolute; right: 26px; bottom: 22px; width: 10px; height: 10px; border-radius: 50%; background: var(--ok); box-shadow: 0 0 12px var(--ok); }
+#scanner .cable { position: absolute; left: 376px; top: 262px; width: 150px; height: 60px; border: 6px solid #2c2c33; border-left: 0; border-bottom: 0; border-radius: 0 40px 0 0; }
+
+.strip { position: absolute; display: flex; gap: 10px; }
+.thumb { width: 104px; height: 70px; border-radius: 5px; overflow: hidden; position: relative; flex: none; background: #111; box-shadow: 0 0 0 1px rgba(255,255,255,.06); }
+.bar-track { height: 8px; border-radius: 4px; background: var(--panel-2); overflow: hidden; }
+.bar-fill { height: 100%; width: 100%; background: var(--accent); transform-origin: 0 50%; transform: scaleX(0); }
+
+/* develop */
+.big-pic { position: absolute; width: 780px; height: 520px; border-radius: 10px; overflow: hidden; box-shadow: 0 40px 100px rgba(0,0,0,.6); background: #111; }
+.tag {
+  position: absolute; height: 42px; padding: 0 16px; border-radius: 21px; display: inline-flex; align-items: center; gap: 10px;
+  background: rgba(19,19,22,.92); border: 1px solid var(--line); font-size: 19px; white-space: nowrap; backdrop-filter: blur(6px);
+}
+.facebox { position: absolute; border: 3px solid var(--accent); border-radius: 8px; box-shadow: 0 0 20px rgba(242,179,75,.5); }
+
+/* review app */
+#review-app { left: 0; top: 40px; width: 1100px; height: 700px; }
+#review-app .stagearea { position: absolute; left: 0; top: 52px; width: 800px; height: 520px; background: var(--sunken); display: grid; place-items: center; }
+#review-app .insp { position: absolute; right: 0; top: 52px; width: 300px; bottom: 0; background: var(--rail); border-left: 1px solid var(--line); padding: 22px; }
+#review-app .film { position: absolute; left: 0; width: 800px; bottom: 0; height: 128px; background: var(--bar); border-top: 1px solid var(--line); overflow: hidden; }
+.insp h4 { font-size: 13px; letter-spacing: .12em; text-transform: uppercase; color: var(--dim); font-weight: 600; margin: 0 0 16px; }
+.slider { margin-bottom: 20px; }
+.slider .row { display: flex; justify-content: space-between; font-size: 15px; color: var(--muted); margin-bottom: 9px; }
+.slider .trk { position: relative; height: 4px; border-radius: 2px; background: var(--line); }
+.slider .knob { position: absolute; top: -7px; width: 18px; height: 18px; margin-left: -9px; border-radius: 50%; background: var(--text); box-shadow: 0 2px 6px rgba(0,0,0,.6); }
+.ftile { position: absolute; top: 18px; width: 136px; height: 91px; border-radius: 6px; overflow: hidden; box-shadow: 0 0 0 1px rgba(255,255,255,.06); }
+.ftile .badge { position: absolute; right: 5px; top: 5px; width: 22px; height: 22px; border-radius: 50%; display: grid; place-items: center; font-size: 13px; font-weight: 800; }
+.ftile .badge.ok { background: var(--ok); color: #0c2014; }
+.ftile .badge.skip { background: var(--bad); color: #2a0d0a; }
+#fsel { position: absolute; top: 14px; width: 144px; height: 99px; border: 3px solid var(--accent); border-radius: 9px; }
+#keyhud { position: absolute; left: 0; right: 0; top: 770px; display: flex; justify-content: center; }
+.keyrow { position: absolute; display: flex; align-items: center; gap: 22px; font-size: 30px; white-space: nowrap; }
+
+/* upload */
+.album {
+  position: absolute; left: 620px; top: 120px; width: 470px; height: 600px; border-radius: 18px; background: #f4f2ee; color: #1b1b1f;
+  box-shadow: 0 40px 100px rgba(0,0,0,.6); overflow: hidden;
+}
+.album .hd { height: 64px; display: flex; align-items: center; gap: 12px; padding: 0 22px; border-bottom: 1px solid #e2ded6; font-weight: 700; font-size: 20px; }
+.album .im-logo { width: 28px; height: 28px; border-radius: 8px; background: conic-gradient(#fa2921, #ed79b5, #ffb400, #1e83f7, #18c249, #fa2921); }
+.album .t { padding: 20px 22px 6px; font: 600 30px "Fraunces"; letter-spacing: -.01em; }
+.album .meta { padding: 0 22px 14px; font-size: 16px; color: #6b675f; }
+.album .grid { position: absolute; left: 22px; top: 196px; width: 426px; display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+.album .cell { height: 92px; border-radius: 6px; background: #e3dfd6; overflow: hidden; position: relative; }
+
+/* ---------------------------------------------------------------- scene 4: devices */
+.dev { position: absolute; }
+.dev .scr { position: absolute; overflow: hidden; background: var(--rail); }
+.laptop .lid { position: absolute; left: 0; top: 0; width: 760px; height: 480px; border-radius: 22px 22px 6px 6px; background: #1c1c21; box-shadow: 0 0 0 2px #34343c, 0 40px 90px rgba(0,0,0,.6); }
+.laptop .scr { left: 18px; top: 18px; width: 724px; height: 444px; border-radius: 6px; }
+.laptop .base { position: absolute; left: -60px; top: 480px; width: 880px; height: 26px; border-radius: 2px 2px 20px 20px; background: linear-gradient(#4a4a52, #26262b); }
+.laptop .base::after { content: ""; position: absolute; left: 380px; top: 0; width: 120px; height: 8px; border-radius: 0 0 8px 8px; background: #1b1b1f; }
+.browser { border-radius: 12px; background: var(--bar); box-shadow: 0 0 0 1px var(--line), 0 40px 90px rgba(0,0,0,.6); overflow: hidden; }
+.browser .url { position: absolute; left: 0; right: 0; top: 0; height: 44px; display: flex; align-items: center; gap: 14px; padding: 0 16px; border-bottom: 1px solid var(--line); }
+.browser .url .field { flex: 1; height: 28px; border-radius: 14px; background: var(--sunken); color: var(--muted); font-size: 15px; display: flex; align-items: center; padding: 0 14px; gap: 8px; }
+.browser .scr { left: 0; top: 44px; right: 0; bottom: 0; }
+.tablet { border-radius: 40px; background: #1a1a1f; box-shadow: 0 0 0 2px #3a3a42, 0 40px 90px rgba(0,0,0,.6); }
+.tablet .scr { left: 22px; top: 22px; right: 22px; bottom: 22px; border-radius: 20px; }
+.phone { border-radius: 44px; background: #1a1a1f; box-shadow: 0 0 0 2px #3a3a42, 0 40px 90px rgba(0,0,0,.6); }
+.phone .scr { left: 12px; top: 12px; right: 12px; bottom: 12px; border-radius: 34px; }
+.phone .island { position: absolute; left: 50%; top: 22px; width: 90px; height: 26px; margin-left: -45px; border-radius: 13px; background: #000; z-index: 3; }
+.server { border-radius: 14px; background: linear-gradient(#2b2b32, #1a1a1f); box-shadow: 0 0 0 1px #3a3a42, 0 30px 70px rgba(0,0,0,.6); }
+.server .unit { position: absolute; left: 18px; right: 18px; height: 50px; border-radius: 8px; background: #111115; display: flex; align-items: center; gap: 10px; padding: 0 14px; }
+.server .unit i { width: 9px; height: 9px; border-radius: 50%; background: var(--ok); box-shadow: 0 0 8px var(--ok); display: block; }
+.server .unit s { flex: 1; height: 6px; border-radius: 3px; background: repeating-linear-gradient(90deg, #26262c 0 10px, transparent 10px 16px); display: block; }
+.dev-label { position: absolute; white-space: nowrap; font-size: 22px; color: var(--muted); }
+.dev-label b { color: var(--text); font-weight: 650; }
+
+/* mini app inside the devices */
+.mini { position: absolute; inset: 0; background: var(--rail); }
+.mini .mtop { position: absolute; left: 0; right: 0; top: 0; height: 9%; background: var(--bar); border-bottom: 1px solid var(--line); display: flex; align-items: center; padding: 0 3%; gap: 3%; }
+.mini .mtop .lg { width: 5%; aspect-ratio: 1; border-radius: 22%; background: linear-gradient(#fac97a, #e49a2c); }
+.mini .mtop .ttl { height: 26%; width: 28%; border-radius: 3px; background: #2b2b33; }
+.mini .mtop .mb { margin-left: auto; height: 50%; width: 18%; border-radius: 5px; background: var(--accent); }
+.mini .mview { position: absolute; left: 4%; right: 4%; top: 13%; bottom: 25%; display: grid; place-items: center; }
+.mini .mview .pic { width: 100%; height: 100%; border-radius: 4px; }
+.mini .mfilm { position: absolute; left: 4%; right: 4%; bottom: 4%; height: 15%; display: flex; gap: 2%; }
+.mini .mfilm .pic { flex: 1; border-radius: 3px; }
+.mini .mfilm .pic.on { box-shadow: 0 0 0 2px var(--accent); }
+.syncbadge { position: absolute; width: 44px; height: 44px; border-radius: 50%; background: var(--ok); color: #0c2014; display: grid; place-items: center; box-shadow: 0 0 30px rgba(108,194,138,.7); }
+.syncbadge svg { width: 24px; height: 24px; }
+
+#lib-node { position: absolute; left: 910px; top: 540px; width: 100px; height: 100px; margin: -50px 0 0 -50px; border-radius: 28px; background: linear-gradient(160deg, #fac97a, #e49a2c); display: grid; place-items: center; box-shadow: 0 0 80px rgba(242,179,75,.55); }
+#links { position: absolute; inset: 0; }
+#links path { fill: none; stroke: var(--accent); stroke-width: 3; stroke-linecap: round; stroke-dasharray: 8 14; }
+.headline { position: absolute; left: 0; right: 0; text-align: center; font-family: "Fraunces"; font-weight: 600; font-size: 84px; letter-spacing: -.025em; }
+
+/* ---------------------------------------------------------------- scene 5: features */
+.cards { position: absolute; left: 130px; top: 250px; width: 1660px; display: grid; grid-template-columns: repeat(3, 1fr); gap: 34px; }
+.card { position: relative; height: 340px; border-radius: 22px; background: linear-gradient(170deg, #1b1b20, #141418); border: 1px solid var(--line); overflow: hidden; }
+.card .art { position: absolute; left: 0; right: 0; top: 0; height: 208px; overflow: hidden; }
+.card .txt { position: absolute; left: 30px; right: 30px; bottom: 26px; }
+.card h3 { font-family: "Fraunces"; font-weight: 600; font-size: 34px; letter-spacing: -.015em; }
+.card p { font-size: 19px; color: var(--muted); margin-top: 8px; line-height: 1.35; }
+.speck { position: absolute; border-radius: 50%; background: #fffbe8; box-shadow: 0 0 3px rgba(255,255,255,.8); }
+.sug { display: inline-flex; align-items: center; gap: 8px; height: 40px; padding: 0 16px; border-radius: 20px; background: var(--panel-2); border: 1px solid var(--line); font-size: 19px; }
+.sug .ck { width: 22px; height: 22px; border-radius: 50%; background: var(--ok); color: #0c2014; display: grid; place-items: center; font-size: 13px; font-weight: 800; }
+
+/* ---------------------------------------------------------------- overlays */
+#flash { position: absolute; inset: 0; background: radial-gradient(70% 70% at 50% 50%, rgba(255,236,196,1), rgba(255,200,120,.85) 45%, rgba(242,150,60,.0) 100%); opacity: 0; pointer-events: none; mix-blend-mode: screen; }
+#grain { position: absolute; inset: -64px; opacity: .07; pointer-events: none; mix-blend-mode: overlay; }
+#vignette { position: absolute; inset: 0; pointer-events: none; background: radial-gradient(130% 100% at 50% 50%, transparent 60%, rgba(0,0,0,.55) 100%); }
+#motes { position: absolute; inset: 0; pointer-events: none; }
+#motes i { position: absolute; display: block; border-radius: 50%; background: rgba(255,226,170,.9); filter: blur(1px); }
+#fadeout { position: absolute; inset: 0; background: #000; opacity: 0; pointer-events: none; }
+#hud { position: fixed; left: 12px; bottom: 10px; font: 12px "JetBrains Mono"; color: #777; z-index: 10; }
+.render #hud { display: none; }
+</style>
+</head>
+<body>
+<div id="stage">
+
+  <!-- 1 · the shoebox -->
+  <section class="scene" id="s1" data-in="0" data-out="6.05">
+    <div class="persp"><div id="grid-plane"></div></div>
+    <div class="shade"></div>
+    <div class="line" id="l1" style="top: 395px">Thousands of slides.</div>
+    <div class="line" id="l2" style="top: 525px"><i>In a shoebox.</i></div>
+    <div class="line" id="l3" style="top: 460px">Slowly <span id="fading" style="display:inline-block">fading.</span></div>
+  </section>
+
+  <!-- 2 · logo -->
+  <section class="scene" id="s2" data-in="6.0" data-out="10.85">
+    <div id="beam"></div>
+    <div class="center" id="logo-group">
+      <div id="logo-wrap">
+        <svg id="logo-icon" viewBox="0 0 64 64"></svg>
+        <div id="wordmark">Slide Station</div>
+        <div id="tagline">Digitise your 35mm slides <b>without the tedium.</b></div>
+        <div class="chips">
+          <div class="chip"><span class="n">01</span>Import</div>
+          <div class="chip"><span class="n">02</span>Blend</div>
+          <div class="chip"><span class="n">03</span>Restore</div>
+          <div class="chip"><span class="n">04</span>Upload</div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 3 · how it works -->
+  <section class="scene" id="s3" data-in="10.8" data-out="30.05">
+    <div id="cap">
+      <div class="step-cap" id="c1">
+        <div class="step-no">STEP 01</div>
+        <div class="step-title">Plug in the scanner.</div>
+        <div class="step-sub">Slide Station spots your Kodak Slide N Scan and imports every scan in one click. Import twice? It never duplicates.</div>
+      </div>
+      <div class="step-cap" id="c2">
+        <div class="step-no">STEP 02</div>
+        <div class="step-title">It does the fiddly bits.</div>
+        <div class="checks">
+          <div id="k1"><span class="tick"></span>Brackets blended into HDR</div>
+          <div id="k2"><span class="tick"></span>Faded colour restored</div>
+          <div id="k3"><span class="tick"></span>Turned upright from faces &amp; skies</div>
+        </div>
+      </div>
+      <div class="step-cap" id="c3">
+        <div class="step-no">STEP 03</div>
+        <div class="step-title">Review at keyboard speed.</div>
+        <div class="step-sub">Space if it looks good. R to turn, C to copy colour, X to skip. Hundreds of slides an hour.</div>
+      </div>
+      <div class="step-cap" id="c4">
+        <div class="step-no">STEP 04</div>
+        <div class="step-title">Send it to Immich.</div>
+        <div class="step-sub">An album per tray, dated and tagged. The card is only cleaned once every slide is verified and uploaded.</div>
+      </div>
+    </div>
+    <div id="progress"><i><b></b></i><i><b></b></i><i><b></b></i><i><b></b></i></div>
+
+    <!-- step 1: import -->
+    <div class="vis" id="v1">
+      <div id="scanner">
+        <div class="body"><div class="screen" id="scanscreen"></div><div class="led"></div></div>
+        <div id="scanslide" class="abs" style="left: 110px; top: -40px"></div>
+        <div class="slot" style="top: 84px"></div>
+        <div class="cable"></div>
+      </div>
+      <div class="win-app" id="imp-app" style="left: 470px; top: 150px; width: 630px; height: 520px">
+        <div class="topbar"><div class="dots"><i></i><i></i><i></i></div>
+          <div class="pill" id="scan-pill"><span class="dot-live"></span>Slide N Scan · <b>36 new scans</b></div>
+          <div class="btn" id="imp-btn" style="margin-left:auto">Import</div>
+        </div>
+        <div class="abs" id="imp-title" style="left: 26px; top: 80px; font: 600 30px Fraunces">Lake Garda · 1978</div>
+        <div class="abs muted" id="imp-status" style="left: 26px; top: 124px; font-size: 17px">Importing <span id="imp-n">0</span> of 36 scans…</div>
+        <div class="abs bar-track" style="left: 26px; right: 26px; top: 158px"><div class="bar-fill" id="imp-bar"></div></div>
+        <div class="abs" id="imp-grid" style="left: 26px; top: 196px; width: 578px; display: grid; grid-template-columns: repeat(5, 1fr); gap: 10px"></div>
+      </div>
+      <svg class="abs" id="cursor1" width="34" height="42" viewBox="0 0 34 42" style="left:0;top:0"><path d="M3 2 L3 34 L11 26 L17 40 L23 37 L17 24 L29 24 Z" fill="#fff" stroke="#000" stroke-width="2" stroke-linejoin="round"/></svg>
+    </div>
+
+    <!-- step 2: develop -->
+    <div class="vis" id="v2">
+      <div id="brackets"></div>
+      <div id="devpic-wrap" class="abs" style="left: 160px; top: 150px; width: 780px; height: 520px">
+        <div id="devpic" class="big-pic" style="left:0; top:0">
+          <div class="photo faded" id="dev-faded"></div>
+          <div class="photo" id="dev-vivid"></div>
+          <div class="abs" id="wipe" style="top:0; bottom:0; width: 4px; margin-left: -2px; background: #fff; box-shadow: 0 0 30px 8px rgba(255,220,160,.8)"></div>
+          <div class="facebox" id="fb1"></div><div class="facebox" id="fb2"></div><div class="facebox" id="fb3"></div>
+        </div>
+      </div>
+      <div class="tag" id="t-hdr" style="left: 380px; top: 720px"><span class="mono accent">3 → 1</span> exposures fused</div>
+      <div class="tag" id="t-col" style="left: 380px; top: 720px"><span class="mono accent">auto</span> colour restored</div>
+      <div class="tag" id="t-rot" style="left: 380px; top: 720px"><span class="mono accent">↻ 90°</span> 3 faces found</div>
+    </div>
+
+    <!-- step 3: review -->
+    <div class="vis" id="v3">
+      <div class="win-app" id="review-app">
+        <div class="topbar"><div class="dots"><i></i><i></i><i></i></div>
+          <span style="font-weight:650">Lake Garda · 1978</span><span class="muted">slide <span id="rv-n">14</span> of 36</span>
+          <span class="pill" style="margin-left:auto"><span class="accent mono" id="rv-rate">412</span> slides / hour</span>
+          <span class="btn">Upload to Immich</span>
+        </div>
+        <div class="stagearea"><div id="rv-stage" style="position:relative; width: 690px; height: 460px"></div></div>
+        <div class="insp">
+          <h4>Adjust</h4>
+          <div class="slider"><div class="row"><span>Exposure</span><span class="mono" id="sv1">+0.2</span></div><div class="trk"><div class="knob" id="kn1"></div></div></div>
+          <div class="slider"><div class="row"><span>Restore fade</span><span class="mono" id="sv2">62</span></div><div class="trk"><div class="knob" id="kn2"></div></div></div>
+          <div class="slider"><div class="row"><span>Warmth</span><span class="mono" id="sv3">−8</span></div><div class="trk"><div class="knob" id="kn3"></div></div></div>
+          <div class="slider"><div class="row"><span>Dust</span><span class="mono" id="sv4">30</span></div><div class="trk"><div class="knob" id="kn4"></div></div></div>
+          <h4 style="margin-top: 30px">Details</h4>
+          <div class="muted" style="font-size: 15px; line-height: 2">Date <span style="color:var(--text); float:right">Aug 1978</span><br>Place <span style="color:var(--text); float:right">Malcesine, Italy</span><br>Film <span style="color:var(--text); float:right">Kodachrome</span></div>
+        </div>
+        <div class="film"><div id="film-track" class="abs" style="left:0; top:0; height: 128px; width: 3000px"></div><div id="fsel"></div></div>
+      </div>
+      <div id="keyhud"></div>
+    </div>
+
+    <!-- step 4: upload -->
+    <div class="vis" id="v4">
+      <div id="up-grid" class="abs" style="left: 0; top: 160px; width: 520px; display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px"></div>
+      <div class="btn" id="up-btn" style="position:absolute; left: 0; top: 590px; height: 52px; font-size: 20px; padding: 0 22px">Upload to Immich</div>
+      <div class="btn ghost" id="clean-btn" style="position:absolute; left: 0; top: 660px; height: 52px; font-size: 20px; padding: 0 22px">
+        <svg id="lock" width="20" height="20" viewBox="0 0 20 20"><rect x="3" y="9" width="14" height="10" rx="2" fill="currentColor"/><path id="shackle" d="M6 9 V6 a4 4 0 0 1 8 0 V9" fill="none" stroke="currentColor" stroke-width="2.4"/></svg>
+        <span id="clean-txt">Clean scanner card</span>
+      </div>
+      <div class="album">
+        <div class="hd"><span class="im-logo"></span>Immich</div>
+        <div class="t">Lake Garda 1978</div>
+        <div class="meta"><span id="up-n">0</span> of 36 photos · Trays/Lake Garda 1978</div>
+        <div class="grid" id="alb-grid"></div>
+      </div>
+      <div id="flyers" class="abs" style="inset:0"></div>
+      <div class="tag" id="up-done" style="left: 690px; top: 745px; color: var(--ok)">✓ 36 uploaded &amp; verified</div>
+      <svg class="abs" id="cursor2" width="34" height="42" viewBox="0 0 34 42" style="left:0;top:0"><path d="M3 2 L3 34 L11 26 L17 40 L23 37 L17 24 L29 24 Z" fill="#fff" stroke="#000" stroke-width="2" stroke-linejoin="round"/></svg>
+    </div>
+  </section>
+
+  <!-- 4 · every device -->
+  <section class="scene" id="s4" data-in="30.0" data-out="39.65">
+    <div class="headline" id="h4a" style="top: 70px">Works on <i>every</i> device.</div>
+    <div class="headline" id="h4b" style="top: 70px">One library. Everywhere.</div>
+    <svg id="links" viewBox="0 0 1920 1080"></svg>
+    <div class="dev browser" id="d-browser" style="left: 1040px; top: 250px; width: 760px; height: 470px">
+      <div class="url"><div class="dots"><i></i><i></i><i></i></div><div class="field">🔒 photos.example.com/slide-station</div></div>
+      <div class="scr"></div>
+    </div>
+    <div class="dev laptop" id="d-laptop" style="left: 150px; top: 250px; width: 760px; height: 506px">
+      <div class="lid"><div class="scr"></div></div><div class="base"></div>
+    </div>
+    <div class="dev server" id="d-server" style="left: 1560px; top: 620px; width: 260px; height: 250px">
+      <div class="unit" style="top: 22px"><i></i><s></s></div>
+      <div class="unit" style="top: 84px"><i></i><s></s></div>
+      <div class="unit" style="top: 146px"><i></i><s></s></div>
+    </div>
+    <div class="dev tablet" id="d-tablet" style="left: 820px; top: 520px; width: 560px; height: 420px"><div class="scr"></div></div>
+    <div class="dev phone" id="d-phone" style="left: 590px; top: 560px; width: 200px; height: 410px"><div class="island"></div><div class="scr"></div></div>
+    <div class="dev-label" id="lb-laptop" style="left: 150px; top: 785px"><b>Mac app</b> · native, with the scanner</div>
+    <div class="dev-label" id="lb-browser" style="left: 1040px; top: 205px"><b>Any browser</b> · nothing to install</div>
+    <div class="dev-label" id="lb-tablet" style="left: 870px; top: 960px"><b>iPad &amp; iPhone</b> · no Mac needed</div>
+    <div class="dev-label" id="lb-server" style="left: 1480px; top: 890px"><b>Your server</b> · next to Immich</div>
+    <div id="lib-node"><svg width="56" height="56" viewBox="0 0 24 24" fill="none" stroke="#1a1305" stroke-width="2" stroke-linecap="round"><ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v6c0 1.7 3.6 3 8 3s8-1.3 8-3V5"/><path d="M4 11v6c0 1.7 3.6 3 8 3s8-1.3 8-3v-6"/></svg></div>
+  </section>
+
+  <!-- 5 · more -->
+  <section class="scene" id="s5" data-in="39.6" data-out="46.85">
+    <div class="headline" id="h5" style="top: 90px">And that's just the start.</div>
+    <div class="cards">
+      <div class="card" id="f1"><div class="art" id="f1a"></div><div class="txt"><h3>Learns your taste</h3><p>Every correction pre-sets the next slide.</p></div></div>
+      <div class="card" id="f2"><div class="art" id="f2a"></div><div class="txt"><h3>Knows who's who</h3><p>Name someone once. Immich gets the name.</p></div></div>
+      <div class="card" id="f3"><div class="art" id="f3a"></div><div class="txt"><h3>Dust, mould, scratches</h3><p>Painted out, grain and detail kept.</p></div></div>
+      <div class="card" id="f4"><div class="art" id="f4a"></div><div class="txt"><h3>Reads the signs</h3><p>Places found from the photo, onto the map.</p></div></div>
+      <div class="card" id="f5"><div class="art" id="f5a"></div><div class="txt"><h3>Suggests tags &amp; dates</h3><p>Beach, wedding, Kodachrome, 1978. You approve.</p></div></div>
+      <div class="card" id="f6"><div class="art" id="f6a"></div><div class="txt"><h3>Private by design</h3><p>It all runs on your own devices.</p></div></div>
+    </div>
+  </section>
+
+  <!-- 6 · outro -->
+  <section class="scene" id="s6" data-in="46.8" data-out="99">
+    <div class="persp" style="position:absolute; inset:0; perspective: 1700px"><div id="grid-plane-2" style="position:absolute; left:50%; top:50%; width:2600px; height:2000px; margin:-1000px 0 0 -1300px; display:flex; flex-wrap:wrap; gap:36px; align-content:center; justify-content:center"></div></div>
+    <div class="abs" style="inset:0; background: radial-gradient(50% 55% at 50% 50%, rgba(14,14,16,.92), rgba(14,14,16,.55) 100%)"></div>
+    <div class="center">
+      <svg id="logo-icon-2" viewBox="0 0 64 64" style="width: 170px; height: 170px"></svg>
+      <div id="wm2" class="serif" style="font-size: 124px; font-weight: 600; letter-spacing: -.035em; margin-top: 20px; line-height: 1">Slide Station</div>
+      <div id="tl2" class="serif" style="font-size: 50px; font-style: italic; color: var(--accent); margin-top: 22px">Bring your slides back to life.</div>
+      <div class="chips" id="plat" style="margin-top: 50px">
+        <div class="chip">Mac</div><div class="chip">Browser</div><div class="chip">iPad &amp; iPhone</div><div class="chip">Server</div>
+      </div>
+      <div id="oss" style="margin-top: 44px; font-size: 26px; color: var(--muted)">Free &amp; open source · <span class="mono" style="color: var(--text)">github.com/Sam-Apostel/slide-station</span></div>
+    </div>
+  </section>
+
+  <div id="motes"></div>
+  <div id="vignette"></div>
+  <canvas id="grain" width="256" height="256"></canvas>
+  <div id="flash"></div>
+  <div id="fadeout"></div>
+</div>
+<div id="hud"></div>
+
+<script>
+"use strict";
+const FPS = 30;
+const DURATION = 53.4;
+const BPM = 100; // soundtrack.py uses the same tempo
+
+/* ============================================================ timeline */
+const EASE = {
+  out: "cubic-bezier(.16,1,.3,1)", in: "cubic-bezier(.7,0,.84,0)", inOut: "cubic-bezier(.65,0,.35,1)",
+  back: "cubic-bezier(.34,1.56,.64,1)", soft: "cubic-bezier(.4,0,.2,1)", lin: "linear",
+};
+const anims = [];
+const ticks = [];
+const SFX = []; // [time, kind] for the soundtrack
+const animated = new WeakMap();
+
+const $ = (s, root = document) => root.querySelector(s);
+const $$ = (s, root = document) => [...root.querySelectorAll(s)];
+const els = (t) => typeof t === "string" ? $$(t) : t instanceof Element ? [t] : [...t];
+
+/** Animate `target` through `frames` from `start` for `dur` seconds. The first animation of a
+ *  property on an element holds its first frame before it starts; later ones only take over when
+ *  they begin, so an element can be animated again and again as long as it is done in order. */
+function A(target, frames, start, dur, ease = "out", stagger = 0) {
+  els(target).forEach((el, i) => {
+    const props = new Set();
+    frames.forEach((f) => Object.keys(f).forEach((k) => k !== "offset" && k !== "easing" && props.add(k)));
+    let seen = animated.get(el);
+    if (!seen) animated.set(el, (seen = new Set()));
+    const fresh = [...props].every((p) => !seen.has(p));
+    props.forEach((p) => seen.add(p));
+    const a = el.animate(frames, {
+      delay: (start + i * stagger) * 1000, duration: dur * 1000,
+      easing: EASE[ease] || ease, fill: fresh ? "both" : "forwards",
+    });
+    a.pause();
+    a.persist();
+    anims.push(a);
+  });
+}
+const fadeIn = (t, s, d = .6, e = "out", st = 0) => A(t, [{ opacity: 0 }, { opacity: 1 }], s, d, e, st);
+const fadeOut = (t, s, d = .4, e = "soft", st = 0) => A(t, [{ opacity: 1 }, { opacity: 0 }], s, d, e, st);
+const tick = (fn) => ticks.push(fn);
+const sfx = (t, kind) => SFX.push([+t.toFixed(3), kind]);
+const clamp = (x, a = 0, b = 1) => Math.min(b, Math.max(a, x));
+const prog = (t, s, d) => clamp((t - s) / d);
+const easeOut = (x) => 1 - Math.pow(1 - x, 3);
+const easeInOut = (x) => x < .5 ? 4 * x * x * x : 1 - Math.pow(-2 * x + 2, 3) / 2;
+
+/** Wrap each word in a mask so it can rise into view. */
+function words(el) {
+  const walk = (node) => {
+    [...node.childNodes].forEach((n) => {
+      if (n.nodeType === 3) {
+        const frag = document.createDocumentFragment();
+        n.textContent.split(/(\s+)/).forEach((part) => {
+          if (!part) return;
+          if (/^\s+$/.test(part)) { frag.appendChild(document.createTextNode(" ")); return; }
+          const w = document.createElement("span"); w.className = "w";
+          const wi = document.createElement("span"); wi.className = "wi"; wi.textContent = part;
+          w.appendChild(wi); frag.appendChild(w);
+        });
+        n.replaceWith(frag);
+      } else if (n.nodeType === 1 && !n.classList.contains("w")) walk(n);
+    });
+  };
+  walk(el);
+  return $$(".wi", el);
+}
+function rise(el, start, dur = .8, stagger = .06) {
+  const ws = words(el);
+  A(ws, [{ transform: "translateY(110%)" }, { transform: "translateY(0)" }], start, dur, "out", stagger);
+  return ws;
+}
+function sink(el, start, dur = .45, stagger = .03) {
+  A($$(".wi", el), [{ transform: "translateY(0)" }, { transform: "translateY(-110%)" }], start, dur, "in", stagger);
+}
+
+/* ============================================================ pictures */
+let uid = 0;
+const ART = [
+  function sunset(i) { return `
+    <defs><linearGradient id="a${i}" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#1f2a63"/><stop offset=".55" stop-color="#c8547a"/><stop offset="1" stop-color="#f7a24a"/></linearGradient>
+    <linearGradient id="b${i}" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#e98150"/><stop offset="1" stop-color="#3a1f4a"/></linearGradient></defs>
+    <rect width="300" height="200" fill="url(#a${i})"/><circle cx="190" cy="120" r="24" fill="#ffe29a"/>
+    <rect y="126" width="300" height="74" fill="url(#b${i})"/>
+    <g fill="#ffd98a" opacity=".75"><rect x="160" y="134" width="60" height="3" rx="1.5"/><rect x="170" y="144" width="40" height="3" rx="1.5"/><rect x="178" y="155" width="24" height="2.5" rx="1.2"/></g>
+    <path d="M0 127 C30 96 70 104 118 127 Z" fill="#2a1430"/><path d="M230 127 C255 110 280 108 300 114 V127 Z" fill="#2a1430"/>
+    <path d="M40 176 l18 -26 l6 26 z" fill="#1c0d1f"/><rect x="55" y="150" width="2" height="26" fill="#1c0d1f"/>`; },
+  function lake(i) { return `
+    <defs><linearGradient id="a${i}" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#4b8fd8"/><stop offset="1" stop-color="#bfe0f5"/></linearGradient>
+    <linearGradient id="b${i}" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#2f8f96"/><stop offset="1" stop-color="#1b4f63"/></linearGradient></defs>
+    <rect width="300" height="200" fill="url(#a${i})"/>
+    <path d="M0 130 L60 60 L95 100 L150 38 L210 110 L245 76 L300 124 V140 H0Z" fill="#6c7a8f"/>
+    <path d="M150 38 L170 62 L160 60 L152 70 L142 58 L132 62Z M60 60 L72 74 L62 72 L50 78Z M245 76 L256 88 L240 88Z" fill="#fff"/>
+    <path d="M0 132 C60 118 120 126 180 122 S260 118 300 124 V140 H0Z" fill="#3f7a44"/>
+    <rect y="138" width="300" height="62" fill="url(#b${i})"/>
+    <g fill="#1f4a2a"><path d="M20 150 l10 -34 l10 34z"/><path d="M36 152 l8 -26 l8 26z"/><path d="M262 150 l10 -38 l10 38z"/><path d="M248 152 l8 -24 l8 24z"/></g>
+    <g fill="#e8f6ff" opacity=".45"><rect x="90" y="160" width="70" height="2" rx="1"/><rect x="170" y="172" width="50" height="2" rx="1"/></g>`; },
+  function beach(i) { return `
+    <defs><linearGradient id="a${i}" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#3d9be0"/><stop offset="1" stop-color="#a9dcf5"/></linearGradient></defs>
+    <rect width="300" height="200" fill="url(#a${i})"/><circle cx="60" cy="40" r="16" fill="#fff6c9"/>
+    <rect y="100" width="300" height="40" fill="#1fa3b5"/><rect y="112" width="300" height="10" fill="#4cc3cf" opacity=".6"/>
+    <path d="M0 136 C80 128 200 132 300 126 V200 H0Z" fill="#f1d7a0"/>
+    <path d="M0 136 C80 128 200 132 300 126" stroke="#fff" stroke-width="3" fill="none" opacity=".8"/>
+    <rect x="178" y="108" width="3" height="66" fill="#6b4a2a"/>
+    <path d="M140 112 Q180 76 220 112 Z" fill="#e2463c"/><path d="M160 112 Q180 80 180 80 Q180 80 200 112Z" fill="#fff"/>
+    <rect x="100" y="164" width="44" height="12" rx="3" fill="#2f6fd0"/><rect x="100" y="164" width="44" height="4" fill="#fff" opacity=".6"/>
+    <circle cx="238" cy="170" r="9" fill="#ffcf3a"/><path d="M229 170 h18" stroke="#e2463c" stroke-width="3"/>`; },
+  function family(i) { return `
+    <defs><linearGradient id="a${i}" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#8cc6e8"/><stop offset="1" stop-color="#d9efe0"/></linearGradient></defs>
+    <rect width="300" height="200" fill="url(#a${i})"/>
+    <circle cx="258" cy="70" r="46" fill="#4f9a4e"/><rect x="254" y="100" width="8" height="50" fill="#6b4a2a"/>
+    <rect y="140" width="300" height="60" fill="#6fb35a"/>
+    <g><rect x="70" y="92" width="44" height="64" rx="18" fill="#d9453b"/><circle cx="92" cy="76" r="17" fill="#f1c19c"/><path d="M75 72 q17 -22 34 0 q-4 -16 -17 -16 q-13 0 -17 16z" fill="#6b3b1f"/></g>
+    <g><rect x="126" y="86" width="48" height="70" rx="19" fill="#2f6fd0"/><circle cx="150" cy="68" r="18" fill="#e7b48c"/><path d="M132 64 q18 -20 36 0 q-2 -18 -18 -18 q-16 0 -18 18z" fill="#2b1a10"/></g>
+    <g><rect x="186" y="108" width="36" height="48" rx="14" fill="#f2b33b"/><circle cx="204" cy="94" r="14" fill="#f3c9a4"/><path d="M190 92 q14 -18 28 0 q-2 -12 -14 -12 q-12 0 -14 12z" fill="#b9772f"/></g>`; },
+  function town(i) { return `
+    <defs><linearGradient id="a${i}" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#5aa5e4"/><stop offset="1" stop-color="#cfe8f7"/></linearGradient></defs>
+    <rect width="300" height="200" fill="url(#a${i})"/>
+    <rect x="130" y="30" width="30" height="110" fill="#e8c9a0"/><path d="M126 32 L145 6 L164 32Z" fill="#b8553a"/><rect x="138" y="44" width="14" height="18" rx="7" fill="#5a3a2a"/>
+    <g fill="#f0dcc0"><rect x="10" y="100" width="60" height="60"/><rect x="70" y="86" width="56" height="74"/><rect x="164" y="96" width="54" height="64"/><rect x="218" y="104" width="72" height="56"/></g>
+    <g fill="#c4623f"><path d="M6 102 L40 82 L74 102Z"/><path d="M66 88 L98 68 L130 88Z"/><path d="M160 98 L191 78 L222 98Z"/><path d="M214 106 L254 86 L294 106Z"/></g>
+    <g fill="#6e8fb0"><rect x="22" y="116" width="10" height="14"/><rect x="46" y="116" width="10" height="14"/><rect x="84" y="104" width="10" height="14"/><rect x="104" y="104" width="10" height="14"/><rect x="178" y="112" width="10" height="14"/><rect x="198" y="112" width="10" height="14"/><rect x="232" y="118" width="10" height="14"/><rect x="262" y="118" width="10" height="14"/></g>
+    <rect y="160" width="300" height="40" fill="#8a7a66"/><rect y="160" width="300" height="4" fill="#6e604f"/>`; },
+  function car(i) { return `
+    <defs><linearGradient id="a${i}" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#f2a65a"/><stop offset="1" stop-color="#f7d9a0"/></linearGradient></defs>
+    <rect width="300" height="200" fill="url(#a${i})"/>
+    <path d="M0 120 L40 70 L70 96 L110 50 L160 110 L300 110 V130 H0Z" fill="#c0633b"/><path d="M200 110 L230 60 L260 60 L290 110Z" fill="#a44e2e"/>
+    <rect y="128" width="300" height="72" fill="#6b5a4a"/><g fill="#f1e2b0"><rect x="10" y="160" width="40" height="4"/><rect x="90" y="160" width="40" height="4"/><rect x="170" y="160" width="40" height="4"/><rect x="250" y="160" width="40" height="4"/></g>
+    <path d="M70 146 Q74 120 110 118 L130 104 Q150 96 180 104 L200 118 Q232 120 236 146Z" fill="#3aa3a0"/><path d="M134 108 Q152 100 176 108 L190 118 H122Z" fill="#cbe8ee"/>
+    <circle cx="104" cy="148" r="13" fill="#1b1b1f"/><circle cx="104" cy="148" r="5" fill="#c9c9cf"/><circle cx="204" cy="148" r="13" fill="#1b1b1f"/><circle cx="204" cy="148" r="5" fill="#c9c9cf"/>
+    <rect x="72" y="134" width="164" height="4" fill="#e8f2f2" opacity=".7"/>`; },
+  function snow(i) { return `
+    <defs><linearGradient id="a${i}" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#2d6fc0"/><stop offset="1" stop-color="#a8cdf0"/></linearGradient></defs>
+    <rect width="300" height="200" fill="url(#a${i})"/>
+    <path d="M0 110 L70 40 L120 90 L180 30 L300 120 V200 H0Z" fill="#eef4fb"/><path d="M70 40 L90 60 L70 70 L50 60Z M180 30 L210 52 L180 64 L150 50Z" fill="#cfdcee"/>
+    <path d="M0 150 C80 136 200 140 300 132 V200 H0Z" fill="#ffffff"/>
+    <rect x="150" y="116" width="70" height="40" fill="#6a3d22"/><path d="M142 118 L185 90 L228 118Z" fill="#f4f7fb"/><path d="M146 120 L185 94 L224 120" stroke="#4a2a16" stroke-width="4" fill="none"/>
+    <rect x="164" y="126" width="12" height="12" fill="#ffd36a"/><rect x="194" y="126" width="12" height="12" fill="#ffd36a"/>
+    <g fill="#1f4a3a"><path d="M40 160 l14 -46 l14 46z"/><path d="M252 156 l12 -40 l12 40z"/></g>`; },
+  function party(i) { return `
+    <rect width="300" height="200" fill="#7a3b2e"/><rect width="300" height="200" fill="#f0a24a" opacity=".35"/>
+    <rect y="140" width="300" height="60" fill="#f1e6d0"/>
+    <rect x="96" y="100" width="108" height="48" rx="6" fill="#f7d6e0"/><rect x="96" y="100" width="108" height="10" rx="5" fill="#fff"/>
+    <rect x="110" y="72" width="80" height="30" rx="5" fill="#f2b6c8"/><rect x="110" y="72" width="80" height="7" rx="3" fill="#fff"/>
+    <g fill="#fff4d0"><rect x="124" y="54" width="4" height="18"/><rect x="148" y="50" width="4" height="22"/><rect x="172" y="54" width="4" height="18"/></g>
+    <g fill="#ffd24a"><ellipse cx="126" cy="50" rx="4" ry="7"/><ellipse cx="150" cy="46" rx="4" ry="7"/><ellipse cx="174" cy="50" rx="4" ry="7"/></g>
+    <circle cx="150" cy="60" r="60" fill="#ffc862" opacity=".18"/>
+    <g fill="#e2463c"><circle cx="40" cy="40" r="16"/></g><g fill="#3a8fe0"><circle cx="262" cy="46" r="16"/></g><path d="M40 56 q6 30 -4 60 M262 62 q-6 30 4 60" stroke="#f1e6d0" stroke-width="1.5" fill="none"/>`; },
+];
+const LABELS = ["Garda '78", "Dolomites", "Rimini", "Sunday", "Siena", "Route 66", "Zermatt", "Anna 6"];
+
+function photo(k, cls = "") {
+  const i = uid++;
+  return `<div class="photo ${cls}"><svg viewBox="0 0 300 200" preserveAspectRatio="xMidYMid slice">${ART[k % ART.length](i)}</svg></div>`;
+}
+function mountHTML(k, size, opts = {}) {
+  return `<div class="mount ${opts.faded ? "faded" : ""}" style="--s:${size}px">
+    <div class="no">${String(opts.no ?? (k * 7 + 3) % 80).padStart(2, "0")}</div>
+    <div class="win">${photo(k)}</div><div class="lbl">${opts.label ?? LABELS[k % LABELS.length]}</div></div>`;
+}
+function logoSVG() {
+  return `<defs><linearGradient id="lm" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#fac97a"/><stop offset="1" stop-color="#e49a2c"/></linearGradient>
+    <linearGradient id="ls" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#26346e"/><stop offset="1" stop-color="#f79646"/></linearGradient>
+    <clipPath id="lw"><rect x="15" y="17" width="34" height="24" rx="2"/></clipPath></defs>
+    <rect x="9" y="3" width="50" height="50" rx="7" fill="#8f6424"/>
+    <rect x="4" y="8" width="52" height="52" rx="7" fill="url(#lm)"/>
+    <rect x="4.75" y="8.75" width="50.5" height="50.5" rx="6.5" fill="none" stroke="#ffecc4" stroke-opacity=".5" stroke-width="1.5"/>
+    <g clip-path="url(#lw)"><rect x="15" y="17" width="34" height="24" fill="url(#ls)"/><circle cx="37" cy="32" r="4.5" fill="#ffe296"/>
+    <path d="M15 33 C22 30 30 31 36 33 S46 34 49 32 V41 H15 Z" fill="#5c283c"/><path d="M15 37 C24 35 32 36.5 40 38 S47 38 49 37 V41 H15 Z" fill="#26122a"/></g>
+    <rect x="15" y="17" width="34" height="24" rx="2" fill="none" stroke="#50290a" stroke-opacity=".7" stroke-width="1.2"/>
+    <rect x="24" y="48" width="16" height="3" rx="1.5" fill="#8f5a14" fill-opacity=".45"/>`;
+}
+const CHECK = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>`;
+const html = (el, s) => { el.insertAdjacentHTML("beforeend", s); return el.lastElementChild; };
+
+/* ============================================================ global: grain, motes, flashes */
+(function grain() {
+  const c = $("#grain"), g = c.getContext("2d"), img = g.createImageData(256, 256);
+  let s = 12345; const rnd = () => ((s = (s * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff);
+  for (let p = 0; p < img.data.length; p += 4) { const v = rnd() * 255; img.data[p] = img.data[p + 1] = img.data[p + 2] = v; img.data[p + 3] = 255; }
+  g.putImageData(img, 0, 0);
+  const url = c.toDataURL(); const div = document.createElement("div");
+  div.id = "grain"; div.style.backgroundImage = `url(${url})`; c.replaceWith(div);
+  tick((t) => { const f = Math.floor(t * FPS); div.style.backgroundPosition = `${(f * 97) % 256}px ${(f * 61) % 256}px`; });
+})();
+(function motes() {
+  const box = $("#motes"); let s = 7; const rnd = () => ((s = (s * 16807) % 2147483647) / 2147483647);
+  const ms = Array.from({ length: 46 }, () => {
+    const el = document.createElement("i"); box.appendChild(el);
+    const r = 1.5 + rnd() * 3.5; el.style.width = el.style.height = r + "px";
+    return { el, x: rnd() * 1920, y: rnd() * 1080, vx: (rnd() - .5) * 14, vy: -6 - rnd() * 14, ph: rnd() * 6.28, a: .2 + rnd() * .5 };
+  });
+  tick((t) => {
+    // only in the scenes with the projector's light: the shoebox, the logo and the ending
+    const vis = t < 10.8 ? 1 : t > 46.8 ? prog(t, 46.8, 1) : 0;
+    box.style.opacity = vis;
+    if (!vis) return;
+    ms.forEach((m) => {
+      const x = ((m.x + m.vx * t + Math.sin(t * .7 + m.ph) * 18) % 1920 + 1920) % 1920;
+      const y = ((m.y + m.vy * t) % 1080 + 1080) % 1080;
+      m.el.style.transform = `translate(${x}px, ${y}px)`;
+      m.el.style.opacity = m.a * (.6 + .4 * Math.sin(t * 1.3 + m.ph));
+    });
+  });
+})();
+/** A projector-light flash and a clack of the carousel at a cut. */
+function cut(t) {
+  A("#flash", [{ opacity: 0 }, { opacity: .85, offset: .18 }, { opacity: 0 }], t - .12, .75, "soft");
+  sfx(t - .02, "clack");
+}
+
+/* ============================================================ scene visibility */
+tick((t) => $$(".scene").forEach((s) => { s.style.visibility = t >= +s.dataset.in && t < +s.dataset.out ? "visible" : "hidden"; }));
+
+/* ============================================================ 1 · the shoebox (0 – 6) */
+{
+  const plane = $("#grid-plane");
+  for (let r = 0; r < 7; r++) for (let c = 0; c < 11; c++) {
+    const k = (r * 3 + c * 5) % ART.length;
+    html(plane, mountHTML(k, 200, { no: (r * 11 + c) % 80 }));
+  }
+  A(plane, [{ transform: "rotateX(48deg) rotateZ(-18deg) translate3d(-120px, 80px, -380px)" },
+            { transform: "rotateX(48deg) rotateZ(-14deg) translate3d(80px, -60px, -120px)" }], 0, 6.0, "lin");
+  // vivid at first, then the colour drains out as the line says so
+  A($$(".photo", plane), [{ filter: "none" }, { filter: "sepia(.6) saturate(.35) hue-rotate(-26deg) contrast(.72) brightness(1.15)" }], 3.2, 2.4, "soft");
+  A($$(".mount", plane), [{ opacity: 0, transform: "translateZ(260px)" }, { opacity: 1, transform: "translateZ(0)" }], 0, 1.4, "out", .012);
+  A("#s1 .shade", [{ opacity: .6 }, { opacity: 1 }], 0, 2, "soft");
+
+  rise($("#l1"), .35, .9, .08); sfx(.35, "whoosh");
+  rise($("#l2"), 1.55, .9, .08);
+  sink($("#l1"), 3.0); sink($("#l2"), 3.05);
+  rise($("#l3"), 3.35, .9, .08); sfx(3.3, "whoosh");
+  A("#fading", [{ filter: "blur(0px)", opacity: 1, letterSpacing: "0em" }, { filter: "blur(10px)", opacity: .12, letterSpacing: ".06em" }], 4.0, 1.6, "soft");
+  A("#l3", [{ opacity: 1 }, { opacity: 0 }], 5.45, .45, "soft");
+  A("#s1 .persp", [{ transform: "scale(1)", opacity: 1 }, { transform: "scale(1.5)", opacity: 0 }], 5.3, .75, "in");
+}
+
+/* ============================================================ 2 · logo (6 – 10.8) */
+{
+  $("#logo-icon").innerHTML = logoSVG();
+  cut(6.0);
+  A("#beam", [{ opacity: 0, transform: "rotate(-14deg)" }, { opacity: 1, transform: "rotate(0deg)", offset: .35 }, { opacity: .8, transform: "rotate(6deg)" }], 6.0, 4.8, "soft");
+  A("#logo-icon", [{ opacity: 0, transform: "translateY(60px) scale(.55) rotate(-12deg)" }, { opacity: 1, transform: "translateY(0) scale(1) rotate(0)" }], 6.05, 1.1, "back");
+  rise($("#wordmark"), 6.55, 1, .09); sfx(6.55, "chime");
+  rise($("#tagline"), 7.4, .9, .05);
+  A("#s2 .chip", [{ opacity: 0, transform: "translateY(24px) scale(.9)" }, { opacity: 1, transform: "translateY(0) scale(1)" }], 8.2, .6, "back", .12);
+  [8.2, 8.32, 8.44, 8.56].forEach((t) => sfx(t, "tick"));
+  A("#logo-group", [{ transform: "scale(1)", opacity: 1, filter: "blur(0)" }, { transform: "scale(1.12)", opacity: 0, filter: "blur(8px)" }], 10.25, .55, "in");
+}
+
+/* ============================================================ 3 · how it works (10.8 – 30) */
+{
+  cut(10.8);
+  const STEP = 4.8, T0 = 10.8;
+  // captions: in and out per step
+  ["#c1", "#c2", "#c3", "#c4"].forEach((sel, i) => {
+    const s = T0 + i * STEP;
+    const cap = $(sel);
+    A($(".step-no", cap), [{ opacity: 0, transform: "translateX(-20px)" }, { opacity: 1, transform: "translateX(0)" }], s + .15, .6);
+    rise($(".step-title", cap), s + .2, .85, .06);
+    const sub = $(".step-sub", cap) || $(".checks", cap);
+    A(sub, [{ opacity: 0, transform: "translateY(18px)" }, { opacity: 1, transform: "translateY(0)" }], s + .55, .7);
+    if (i < 3) A(cap, [{ opacity: 1, transform: "translateX(0)" }, { opacity: 0, transform: "translateX(-40px)" }], s + STEP - .35, .35, "in");
+    A($$("#progress b")[i], [{ transform: "scaleX(0)" }, { transform: "scaleX(1)" }], s, STEP, "lin");
+  });
+  A("#cap, #progress", [{ opacity: 1 }, { opacity: 0 }], 29.6, .4);
+
+  // step visuals: slide in from the right, out to the left
+  ["#v1", "#v2", "#v3", "#v4"].forEach((sel, i) => {
+    const s = T0 + i * STEP;
+    A(sel, [{ opacity: 0, transform: "translateX(120px)" }, { opacity: 1, transform: "translateX(0)" }], s + .05, .7, "out");
+    if (i < 3) A(sel, [{ opacity: 1, transform: "translateX(0)" }, { opacity: 0, transform: "translateX(-120px)" }], s + STEP - .35, .35, "in");
+    if (i > 0) sfx(s, "whoosh");
+  });
+  A("#v4", [{ opacity: 1, transform: "scale(1)" }, { opacity: 0, transform: "scale(.94)" }], 29.55, .45, "in");
+
+  /* ---- step 1: import */
+  {
+    const s = T0;
+    $("#scanscreen").innerHTML = photo(0, "faded");
+    html($("#scanslide"), mountHTML(0, 160, { faded: true }));
+    A("#scanslide", [{ transform: "translateY(-120px)", opacity: 0 }, { transform: "translateY(-30px)", opacity: 1, offset: .4 }, { transform: "translateY(60px)", opacity: 1 }], s + .3, 1.1, "inOut");
+    A("#scanslide", [{ clipPath: "inset(0 0 0 0)" }, { clipPath: "inset(0 0 100% 0)" }], s + .9, .5, "in");
+    A("#scanscreen .photo", [{ opacity: 0 }, { opacity: 1 }], s + 1.25, .3);
+    sfx(s + 1.2, "scan");
+    A("#scan-pill", [{ opacity: 0, transform: "scale(.85)" }, { opacity: 1, transform: "scale(1)" }], s + 1.3, .5, "back"); sfx(s + 1.3, "pop");
+    A("#imp-title, #imp-status, #imp-app .bar-track", [{ opacity: 0 }, { opacity: 1 }], s + 2.05, .3);
+    // the pointer goes to Import and clicks
+    A("#cursor1", [{ transform: "translate(820px, 760px)", opacity: 0 }, { transform: "translate(820px, 760px)", opacity: 1, offset: .15 }, { transform: "translate(1020px, 192px)", opacity: 1 }], s + .9, 1.0, "inOut");
+    A("#imp-btn", [{ transform: "scale(1)" }, { transform: "scale(.9)" }, { transform: "scale(1)" }], s + 1.9, .25, "soft");
+    A("#cursor1", [{ opacity: 1 }, { opacity: 0 }], s + 2.4, .3);
+    sfx(s + 1.95, "click");
+    // scans fly from the scanner into the tray
+    const grid = $("#imp-grid");
+    for (let n = 0; n < 15; n++) {
+      const th = html(grid, `<div class="thumb" style="height: 70px; width: auto">${photo((n * 3 + 1) % ART.length, "faded")}</div>`);
+      const col = n % 5, row = Math.floor(n / 5);
+      const dx = 140 - (470 + 26 + col * 117.6), dy = 520 - (150 + 196 + row * 80);
+      A(th, [{ transform: `translate(${dx}px, ${dy}px) scale(.4) rotate(${(n % 3 - 1) * 12}deg)`, opacity: 0 },
+             { transform: `translate(${dx * .5}px, ${dy - 120}px) scale(.8) rotate(${(n % 3 - 1) * 6}deg)`, opacity: 1, offset: .5 },
+             { transform: "translate(0,0) scale(1) rotate(0)", opacity: 1 }], s + 2.1 + n * .1, .7, "soft");
+      if (n % 3 === 0) sfx(s + 2.7 + n * .1, "tick");
+    }
+    A("#imp-bar", [{ transform: "scaleX(0)" }, { transform: "scaleX(1)" }], s + 2.1, 2.1, "soft");
+    tick((t) => { $("#imp-status").innerHTML = t > s + 4.2 ? `<span style="color:var(--ok)">✓ 36 scans · 14 slides grouped from brackets</span>` : `Importing <span id="imp-n">${Math.round(36 * easeInOut(prog(t, s + 2.1, 2.1)))}</span> of 36 scans…`; });
+  }
+
+  /* ---- step 2: develop */
+  {
+    const s = T0 + STEP;
+    const K = 3; // the family
+    $("#dev-faded").innerHTML = photo(K).replace(/^<div class="photo ">|<\/div>$/g, "");
+    $("#dev-vivid").innerHTML = photo(K).replace(/^<div class="photo ">|<\/div>$/g, "");
+    // three brackets: dark, normal, bright
+    const br = $("#brackets");
+    [[.45, -300, -6], [1, 0, 0], [1.9, 300, 6]].forEach(([b, x, r], j) => {
+      const el = html(br, `<div class="big-pic" style="left: 160px; top: 150px; width: 780px; height: 520px; filter: brightness(${b}) sepia(.45) saturate(.5) hue-rotate(-22deg) contrast(.78)">${photo(K)}</div>`);
+      A(el, [{ transform: `translateX(${x * .7}px) rotate(${90 + r}deg) scale(.5)`, opacity: 0 }, { transform: `translateX(${x}px) rotate(${90 + r}deg) scale(.5)`, opacity: 1 }], s + .15 + j * .1, .6, "out");
+      A(el, [{ transform: `translateX(${x}px) rotate(${90 + r}deg) scale(.5)`, opacity: 1 }, { transform: "translateX(0) rotate(90deg) scale(.66)", opacity: 0 }], s + 1.0, .6, "inOut");
+    });
+    sfx(s + 1.0, "whoosh");
+    // the fused picture appears where they meet (sideways: the scanner doesn't know which way is up)
+    A("#devpic-wrap", [{ transform: "rotate(90deg) scale(.66)" }, { transform: "rotate(90deg) scale(.66)" }], s, .01);
+    A("#devpic", [{ opacity: 0 }, { opacity: 1 }], s + 1.4, .25, "soft");
+    A("#flash", [{ opacity: 0 }, { opacity: .35, offset: .3 }, { opacity: 0 }], s + 1.35, .5, "soft");
+    sfx(s + 1.45, "pop");
+    A("#t-hdr", [{ opacity: 0, transform: "translateY(12px)" }, { opacity: 1, transform: "translateY(0)" }], s + 1.5, .4);
+    A("#t-hdr", [{ opacity: 1 }, { opacity: 0 }], s + 2.2, .25);
+    // restore: a wipe
+    A("#dev-vivid", [{ clipPath: "inset(0 100% 0 0)" }, { clipPath: "inset(0 0% 0 0)" }], s + 2.0, 1.0, "inOut");
+    A("#wipe", [{ left: "0%", opacity: 1 }, { left: "100%", opacity: 1, offset: .95 }, { left: "100%", opacity: 0 }], s + 2.0, 1.05, "inOut");
+    sfx(s + 2.0, "sweep");
+    A("#t-col", [{ opacity: 0, transform: "translateY(12px)" }, { opacity: 1, transform: "translateY(0)" }], s + 2.4, .4);
+    A("#t-col", [{ opacity: 1 }, { opacity: 0 }], s + 3.15, .25);
+    // faces found, then upright
+    [["#fb1", 78, 52, 40, 44], ["#fb2", 128, 44, 44, 48], ["#fb3", 188, 76, 34, 38]].forEach(([id, x, y, w, h], j) => {
+      const el = $(id); const k = 780 / 300;
+      Object.assign(el.style, { left: x * k + "px", top: y * k + "px", width: w * k + "px", height: h * k + "px" });
+      A(el, [{ opacity: 0, transform: "scale(1.4)" }, { opacity: 1, transform: "scale(1)" }], s + 3.05 + j * .08, .3, "back");
+      A(el, [{ opacity: 1 }, { opacity: 0 }], s + 4.1, .25);
+    });
+    sfx(s + 3.05, "tick"); sfx(s + 3.13, "tick"); sfx(s + 3.21, "tick");
+    A("#devpic-wrap", [{ transform: "rotate(90deg) scale(.66)" }, { transform: "rotate(0deg) scale(1)" }], s + 3.4, .75, "back");
+    sfx(s + 3.4, "whoosh");
+    A("#t-rot", [{ opacity: 0, transform: "translateY(12px)" }, { opacity: 1, transform: "translateY(0)" }], s + 3.5, .4);
+    // the checklist lights up in step
+    [["#k1", 1.5], ["#k2", 2.9], ["#k3", 4.05]].forEach(([id, dt]) => {
+      const row = $(id), t = $(".tick", row); t.innerHTML = CHECK; t.style.color = "#0c2014";
+      A(t, [{ background: "transparent", borderColor: "#2a2a31", transform: "scale(1)" }, { background: "#6cc28a", borderColor: "#6cc28a", transform: "scale(1.25)", offset: .5 }, { background: "#6cc28a", borderColor: "#6cc28a", transform: "scale(1)" }], s + dt, .4, "soft");
+      A($("svg", t), [{ opacity: 0 }, { opacity: 1 }], s + dt, .2);
+      A(row, [{ color: "#9b978e" }, { color: "#ebe8e2" }], s + dt, .3);
+      sfx(s + dt, "ding");
+    });
+  }
+
+  /* ---- step 3: review */
+  {
+    const s = T0 + 2 * STEP;
+    const seq = [5, 1, 2, 6, 4, 0, 7, 3];
+    const stage = $("#rv-stage");
+    const track = $("#film-track");
+    const TW = 150; // tile pitch in the filmstrip
+    seq.forEach((k, j) => {
+      html(stage, `<div class="pic abs" id="rv${j}" style="inset:0; border-radius: 6px; opacity: ${j ? 0 : 1}">${photo(k)}</div>`);
+      html(track, `<div class="ftile" style="left: ${14 + j * TW}px">${photo(k)}<div class="badge ok" id="bk${j}" style="opacity:0">✓</div></div>`);
+    });
+    $("#fsel").style.left = "10px";
+    // what happens to each slide, keyed by time
+    const keys = [
+      { t: .7, key: "Space", say: "Looks good", next: true, badge: "ok" },
+      { t: 1.4, key: "R", say: "Turn", rot: true },
+      { t: 1.95, key: "Space", say: "Looks good", next: true, badge: "ok" },
+      { t: 2.55, key: "C", say: "Copy colour from previous", copy: true },
+      { t: 3.1, key: "Space", say: "Looks good", next: true, badge: "ok" },
+      { t: 3.6, key: "X", say: "Skip", next: true, badge: "skip" },
+      { t: 4.05, key: "Space", say: "Looks good", next: true, badge: "ok" },
+    ];
+    const hud = $("#keyhud");
+    let cur = 0;
+    // stack order: the current slide on top
+    seq.forEach((_, j) => { $("#rv" + j).style.zIndex = 10 - j; });
+    const knobs = [[.58, .7], [.62, .4], [.46, .55], [.3, .3]];
+    knobs.forEach(([a], n) => { $("#kn" + (n + 1)).style.left = a * 100 + "%"; });
+    keys.forEach((k, n) => {
+      const t = s + k.t;
+      const row = html(hud, `<div class="keyrow" style="opacity:0"><span class="keycap"${k.key === "Space" ? ' style="min-width: 260px"' : ""}>${k.key}</span><span>${k.say}</span></div>`);
+      A(row, [{ opacity: 0, transform: "translateY(16px)" }, { opacity: 1, transform: "translateY(0)" }], t - .05, .18, "out");
+      A($(".keycap", row), [{ transform: "translateY(0)", boxShadow: "0 6px 0 #0b0b0d, 0 10px 30px rgba(0,0,0,.5)" }, { transform: "translateY(5px)", boxShadow: "0 1px 0 #0b0b0d, 0 4px 14px rgba(0,0,0,.5)" }, { transform: "translateY(0)", boxShadow: "0 6px 0 #0b0b0d, 0 10px 30px rgba(0,0,0,.5)" }], t, .22, "soft");
+      const nextT = n + 1 < keys.length ? s + keys[n + 1].t - .08 : s + 4.45;
+      A(row, [{ opacity: 1 }, { opacity: 0 }], nextT, .12);
+      sfx(t, "key");
+      if (k.badge) {
+        const b = $("#bk" + cur);
+        if (k.badge === "skip") { b.className = "badge skip"; b.textContent = "✕"; A(b.parentElement, [{ opacity: 1 }, { opacity: .35 }], t, .3); }
+        A(b, [{ opacity: 0, transform: "scale(.3)" }, { opacity: 1, transform: "scale(1)" }], t, .3, "back");
+      }
+      if (k.rot) A("#rv" + cur, [{ transform: "rotate(-90deg) scale(.67)" }, { transform: "rotate(0) scale(1)" }], t, .45, "back");
+      if (k.copy) knobs.forEach(([a, b], m) => A("#kn" + (m + 1), [{ left: a * 100 + "%" }, { left: b * 100 + "%" }], t + m * .04, .35, "out"));
+      if (k.next) {
+        A("#rv" + cur, [{ opacity: 1, transform: "translateX(0) scale(1)" }, { opacity: 0, transform: "translateX(-60px) scale(.96)" }], t + .05, .3, "soft");
+        cur++;
+        A("#rv" + cur, [{ opacity: 0 }, { opacity: 1 }], t + .05, .25, "soft");
+        // the selection moves onto the second tile, after that the strip scrolls under it
+        if (cur > 1) A(track, [{ transform: `translateX(${-(cur - 2) * TW}px)` }, { transform: `translateX(${-(cur - 1) * TW}px)` }], t + .05, .3, "out");
+      }
+    });
+    // the selection box moves one tile right on the first advance, then the strip scrolls under it
+    A("#fsel", [{ left: "10px" }, { left: `${10 + TW}px` }], s + .75, .3, "out");
+    tick((t) => {
+      const done = keys.filter((k) => k.next && t >= s + k.t).length;
+      $("#rv-n").textContent = 14 + done;
+      $("#rv-rate").textContent = Math.round(380 + 60 * prog(t, s, 4.8));
+      const copied = t >= s + 2.7;
+      $("#sv1").textContent = copied ? "+0.5" : "+0.2"; $("#sv2").textContent = copied ? "40" : "62";
+      $("#sv3").textContent = copied ? "+6" : "−8"; $("#sv4").textContent = copied ? "30" : "30";
+    });
+  }
+
+  /* ---- step 4: upload */
+  {
+    const s = T0 + 3 * STEP;
+    const grid = $("#up-grid"), alb = $("#alb-grid"), fly = $("#flyers");
+    const order = [0, 3, 1, 2, 4, 5, 6, 7, 3, 0, 2, 1];
+    order.forEach((k, j) => {
+      html(grid, `<div class="thumb" style="width: 122px; height: 82px">${photo(k)}</div>`);
+      html(alb, `<div class="cell"></div>`);
+    });
+    A("#cursor2", [{ transform: "translate(300px, 780px)", opacity: 0 }, { transform: "translate(300px, 780px)", opacity: 1, offset: .2 }, { transform: "translate(150px, 610px)", opacity: 1 }], s + .15, .7, "inOut");
+    A("#up-btn", [{ transform: "scale(1)" }, { transform: "scale(.92)" }, { transform: "scale(1)" }], s + .85, .25, "soft");
+    sfx(s + .9, "click");
+    A("#cursor2", [{ transform: "translate(150px, 610px)" }, { transform: "translate(170px, 640px)" }], s + 1.1, 1.6, "soft");
+    const cells = $$(".cell", alb), thumbs = $$(".thumb", grid);
+    order.forEach((k, j) => {
+      const t = s + 1.05 + j * .13;
+      const th = thumbs[j]; const col = j % 4, row = Math.floor(j / 4);
+      const x0 = col * 132, y0 = 160 + row * 92;
+      const ac = j % 3, ar = Math.floor(j / 3);
+      const x1 = 642 + ac * 144.7 + 7.3, y1 = 316 + ar * 100 + 4.9;
+      const f = html(fly, `<div class="thumb abs" style="left:0; top:0; width: 122px; height: 82px; opacity: 0">${photo(k)}</div>`);
+      A(f, [{ transform: `translate(${x0}px, ${y0}px) scale(1)`, opacity: 1 },
+            { transform: `translate(${(x0 + x1) / 2}px, ${Math.min(y0, y1) - 140}px) scale(1.1) rotate(-6deg)`, opacity: 1, offset: .5 },
+            { transform: `translate(${x1}px, ${y1}px) scale(1.12) rotate(0)`, opacity: 1, offset: .98 },
+            { transform: `translate(${x1}px, ${y1}px) scale(1.12)`, opacity: 0 }], t, .75, "inOut");
+      A(th, [{ opacity: 1 }, { opacity: .25 }], t, .2);
+      const cell = cells[j]; cell.innerHTML = photo(k);
+      A($(".photo", cell), [{ opacity: 0 }, { opacity: 1 }], t + .72, .15);
+      sfx(t + .72, "tick");
+    });
+    tick((t) => { $("#up-n").textContent = Math.round(36 * prog(t, s + 1.05, 12 * .13 + .75)); });
+    A("#up-done", [{ opacity: 0, transform: "translateY(12px)" }, { opacity: 1, transform: "translateY(0)" }], s + 3.4, .4, "back");
+    sfx(s + 3.4, "ding");
+    // the card can be cleaned now
+    A("#clean-btn", [{ background: "#1d1d22", color: "#ebe8e2" }, { background: "#f2b34b", color: "#1a1305" }], s + 3.55, .35);
+    A("#shackle", [{ transform: "translate(0,0)" }, { transform: "translate(0,-3px)" }], s + 3.55, .3, "back");
+    A("#cursor2", [{ transform: "translate(170px, 640px)" }, { transform: "translate(160px, 680px)" }], s + 3.6, .5, "inOut");
+    A("#clean-btn", [{ transform: "scale(1)" }, { transform: "scale(.92)" }, { transform: "scale(1)" }], s + 4.1, .25, "soft");
+    sfx(s + 4.12, "click");
+    tick((t) => { $("#clean-txt").textContent = t > s + 4.2 ? "Card cleaned · ready to eject" : "Clean scanner card"; });
+  }
+}
+
+/* ============================================================ 4 · every device (30 – 39.6) */
+{
+  const s = 30.0;
+  cut(s);
+  const mini = (k, cls = "") => `<div class="mini ${cls}"><div class="mtop"><span class="lg"></span><span class="ttl"></span><span class="mb"></span></div>
+    <div class="mview"><div class="pic">${photo(k)}</div></div>
+    <div class="mfilm">${[k, 1, 2, 4, 6].map((q, j) => `<div class="pic ${j === 0 ? "on" : ""}">${photo(q)}</div>`).join("")}</div></div>`;
+  const devs = [["#d-laptop", 0, "#lb-laptop"], ["#d-browser", 2, "#lb-browser"], ["#d-tablet", 1, "#lb-tablet"], ["#d-phone", 1, null], ["#d-server", null, "#lb-server"]];
+  const phoneMini = (k) => `<div class="mini"><div class="mview" style="top: 12%; bottom: 30%; left: 0; right: 0"><div class="pic" style="border-radius:0">${photo(k)}</div></div>
+    <div class="abs" style="left: 10%; right: 10%; bottom: 8%; height: 11%; border-radius: 12px; background: var(--accent)"></div>
+    <div class="abs" style="left: 10%; right: 10%; bottom: 22%; height: 4%; border-radius: 3px; background: #2b2b33"></div></div>`;
+  $("#d-laptop .scr").innerHTML = mini(0);
+  $("#d-browser .scr").innerHTML = mini(0);
+  $("#d-tablet .scr").innerHTML = mini(0);
+  $("#d-phone .scr").innerHTML = phoneMini(0);
+  rise($("#h4a"), s + .2, .9, .07);
+  const enter = [
+    ["#d-laptop", "translate(-160px, 40px)", .35], ["#d-browser", "translate(160px, -30px)", .65],
+    ["#d-tablet", "translate(0, 200px)", .95], ["#d-phone", "translate(-60px, 240px) rotate(-8deg)", 1.15], ["#d-server", "translate(160px, 80px)", 1.35],
+  ];
+  enter.forEach(([id, from, dt]) => {
+    A(id, [{ opacity: 0, transform: `${from} scale(.92)` }, { opacity: 1, transform: "translate(0,0) scale(1)" }], s + dt, .9, "out");
+    sfx(s + dt, "whoosh-soft");
+  });
+  [["#lb-laptop", 1.1], ["#lb-browser", 1.4], ["#lb-tablet", 1.7], ["#lb-server", 2.0]].forEach(([id, dt]) => A(id, [{ opacity: 0, transform: "translateY(10px)" }, { opacity: 1, transform: "translateY(0)" }], s + dt, .5));
+  // one edit on the phone shows up on every screen: the picture everywhere changes to the next slide
+  const swapT = s + 3.3;
+  const targets = ["#d-laptop", "#d-browser", "#d-tablet", "#d-phone"];
+  targets.forEach((id, j) => {
+    const view = $(id + " .mview .pic");
+    const nxt = html(view, photo(4));
+    const d = j === 3 ? 0 : .45 + j * .08;
+    A(nxt, [{ opacity: 0, transform: "scale(1.06)" }, { opacity: 1, transform: "scale(1)" }], swapT + d, .45, "out");
+    const badge = html($(id), `<div class="syncbadge" style="opacity:0">${CHECK}</div>`);
+    Object.assign(badge.style, id === "#d-phone" ? { right: "-14px", top: "-14px" } : { right: "-16px", top: "-16px" });
+    A(badge, [{ opacity: 0, transform: "scale(.3)" }, { opacity: 1, transform: "scale(1)" }], swapT + d + .1, .35, "back");
+    A(badge, [{ opacity: 1 }, { opacity: 0 }], s + 5.6, .3);
+    sfx(swapT + d + .1, j === 3 ? "click" : "ding");
+  });
+  // a tap on the phone
+  const tap = html($("#d-phone"), `<div class="abs" style="left: 50%; bottom: 13%; width: 70px; height: 70px; margin-left: -35px; border-radius: 50%; border: 3px solid #fff; opacity: 0"></div>`);
+  A(tap, [{ opacity: .9, transform: "scale(.4)" }, { opacity: 0, transform: "scale(1.4)" }], swapT - .1, .5, "out");
+
+  // the library in the middle, with every device wired to it
+  const links = $("#links");
+  const ends = [[530, 500], [1420, 480], [1100, 730], [690, 765], [1690, 745]];
+  ends.forEach(([x, y], j) => {
+    const mx = (x + 910) / 2, my = (y + 540) / 2 - 60;
+    const p = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    p.setAttribute("d", `M910 540 Q ${mx} ${my} ${x} ${y}`); links.appendChild(p);
+    A(p, [{ opacity: 0, strokeDashoffset: 0 }, { opacity: .9, strokeDashoffset: -44, offset: .2 }, { opacity: .9, strokeDashoffset: -220 }], s + 5.9 + j * .06, 3.6, "lin");
+  });
+  links.style.zIndex = 5; $("#lib-node").style.zIndex = 6;
+  A("#d-laptop, #d-browser, #d-tablet, #d-phone, #d-server", [{ filter: "brightness(1)" }, { filter: "brightness(.45)" }], s + 5.7, .6, "soft");
+  A("#lib-node", [{ opacity: 0, transform: "scale(.3) rotate(-20deg)" }, { opacity: 1, transform: "scale(1) rotate(0)" }], s + 5.75, .6, "back");
+  sfx(s + 5.75, "chime");
+  sink($("#h4a"), s + 5.6);
+  rise($("#h4b"), s + 5.85, .9, .07);
+  A("#s4 > .dev, #s4 > .dev-label, #links, #lib-node", [{ opacity: 1 }, { opacity: 0 }], 39.2, .4);
+  A("#h4b", [{ opacity: 1 }, { opacity: 0 }], 39.2, .4);
+}
+
+/* ============================================================ 5 · more (39.6 – 46.8) */
+{
+  const s = 39.6;
+  cut(s);
+  rise($("#h5"), s + .15, .9, .07);
+  A(".card", [{ opacity: 0, transform: "translateY(60px) scale(.94)" }, { opacity: 1, transform: "translateY(0) scale(1)" }], s + .4, .8, "out", .14);
+  for (let j = 0; j < 6; j++) sfx(s + .4 + j * .14, "tick");
+  const T = s + 1.4; // the little animations start once the cards are in
+
+  // learns: three sliders glide to where they were learnt
+  {
+    const a = $("#f1a");
+    a.innerHTML = `<div class="abs" style="left: 34px; right: 34px; top: 36px">${["Exposure", "Warmth", "Restore fade"].map((n, j) => `
+      <div class="slider" style="margin-bottom: 26px"><div class="row" style="font-size: 17px"><span>${n}</span><span class="mono accent" style="opacity:0" id="lr${j}">learnt</span></div><div class="trk"><div class="knob" id="lk${j}" style="left: 50%"></div></div></div>`).join("")}</div>`;
+    [[.5, .68], [.5, .31], [.5, .8]].forEach(([a0, a1], j) => {
+      A("#lk" + j, [{ left: a0 * 100 + "%" }, { left: a1 * 100 + "%" }], T + .1 + j * .15, .9, "out");
+      A("#lr" + j, [{ opacity: 0 }, { opacity: 1 }], T + .5 + j * .15, .3);
+    });
+  }
+  // people
+  {
+    const a = $("#f2a");
+    a.innerHTML = `<div class="abs" style="inset: 0">${photo(3)}</div>
+      <div class="facebox abs" id="pf" style="left: 124px; top: 26px; width: 68px; height: 72px"></div>
+      <div class="tag abs" id="pn" style="left: 96px; top: 112px; height: 38px; font-size: 18px"><span id="pname"></span><span class="accent" style="opacity: .9">|</span></div>`;
+    A("#pf", [{ opacity: 0, transform: "scale(1.5)" }, { opacity: 1, transform: "scale(1)" }], T + .2, .4, "back");
+    A("#pn", [{ opacity: 0, transform: "translateY(8px)" }, { opacity: 1, transform: "translateY(0)" }], T + .5, .3);
+    const nm = "Grandpa Leo";
+    tick((t) => { $("#pname").textContent = nm.slice(0, Math.round(nm.length * prog(t, T + .6, .9))); });
+  }
+  // dust: specks pop away
+  {
+    const a = $("#f3a");
+    a.innerHTML = `<div class="abs" style="inset: 0">${photo(1)}</div>`;
+    let sd = 3; const rnd = () => ((sd = (sd * 16807) % 2147483647) / 2147483647);
+    for (let j = 0; j < 26; j++) {
+      const r = 2 + rnd() * 5;
+      const sp = html(a, `<div class="speck" style="left:${rnd() * 520}px; top:${rnd() * 200}px; width:${r}px; height:${r}px"></div>`);
+      A(sp, [{ opacity: 1, transform: "scale(1)" }, { opacity: 0, transform: "scale(0)" }], T + .2 + rnd() * 1.3, .25, "in");
+    }
+    const scratch = html(a, `<div class="abs" style="left: 330px; top: -10px; width: 2px; height: 230px; background: rgba(255,255,240,.7); transform: rotate(14deg)"></div>`);
+    A(scratch, [{ opacity: 1 }, { opacity: 0 }], T + 1.0, .5);
+  }
+  // signs → a pin on the map
+  {
+    const a = $("#f4a");
+    a.innerHTML = `<div class="abs" style="inset: 0; background: #1b2530">
+        <svg class="abs" style="inset: 0" width="100%" height="100%" viewBox="0 0 520 208" preserveAspectRatio="none"><path d="M0 150 C60 120 120 170 200 140 S320 90 380 120 S470 160 520 130 V208 H0Z" fill="#23384a"/><path d="M40 0 C80 60 60 120 140 208 M300 0 C330 80 400 110 520 90" stroke="#2f4a60" stroke-width="3" fill="none"/></svg></div>
+      <div class="abs" id="sign" style="left: 40px; top: 50px; padding: 14px 18px; border-radius: 6px; background: #1c4f8e; border: 3px solid #fff; color: #fff; font: 800 22px Inter; letter-spacing: .06em; line-height: 1.15">BENVENUTI<br>A VENEZIA</div>
+      <div class="abs" id="scanline" style="left: 30px; width: 250px; top: 44px; height: 3px; background: var(--accent); box-shadow: 0 0 16px var(--accent)"></div>
+      <div class="abs" id="pin" style="left: 380px; top: 58px"><svg width="44" height="56" viewBox="0 0 24 30"><path d="M12 29 C12 29 22 18 22 11 A10 10 0 0 0 2 11 C2 18 12 29 12 29Z" fill="#e2675c"/><circle cx="12" cy="11" r="4" fill="#fff"/></svg></div>
+      <div class="tag abs" id="place" style="left: 318px; top: 128px; height: 36px; font-size: 17px">Venice, Italy</div>`;
+    A("#scanline", [{ transform: "translateY(0)", opacity: 1 }, { transform: "translateY(80px)", opacity: 1, offset: .9 }, { transform: "translateY(80px)", opacity: 0 }], T + .1, .8, "inOut");
+    A("#pin", [{ opacity: 0, transform: "translateY(-50px)" }, { opacity: 1, transform: "translateY(0)" }], T + .9, .5, "back");
+    A("#place", [{ opacity: 0, transform: "translateY(10px)" }, { opacity: 1, transform: "translateY(0)" }], T + 1.2, .4);
+  }
+  // tags
+  {
+    const a = $("#f5a");
+    a.innerHTML = `<div class="abs" style="left: 30px; right: 30px; top: 40px; display: flex; flex-wrap: wrap; gap: 12px">
+      ${["beach", "sunset", "family", "Kodachrome", "Aug 1978", "Rimini"].map((n) => `<span class="sug"><span class="ck">✓</span>${n}</span>`).join("")}</div>`;
+    A($$(".sug", a), [{ opacity: 0, transform: "scale(.7)" }, { opacity: 1, transform: "scale(1)" }], T + .1, .4, "back", .16);
+  }
+  // private
+  {
+    const a = $("#f6a");
+    a.innerHTML = `<div class="abs" style="left: 0; right: 0; top: 26px; display: flex; justify-content: center">
+      <div id="shield" style="width: 104px; height: 104px; border-radius: 30px; display: grid; place-items: center; background: radial-gradient(circle, rgba(242,179,75,.22), transparent 70%)">
+      <svg width="56" height="56" viewBox="0 0 24 24" fill="none" stroke="#f2b34b" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg></div></div>
+      <div class="abs" style="left: 0; right: 0; top: 146px; display: flex; justify-content: center; gap: 10px">${["On-device AI", "No account", "Your own Immich"].map((n) => `<span class="sug" style="height: 36px; font-size: 17px">${n}</span>`).join("")}</div>`;
+    A($$(".sug", a), [{ opacity: 0, transform: "translateY(10px)" }, { opacity: 1, transform: "translateY(0)" }], T + .6, .4, "out", .12);
+    A("#shield", [{ transform: "scale(.6)", opacity: 0 }, { transform: "scale(1)", opacity: 1 }], T + .2, .6, "back");
+    A("#shield", [{ boxShadow: "0 0 0 0 rgba(242,179,75,.5)" }, { boxShadow: "0 0 0 40px rgba(242,179,75,0)" }], T + .8, 1.2, "out");
+  }
+  A(".card", [{ opacity: 1, transform: "translateY(0) scale(1)" }, { opacity: 0, transform: "translateY(-30px) scale(.96)" }], 46.25, .45, "in", .04);
+  A("#h5", [{ opacity: 1 }, { opacity: 0 }], 46.3, .4);
+}
+
+/* ============================================================ 6 · outro (46.8 – end) */
+{
+  const s = 46.8;
+  cut(s);
+  $("#logo-icon-2").innerHTML = logoSVG().replace(/id="l(m|s|w)"/g, 'id="l$1-2"').replace(/url\(#l(m|s|w)\)/g, "url(#l$1-2)");
+  const plane = $("#grid-plane-2");
+  for (let r = 0; r < 7; r++) for (let c = 0; c < 11; c++) html(plane, mountHTML((r * 3 + c * 5) % ART.length, 200, { no: (r * 11 + c) % 80 }));
+  A(plane, [{ transform: "rotateX(48deg) rotateZ(14deg) translate3d(80px, 40px, -300px)" }, { transform: "rotateX(48deg) rotateZ(18deg) translate3d(-60px, -60px, -160px)" }], s, 6.6, "lin");
+  A("#logo-icon-2", [{ opacity: 0, transform: "scale(.5) rotate(-10deg)" }, { opacity: 1, transform: "scale(1) rotate(0)" }], s + .15, 1, "back");
+  rise($("#wm2"), s + .5, 1, .09);
+  rise($("#tl2"), s + 1.2, .9, .06); sfx(s + 1.2, "chime");
+  A("#plat .chip", [{ opacity: 0, transform: "translateY(20px)" }, { opacity: 1, transform: "translateY(0)" }], s + 2.0, .6, "back", .1);
+  A("#oss", [{ opacity: 0, transform: "translateY(12px)" }, { opacity: 1, transform: "translateY(0)" }], s + 2.6, .7);
+  A("#fadeout", [{ opacity: 0 }, { opacity: 1 }], DURATION - .8, .8, "soft");
+}
+
+/* ============================================================ player */
+function seek(t) {
+  anims.forEach((a) => { a.currentTime = t * 1000; });
+  ticks.forEach((fn) => fn(t));
+}
+window.seek = seek;
+window.DURATION = DURATION;
+window.FPS = FPS;
+window.BPM = BPM;
+window.SFX = SFX.sort((a, b) => a[0] - b[0]);
+window.ready = document.fonts.ready.then(() => true);
+
+const params = new URLSearchParams(location.search);
+if (params.has("render")) {
+  document.body.classList.add("render");
+  seek(+params.get("t") || 0);
+} else {
+  // preview: fit the 1920×1080 stage to the window and play
+  const fit = () => { $("#stage").style.transform = `scale(${Math.min(innerWidth / 1920, innerHeight / 1080)})`; };
+  addEventListener("resize", fit); fit();
+  let t = +params.get("t") || 0, playing = true, last = performance.now();
+  addEventListener("keydown", (e) => {
+    if (e.code === "Space") playing = !playing;
+    if (e.code === "ArrowRight") t = Math.min(DURATION, t + 1);
+    if (e.code === "ArrowLeft") t = Math.max(0, t - 1);
+  });
+  const hud = $("#hud");
+  const loop = (now) => {
+    if (playing) t += (now - last) / 1000;
+    if (t > DURATION) t = 0;
+    last = now; seek(t);
+    hud.textContent = `${t.toFixed(2)} s · space pause · ←/→ scrub`;
+    requestAnimationFrame(loop);
+  };
+  window.ready.then(() => requestAnimationFrame((n) => { last = n; loop(n); }));
+}
+</script>
+</body>
+</html>
