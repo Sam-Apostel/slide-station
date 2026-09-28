@@ -25,8 +25,9 @@ http://localhost:8080. `/app/` serves `frontend/dist-web`, so build that first
 ## Railway
 
 Service `site` in the `slide-station` project, deployed from this repository on every push to
-main that touches the paths in `railway.json` (config file: `site/railway.json`; the Dockerfile
-builds from the repository root). A volume at `/data` keeps the waitlist.
+main that touches `site/`, `frontend/`, `slidestation/models/` or the READMEs (the service's watch
+paths). Its settings live on the service: Dockerfile `site/Dockerfile` (it builds from the
+repository root), healthcheck `/healthz`. A volume at `/data` keeps the waitlist.
 
 | Variable | |
 | --- | --- |
