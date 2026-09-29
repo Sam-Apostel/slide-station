@@ -518,7 +518,7 @@ def add_ages(sid: str, gid: str, rgb: np.ndarray) -> None:
 
 
 def agglomerate(emb: np.ndarray, clusters: list[list[int]], rejected: dict[int, set[int]] | None = None,
-                threshold: float = SAME_PERSON) -> list[list[int]]:
+                threshold: float = SAME_PERSON, slides: list | None = None) -> list[list[int]]:
     """Average-linkage clustering of unit vectors on cosine similarity.
 
     `clusters` are the existing people (lists of indices into emb): they keep their members and
@@ -526,7 +526,8 @@ def agglomerate(emb: np.ndarray, clusters: list[list[int]], rejected: dict[int, 
     Groups then merge, most similar pair first, while the average similarity between their members
     is at least `threshold` (for unit vectors that is sum_a . sum_b / (n_a n_b)). `rejected[i]` holds
     the existing clusters (by position) face i was taken out of: a group holding it never joins them.
-    Returns the existing clusters (same order, possibly grown), then the new groups."""
+    `slides[i]` is the slide face i is on: two groups with a face on the same slide never join (one
+    person is on a slide once). Returns the existing clusters (same order, possibly grown), then the new groups."""
     emb = np.asarray(emb, np.float64)
     rejected = rejected or {}
     taken = {i for c in clusters for i in c}
@@ -538,6 +539,13 @@ def agglomerate(emb: np.ndarray, clusters: list[list[int]], rejected: dict[int, 
     S = np.stack([emb[m].sum(0) if m else np.zeros(dim) for m in members])
     n = np.array([len(m) for m in members], np.float64)
     forbid = [set() if g < fixed else set(rejected.get(members[g][0], ())) for g in range(k)]
+    if slides is not None:
+        there: dict = {}  # slide -> the groups with a face on it
+        for g, m in enumerate(members):
+            for i in m:
+                there.setdefault(slides[i], set()).add(g)
+        for g in range(fixed, k):
+            forbid[g] |= there[slides[members[g][0]]] - {g}
     alive = n > 0
     free = np.zeros(k, bool)
     free[fixed:] = True
@@ -572,6 +580,9 @@ def agglomerate(emb: np.ndarray, clusters: list[list[int]], rejected: dict[int, 
         rows = np.flatnonzero(free)
         vals = S[rows] @ S[keep] / (n[rows] * n[keep])
         for j, rr in enumerate(rows):
+            if gone in forbid[rr]:  # kept apart from the gone group: from the one it went into too
+                forbid[rr].discard(gone)
+                forbid[rr].add(keep)
             if rr == keep or keep in forbid[rr]:
                 vals[j] = -np.inf
         up = vals > best_v[rows]
@@ -639,7 +650,10 @@ def all_faces() -> dict[str, dict]:
 def refresh() -> dict:
     """Bring people.json up to date with the faces on disk: faces that are gone leave their person
     (an unnamed person left empty goes too), new faces join the person they resemble or form new ones.
-    Faces with no description (marked by hand, no face found) stay with whoever they were put with."""
+    Faces with no description (marked by hand, no face found) stay with whoever they were put with.
+    Nobody is on a slide twice: of two faces of theirs on one slide the other one is clustered again
+    (_once_a_slide). A face with someone it was taken out of (a name or merge joined them again; put
+    back by hand, it isn't rejected any more) leaves them again."""
     with _lock:
         d = load_people()
         faces = all_faces()
@@ -647,13 +661,15 @@ def refresh() -> dict:
         index = {f: i for i, f in enumerate(ids)}
         pids = list(d["people"])
         at = {p: i for i, p in enumerate(pids)}
-        clusters = [[index[f] for f in d["people"][p]["faces"] if f in index] for p in pids]
-        rejected = {index[f]: {at[p] for p in ps if p in at} for f, ps in d["rejected"].items() if f in index}
         emb = np.stack([faces[f]["emb"] for f in ids]) if ids else np.zeros((0, 128))
-        groups = agglomerate(emb, clusters, rejected)
+        slides = [(faces[f]["sid"], faces[f]["gid"]) for f in ids]
+        own = {p: [f for f in d["people"][p]["faces"] if p not in d["rejected"].get(f, ())] for p in pids}
+        clusters = [_once_a_slide({**d["people"][p], "faces": own[p]}, faces, index, emb) for p in pids]
+        rejected = {index[f]: {at[p] for p in ps if p in at} for f, ps in d["rejected"].items() if f in index}
+        groups = agglomerate(emb, clusters, rejected, slides=slides)
         people = {}
         for p, g in zip(pids, groups):
-            blind = [f for f in d["people"][p]["faces"] if f in faces and f not in index]
+            blind = [f for f in own[p] if f in faces and f not in index]
             if g or blind or d["people"][p].get("name") or d["people"][p].get("birthday") or d["people"][p].get("immich"):
                 people[p] = {**d["people"][p], "faces": [ids[i] for i in g] + blind}
                 if "sure" in people[p]:
@@ -667,6 +683,36 @@ def refresh() -> dict:
         if new != d:
             save_people(new)
         return new
+
+
+def _once_a_slide(p: dict, faces: dict[str, dict], index: dict[str, int], emb: np.ndarray) -> list[int]:
+    """A person's described faces (as indices into emb), one per slide: where they have two or more
+    on a slide, the ones put with them by hand stay (the user said so, all of them), else the one most
+    like the rest of their faces. A person can't be on a slide twice - clustering and names from Immich
+    joined them wrongly - so the others go back to be clustered again (not rejected: no one said they
+    aren't them, and clustering keeps them off a slide the person is on)."""
+    sure = set(p.get("sure", ()))
+    by: dict[tuple, list[str]] = {}
+    for f in p["faces"]:
+        if f in faces:
+            by.setdefault((faces[f]["sid"], faces[f]["gid"]), []).append(f)
+    members = [index[f] for f in p["faces"] if f in index]
+    if all(len(fs) == 1 for fs in by.values()):
+        return members
+    total = emb[members].sum(0) if members else None
+    out = set()
+    for fs in by.values():
+        if len(fs) == 1:
+            out.update(fs)
+        elif any(f in sure for f in fs):
+            out.update(f for f in fs if f in sure)
+        else:
+            known = [f for f in fs if f in index]
+            if known and len(members) > len(known):
+                out.add(max(known, key=lambda f: float(emb[index[f]] @ (total - emb[index[f]]))))
+            else:  # they are all the person has: nothing to go by
+                out.update(fs)
+    return [index[f] for f in p["faces"] if f in index and f in out]
 
 
 def _edit(fn) -> dict:
@@ -742,6 +788,11 @@ def _merge(d: dict, into: str, others: list[str]) -> None:
             target.pop("ignored", None)
         for f, ps in d["rejected"].items():
             d["rejected"][f] = sorted({into if x == p else x for x in ps})
+        for f in gone["faces"]:  # the user joined them: these faces are `into` after all
+            if into in d["rejected"].get(f, ()):
+                d["rejected"][f] = [x for x in d["rejected"][f] if x != into]
+                if not d["rejected"][f]:
+                    del d["rejected"][f]
 
 
 def merge(into: str, others: list[str]) -> dict:

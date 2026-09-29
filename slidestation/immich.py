@@ -291,8 +291,8 @@ class Immich:
         "person": {"id", "name"} | None, "sourceType"}]."""
         return self._people_check(self.client.get(self.base + "/faces", params={"id": asset_id})).json()
 
-    def create_person(self, name: str, birth_date: str | None = None) -> dict:
-        body = {"name": name, **({"birthDate": birth_date} if birth_date else {})}
+    def create_person(self, name: str = "", birth_date: str | None = None) -> dict:
+        body = {**({"name": name} if name else {}), **({"birthDate": birth_date} if birth_date else {})}
         return self._people_check(self.client.post(self.base + "/people", json=body)).json()
 
     def update_person(self, person_id: str, **fields) -> None:

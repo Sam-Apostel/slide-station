@@ -31,6 +31,7 @@ export class Report {
   assigned = 0; // faces put on their person
   added = 0; // faces added by hand
   removed = 0; // manual faces that doubled one Immich found
+  freed = 0; // faces taken off an Immich person they aren't
   birthdays = 0;
   waiting = 0; // slides whose faces Immich hasn't looked for yet
   tags = 0; // People/ tags taken off
@@ -48,6 +49,7 @@ export class Report {
           (this.added ? ` (${this.added} Immich hadn't found)` : ""),
       );
     if (this.removed) parts.push(`${this.removed} doubled faces removed`);
+    if (this.freed) parts.push(`${this.freed} faces taken off people they aren't`);
     if (this.birthdays) parts.push(`${this.birthdays} birthdays shared`);
     if (this.tags) parts.push("the People tags taken off");
     if (this.waiting) parts.push(`${this.waiting} slides still waiting for Immich's face detection: sync again later`);
@@ -127,6 +129,7 @@ export async function sync(client: Immich, slides: Slide[], people: PeopleStore,
 
   // --- what Immich has on each slide, paired with ours
   const found = new Map<string, ImmichFace>(); // our face id -> its Immich face
+  const together = new Map<string, string[]>(); // our face id -> all our faces on its slide
   const lone: [Slide, string][] = []; // our faces Immich didn't find
   const doubles = new Map<string, ImmichFace[]>(); // our face id -> manual Immich faces doubling its detected one
   const faceless = new Set<string>(); // assets Immich has no faces on at all
@@ -137,6 +140,7 @@ export async function sync(client: Immich, slides: Slide[], people: PeopleStore,
     if (!theirs.length) faceless.add(s.asset);
     const [pairs, alone, extra] = match(s.faces, theirs);
     for (const [k, v] of pairs) found.set(k, v);
+    for (const [fid] of s.faces) together.set(fid, s.faces.map(([x]) => x));
     lone.push(...alone.map((fid): [Slide, string] => [s, fid]));
     for (const f of extra) {
       // hang each double on the paired face it lies on
@@ -157,6 +161,14 @@ export async function sync(client: Immich, slides: Slide[], people: PeopleStore,
     return ((id && theirsById.get(id)?.name) || "").trim();
   };
   const linked = (link?: ImmichLink) => (link?.id ? theirsById.get(link.id) : undefined);
+  /** Immich has this face on someone it isn't: someone the user took it off here, or someone with
+   *  another face on this slide here (immich_people.sync's wrong). */
+  const wrong = (fid: string, f: ImmichFace, d: PeopleFile, owner: Map<string, string>) => {
+    const there = immichName(f);
+    if (!there) return false;
+    if ((d.rejected[fid] ?? []).some((x) => same(d.people[x]?.name, there))) return true;
+    return (together.get(fid) ?? []).some((g) => owner.get(g) !== owner.get(fid) && same(d.people[owner.get(g) ?? ""]?.name, there));
+  };
 
   // --- names from Immich: a rename there since the last sync, and unnamed people of ours
   let d = await people.load();
@@ -171,9 +183,10 @@ export async function sync(client: Immich, slides: Slide[], people: PeopleStore,
   for (const [pid, p] of Object.entries(d.people)) {
     if (p.name || p.ignored) continue; // the ignored are left alone
     const votes = new Map<string, number>();
-    for (const [fid, f] of found) if (owner.get(fid) === pid && immichName(f)) add(votes, immichName(f));
+    for (const [fid, f] of found) if (owner.get(fid) === pid && immichName(f) && !wrong(fid, f, d, owner)) add(votes, immichName(f));
     const best = top(votes);
-    if (best && best[1] >= 2 && best[1] >= PULL * total(votes)) await renameHere(people, pid, best[0], rep);
+    const refused = best && p.faces.some((fid) => (d.rejected[fid] ?? []).some((x) => same(d.people[x]?.name, best[0]))); // it would take them back
+    if (best && best[1] >= 2 && best[1] >= PULL * total(votes) && !refused) await renameHere(people, pid, best[0], rep);
   }
   d = await people.load();
   owner = owners(d);
@@ -263,15 +276,24 @@ export async function sync(client: Immich, slides: Slide[], people: PeopleStore,
   }
 
   // --- the faces themselves
+  const spare = new Map<string | undefined, string>(); // our unnamed person -> the Immich person their faces go to
   for (const [fid, f] of found) {
     const pid = owner.get(fid);
-    if (!pid || !target.has(pid)) continue;
-    const into = target.get(pid)!;
     const was = personOf(f);
     const now = was !== undefined && merged.has(was) ? merged.get(was) : was;
+    if (!pid || !target.has(pid)) {
+      if (now && wrong(fid, f, d, owner)) {
+        // onto an unnamed Immich person, one per person here
+        if (!spare.has(pid)) spare.set(pid, (await client.createPerson()).id);
+        await client.assignFace(f.id, spare.get(pid)!);
+        rep.freed++;
+      }
+      continue;
+    }
+    const into = target.get(pid)!;
     if (now !== into) {
       const there = immichName(f);
-      if (there && !same(there, d.people[pid].name)) {
+      if (there && !same(there, d.people[pid].name) && !wrong(fid, f, d, owner)) {
         rep.conflicts.push(`a face of ${d.people[pid].name} is ${there} there`);
         continue;
       }

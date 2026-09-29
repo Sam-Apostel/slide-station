@@ -1392,7 +1392,10 @@ Opt-in (`people_enabled`, Settings → "Recognise people"), desktop / server app
   linkage on cosine similarity with SFace's recommended threshold 0.363 (for unit vectors the average
   pairwise similarity of two groups is `sum_a · sum_b / (n_a n_b)`, so groups are just running
   sums). Existing people keep their faces and never merge with each other automatically (that's the
-  user's call); new faces join them or form new people. `people.json` = `{"people": {pid: {"name",
+  user's call); new faces join them or form new people. Nobody is on a slide twice: two groups with
+  a face on the same slide never join, and where a person has two faces on one slide anyway (a merge,
+  a name that joined two people) `_once_a_slide` keeps the `sure` one, else the one most like the
+  rest, and the other is clustered again (not rejected). `people.json` = `{"people": {pid: {"name",
   "faces", "birthday"?, "immich"?, "ignored"?}}, "rejected": {face: [pids]}, "next"}`; `immich` = `{"id", "name"}`,
   the Immich person last synced with and the name both had then (a merge keeps it). Unnamed people left without faces disappear; named
   ones stay.
@@ -1469,9 +1472,13 @@ Opt-in (`people_enabled`, Settings → "Recognise people"), desktop / server app
   "manual", which Immich's re-detection keeps) unless the asset has no faces and was uploaded in
   the last hour (its face detection may be pending; job queues need an admin key); a manual face
   lying on a detected one is deleted. Birthdays fill the empty side (a year or year-month here agrees
-  with any date in it). A name or birthday that differs on both sides, a face on a differently named
-  Immich person, or a person whose faces Immich mostly has under another name: left alone, listed in
-  the job message. Last, the `People/<name>` tags earlier versions sent come off our slides (and
+  with any date in it). What the user said here beats Immich's recognition: a face on an Immich
+  person it was taken out of here (`rejected`), or on someone who has another face on that slide
+  here, doesn't vote for a name, an unnamed person never takes the name of someone one of their faces
+  was taken out of, and the face moves in Immich - to its named person, else to a fresh unnamed Immich
+  person (one per person of ours). Other than that, a name or birthday that differs on both sides, a
+  face on a differently named Immich person, or a person whose faces Immich mostly has under another
+  name: left alone, listed in the job message. Last, the `People/<name>` tags earlier versions sent come off our slides (and
   empty ones are deleted). Uploading no longer sends names: Immich hasn't looked at a fresh upload.
 - **Browser version:** ported (§4c "Suggestion models in the browser"): the same faces.json and
   people.json. **Not ported:** the native app (Apple's Vision framework is the route there).

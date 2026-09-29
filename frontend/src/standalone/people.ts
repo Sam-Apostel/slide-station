@@ -74,14 +74,16 @@ export function recordFaces(
  * Average-linkage clustering of unit vectors on cosine similarity (people.agglomerate): the existing
  * people keep their members and never merge with each other; every other face starts alone; groups
  * merge, most similar pair first, while the average similarity of their members is at least
- * `threshold`. `rejected[i]`: the existing clusters face i was taken out of. Returns the existing
- * clusters (same order), then the new groups.
+ * `threshold`. `rejected[i]`: the existing clusters face i was taken out of. `slides[i]`: the slide
+ * face i is on; two groups with a face on the same slide never join (one person is on a slide once).
+ * Returns the existing clusters (same order), then the new groups.
  */
 export function agglomerate(
   emb: Float32Array[],
   clusters: number[][],
   rejected: Map<number, Set<number>> = new Map(),
   threshold = SAME_PERSON,
+  slides?: string[],
 ): number[][] {
   const taken = new Set(clusters.flat());
   const members = [
@@ -101,6 +103,13 @@ export function agglomerate(
   });
   const n = members.map((m) => m.length);
   const forbid = members.map((m, g) => new Set(g < fixed ? [] : (rejected.get(m[0]) ?? [])));
+  if (slides) {
+    const there = new Map<string, Set<number>>(); // slide -> the groups with a face on it
+    members.forEach((m, g) => {
+      for (const i of m) there.set(slides[i], (there.get(slides[i]) ?? new Set()).add(g));
+    });
+    for (let g = fixed; g < k; g++) for (const x of there.get(slides[members[g][0]])!) if (x !== g) forbid[g].add(x);
+  }
   const alive = n.map((x) => x > 0);
   const free = members.map((_, g) => g >= fixed);
   const bestV = new Array<number>(k).fill(-Infinity);
@@ -133,6 +142,7 @@ export function agglomerate(
     // the other groups' similarity to the merged one changed; their best may have moved
     const left = free.flatMap((f, i) => (f ? [i] : []));
     for (const rr of left) {
+      if (forbid[rr].delete(gone)) forbid[rr].add(keep); // kept apart from the gone group: from the one it went into too
       let v = sim(rr, keep) / (n[rr] * n[keep]);
       if (rr === keep || forbid[rr].has(keep)) v = -Infinity;
       if (v > bestV[rr]) [bestV[rr], bestC[rr]] = [v, keep];
@@ -152,22 +162,24 @@ export const emptyPeople = (): PeopleFile => ({ people: {}, rejected: {}, next: 
 /**
  * people.refresh: people.json brought up to date with the faces (in library order): faces that are
  * gone leave their person (an unnamed person left empty goes), new faces join the person they
- * resemble or form new people. `changed`: whether the file needs writing.
+ * resemble or form new people; nobody is on a slide twice (onceASlide). `changed`: whether the file
+ * needs writing.
  */
 export function refresh(d: PeopleFile, faces: Map<string, Float32Array>): { d: PeopleFile; changed: boolean } {
   const ids = [...faces.keys()];
   const index = new Map(ids.map((f, i) => [f, i]));
   const pids = Object.keys(d.people);
   const at = new Map(pids.map((p, i) => [p, i]));
-  const clusters = pids.map((p) => d.people[p].faces.filter((f) => index.has(f)).map((f) => index.get(f)!));
+  const emb = ids.map((f) => faces.get(f)!);
+  // a face with someone it was taken out of (a name or merge joined them again) leaves them again
+  const back = (p: string, f: string) => (d.rejected[f] ?? []).includes(p);
+  const clusters = pids.map((p) =>
+    onceASlide(d.people[p].faces.filter((f) => index.has(f) && !back(p, f)).map((f) => index.get(f)!), ids, emb),
+  );
   const rejected = new Map<number, Set<number>>();
   for (const [f, ps] of Object.entries(d.rejected))
     if (index.has(f)) rejected.set(index.get(f)!, new Set(ps.filter((p) => at.has(p)).map((p) => at.get(p)!)));
-  const groups = agglomerate(
-    ids.map((f) => faces.get(f)!),
-    clusters,
-    rejected,
-  );
+  const groups = agglomerate(emb, clusters, rejected, SAME_PERSON, ids.map(slideOf));
   const people: Record<string, Person> = {};
   pids.forEach((p, i) => {
     if (groups[i].length || d.people[p].name || d.people[p].birthday || d.people[p].immich) people[p] = { ...d.people[p], faces: groups[i].map((x) => ids[x]) };
@@ -178,6 +190,30 @@ export function refresh(d: PeopleFile, faces: Map<string, Float32Array>): { d: P
   for (const [f, ps] of Object.entries(d.rejected)) if (index.has(f)) rej[f] = ps.filter((p) => p in people);
   const out = { people, next, rejected: rej };
   return { d: out, changed: pyDumps(out, true) !== pyDumps(d, true) };
+}
+
+/** The slide a face is on ("sid/gid" of its id "sid/gid/n"). */
+const slideOf = (face: string) => face.split("/").slice(0, 2).join("/");
+
+/**
+ * people._once_a_slide: a person's faces (indices into ids), one per slide - where they have two or
+ * more on a slide, the one most like the rest of their faces stays. The others go back to be
+ * clustered again (not rejected: clustering keeps them off a slide the person is on).
+ */
+function onceASlide(members: number[], ids: string[], emb: Float32Array[]): number[] {
+  const by = new Map<string, number[]>();
+  for (const i of members) by.set(slideOf(ids[i]), [...(by.get(slideOf(ids[i])) ?? []), i]);
+  if ([...by.values()].every((v) => v.length === 1) || by.size === 1) return members;
+  const total = new Float64Array(emb[members[0]].length);
+  for (const i of members) for (let j = 0; j < total.length; j++) total[j] += emb[i][j];
+  const like = (i: number) => {
+    let v = 0;
+    for (let j = 0; j < total.length; j++) v += emb[i][j] * (total[j] - emb[i][j]);
+    return v;
+  };
+  const keep = new Set<number>();
+  for (const v of by.values()) keep.add(v.reduce((b, i) => (like(i) > like(b) ? i : b), v[0]));
+  return members.filter((i) => keep.has(i));
 }
 
 function mergeInto(d: PeopleFile, into: string, others: string[]) {
@@ -193,6 +229,12 @@ function mergeInto(d: PeopleFile, into: string, others: string[]) {
     if (!gone.ignored) delete target.ignored; // ignored only if every one of them was
     for (const [f, ps] of Object.entries(d.rejected))
       d.rejected[f] = [...new Set(ps.map((x) => (x === p ? into : x)))].sort();
+    for (const f of gone.faces) {
+      // the user joined them: these faces are `into` after all
+      const left = (d.rejected[f] ?? []).filter((x) => x !== into);
+      if (left.length) d.rejected[f] = left;
+      else delete d.rejected[f];
+    }
   }
 }
 

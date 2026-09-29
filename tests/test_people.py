@@ -60,6 +60,16 @@ def test_existing_people_keep_members_and_never_merge():
     assert people.agglomerate(a, [[], [0, 1]])[:2] == [[], [0, 1, 2, 3]]
 
 
+def test_nobody_twice_on_a_slide():
+    a = person(4, seed=1)
+    # faces 1 and 2 are on the same slide: however alike, they don't join, nor join a group holding the other
+    groups = people.agglomerate(a, [], slides=["s0", "s1", "s1", "s2"])
+    assert sorted(map(sorted, groups)) == [[0, 1, 3], [2]] or sorted(map(sorted, groups)) == [[0, 2, 3], [1]]
+    # nor an existing person already on that slide
+    groups = people.agglomerate(a, [[0, 1]], slides=["s0", "s1", "s1", "s2"])
+    assert sorted(groups[0]) == [0, 1, 3] and groups[1:] == [[2]]
+
+
 def test_rejected_face_stays_out():
     a = person(4, seed=1)
     groups = people.agglomerate(a, [[0, 1, 2]], rejected={3: {0}})
@@ -139,9 +149,20 @@ def test_people_across_a_tray(api, tmp_path, faces_on, immich_db, monkeypatch):
     named = [p for p in out["people"] if p["name"]]
     assert len(named) == 2 and sorted(len(p["faces"]) for p in named) == [2, 2]
 
-    # merge: Bob is Ann (for the test's sake)
+    # a face that went back to someone it was taken out of (as a name from Immich once did it) leaves again
+    d = people.load_people()
+    assert wrong in d["people"][ann["id"]]["faces"] and wrong not in d["rejected"]  # (naming it Ann said so)
+    d["rejected"][wrong] = [ann["id"]]
+    people.save_people(d)
+    out = people.refresh()["people"]
+    assert wrong not in out[ann["id"]]["faces"]
+    again = next(p for p, v in out.items() if wrong in v["faces"])
+    api.patch(f"/api/people/{again}", json={"name": "Ann Smith"})
+
+    # merge: Bob is Ann (for the test's sake); she can't be on slide 2 twice, so one face there drops out
     out = api.post(f"/api/people/{ann['id']}/merge", json={"people": [bob["id"]]}).json()
-    assert [(p["name"], len(p["faces"])) for p in out["people"]] == [("Ann Smith", 4)]
+    assert [(p["name"], len(p["faces"])) for p in out["people"]] == [("Ann Smith", 3), ("", 1)]
+    assert {f["id"].split("/")[1] for f in out["people"][0]["faces"]} == set(gids[:3])
     assert api.patch("/api/people/nobody", json={"name": "x"}).status_code == 404
 
 
@@ -322,6 +343,43 @@ def test_sync_with_immich(api, tmp_path, faces_on, immich_db, monkeypatch):
     api.post("/api/people/sync")
     assert "Named differently in Immich, left alone: Annie is Anna there" in wait_job(api)["message"]
     assert ppl[same_name]["name"] == "Anna" and "Annie" in people_named(api)
+
+
+def test_sync_keeps_what_the_user_said(api, tmp_path, faces_on, immich_db, monkeypatch):
+    """Immich recognising someone doesn't undo a face taken off them here, nor put them on a slide twice."""
+    # slides 1-4: Ann, on slide 2 with someone Immich takes for her too
+    faces_on += [[face(ANN)], [face(ANN), face(BOB, 0.6)], [face(ANN)], [face(ANN)]]
+    sid, d = tray_without_helper(api, tmp_path, monkeypatch)
+    gids = [g["id"] for g in d["groups"]]
+    ann = next(p for p in api.get("/api/people").json()["people"] if p["faces"][0]["id"] == f"{sid}/{gids[0]}/0")
+    api.patch(f"/api/people/{ann['id']}", json={"name": "Ann Smith"})
+    api.post(f"/api/sessions/{sid}/finish", json={})
+    wait_job(api)
+    s = Session(sid)
+    asset = [g["immich"]["asset_id"] for g in s.data["groups"]]
+    at = {fid: [v + 0.01 for v in box] for g in s.data["groups"] for fid, box in wf.uploaded_faces(s, g)}
+    fi = fake_immich
+    immich_ann = fi.add_person("Ann Smith")
+    for i in range(4):
+        fi.add_face(asset[i], at[f"{sid}/{gids[i]}/0"], immich_ann)
+    other = fi.add_face(asset[1], at[f"{sid}/{gids[1]}/1"], immich_ann)  # Ann twice on slide 2
+    api.post("/api/people/sync")
+    msg = wait_job(api)["message"]
+    assert "1 faces taken off people they aren't" in msg and "left alone" not in msg, msg
+    faces = fi.DB["faces"]
+    assert faces[other]["personId"] not in (immich_ann, None)
+
+    # slides 3 and 4 aren't Ann after all: they stay off her, here and in Immich
+    wrong = [f"{sid}/{gids[i]}/0" for i in (2, 3)]
+    api.post(f"/api/people/{ann['id']}/remove", json={"faces": wrong})
+    api.post("/api/people/sync")
+    msg = wait_job(api)["message"]
+    assert "named" not in msg and "2 faces taken off people they aren't" in msg, msg
+    assert people_named(api) == {"Ann Smith": 2}
+    on_ann = sorted(f["assetId"] for f in faces.values() if f["personId"] == immich_ann)
+    assert on_ann == sorted([asset[0], asset[1]])
+    api.post("/api/people/sync")
+    assert wait_job(api)["message"] == "People in Immich are up to date"
 
 
 def people_named(api) -> dict[str, int]:
