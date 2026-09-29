@@ -16,7 +16,12 @@ developed slide (trimmed, straightened, cropped), so each face box is taken thro
 - faces Immich didn't find are added by hand ("manual" faces, which its re-detection leaves alone);
   a manual face Immich's detection found after all is deleted again
 - birthdays fill whichever side has none
-- a face or person the two sides name differently is left alone and listed, never overwritten
+- what the user said here goes before Immich's recognition: a face taken off someone here doesn't
+  bring their name back, and Immich stops putting it on them (onto their person here, else onto an
+  unnamed Immich person of its own); so does a face Immich has on someone who is elsewhere on that slide
+  here - nobody is on a photo twice
+- other than that, a face or person the two sides name differently is left alone and listed, never
+  overwritten
 - people ignored here (strangers in a crowd) are left alone: no name comes back to them, they get no
   Immich person
 """
@@ -52,6 +57,7 @@ class Report:
     assigned: int = 0  # faces put on their person
     added: int = 0  # faces added by hand
     removed: int = 0  # manual faces that doubled one Immich found
+    freed: int = 0  # faces taken off an Immich person they aren't
     birthdays: int = 0
     waiting: int = 0  # slides whose faces Immich hasn't looked for yet
     tags: int = 0  # People/ tags taken off
@@ -70,6 +76,8 @@ class Report:
                          (f" ({self.added} Immich hadn't found)" if self.added else ""))
         if self.removed:
             parts.append(f"{self.removed} doubled faces removed")
+        if self.freed:
+            parts.append(f"{self.freed} faces taken off people they aren't")
         if self.birthdays:
             parts.append(f"{self.birthdays} birthdays shared")
         if self.tags:
@@ -132,6 +140,7 @@ def sync(client: Immich, slides: list[Slide], progress=None) -> Report:
 
     # --- what Immich has on each slide, paired with ours
     found: dict[str, dict] = {}  # our face id -> its Immich face
+    together: dict[str, list[str]] = {}  # our face id -> all our faces on its slide
     lone: list[tuple[Slide, str]] = []  # our faces Immich didn't find
     doubles: dict[str, list[dict]] = {}  # our face id -> manual Immich faces doubling its detected one
     faceless: set[str] = set()  # assets Immich has no faces on at all
@@ -144,6 +153,7 @@ def sync(client: Immich, slides: list[Slide], progress=None) -> Report:
             faceless.add(s.asset)
         pairs, alone, extra = match(s.faces, theirs)
         found.update(pairs)
+        together.update((fid, [x for x, _ in s.faces]) for fid, _ in s.faces)
         lone += [(s, fid) for fid in alone]
         for f in extra:  # hang each double on the paired face it lies on
             fid = max(pairs, key=lambda k: iou(immich_box(pairs[k]), immich_box(f)))
@@ -153,6 +163,17 @@ def sync(client: Immich, slides: list[Slide], progress=None) -> Report:
 
     def immich_name(f: dict) -> str:
         return (theirs_by_id.get((f.get("person") or {}).get("id"), {}).get("name") or "").strip()
+
+    def wrong(fid: str, f: dict, d: dict, owner: dict[str, str]) -> bool:
+        """Immich has this face on someone it isn't: someone the user took it off here, or someone
+        with another face on this slide here."""
+        there = immich_name(f)
+        if not there:
+            return False
+        if any(_same(d["people"].get(x, {}).get("name"), there) for x in d["rejected"].get(fid, ())):
+            return True
+        return any(_same(d["people"].get(owner.get(g), {}).get("name"), there)
+                   for g in together[fid] if owner.get(g) != owner.get(fid))
 
     # --- names from Immich: a rename there since the last sync, and unnamed people of ours
     d = people.load_people()
@@ -166,10 +187,13 @@ def sync(client: Immich, slides: list[Slide], progress=None) -> Report:
     for pid, p in list(d["people"].items()):
         if p.get("name") or p.get("ignored"):
             continue
-        votes = Counter(immich_name(f) for fid, f in found.items() if owner.get(fid) == pid and immich_name(f))
+        votes = Counter(immich_name(f) for fid, f in found.items()
+                        if owner.get(fid) == pid and immich_name(f) and not wrong(fid, f, d, owner))
         if votes:
             name, n = votes.most_common(1)[0]
-            if n >= 2 and n >= PULL * sum(votes.values()):
+            refused = any(_same(d["people"].get(x, {}).get("name"), name)  # it would take them back
+                          for fid in p["faces"] for x in d["rejected"].get(fid, ()))
+            if n >= 2 and n >= PULL * sum(votes.values()) and not refused:
                 _rename(pid, name, rep)
     d = people.load_people()
     owner = _owners(d)
@@ -242,15 +266,21 @@ def sync(client: Immich, slides: list[Slide], progress=None) -> Report:
             rep.merged += len(others)
 
     # --- the faces themselves
+    spare: dict[str | None, str] = {}  # our unnamed person -> the Immich person their faces go to
     for n, (fid, f) in enumerate(found.items()):
         pid = owner.get(fid)
+        now = merged.get((f.get("person") or {}).get("id"), (f.get("person") or {}).get("id"))
         if pid not in target:
+            if now and wrong(fid, f, d, owner):  # onto an unnamed Immich person, one per person here
+                if pid not in spare:
+                    spare[pid] = client.create_person()["id"]
+                client.assign_face(f["id"], spare[pid])
+                rep.freed += 1
             continue
         into = target[pid]
-        now = merged.get((f.get("person") or {}).get("id"), (f.get("person") or {}).get("id"))
         if now != into:
             there = immich_name(f)
-            if there and not _same(there, d["people"][pid]["name"]):
+            if there and not _same(there, d["people"][pid]["name"]) and not wrong(fid, f, d, owner):
                 rep.conflicts.append(f"a face of {d['people'][pid]['name']} is {there} there")
                 continue
             client.assign_face(f["id"], into)

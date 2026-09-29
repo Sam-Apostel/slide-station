@@ -405,8 +405,8 @@ export class Immich {
     return (await this.peopleCheck(await this.raw("GET", `/faces?id=${asset}`), "GET", "/faces")).json();
   }
 
-  async createPerson(name: string, birthDate?: string | null): Promise<ImmichPerson> {
-    const body = { name, ...(birthDate ? { birthDate } : {}) };
+  async createPerson(name = "", birthDate?: string | null): Promise<ImmichPerson> {
+    const body = { ...(name ? { name } : {}), ...(birthDate ? { birthDate } : {}) };
     return (await this.peopleCheck(await this.raw("POST", "/people", body), "POST", "/people")).json();
   }
 
