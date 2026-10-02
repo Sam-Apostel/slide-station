@@ -1,0 +1,15 @@
+{
+  "name": "slide-station-site",
+  "private": true,
+  "type": "module",
+  "description": "slide-station.sams.land: homepage, docs, downloads, changelog, TestFlight waitlist and the browser version at /app",
+  "engines": { "node": ">=24" },
+  "scripts": {
+    "build": "node build.mjs",
+    "start": "node server.mjs",
+    "dev": "node build.mjs && node --watch server.mjs"
+  },
+  "dependencies": {
+    "marked": "^16.3.0"
+  }
+}

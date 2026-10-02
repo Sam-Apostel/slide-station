@@ -1,6 +1,8 @@
 #!/bin/bash
 # Build a signed + notarised Slide Station.dmg and check it the way Gatekeeper will.
-# One-time setup: desktop/README.md → "Signing and notarising".
+# Needs a Developer ID Application certificate in the keychain and notarytool credentials: a
+# keychain profile (APPLE_KEYCHAIN_PROFILE), an App Store Connect API key (APPLE_API_KEY, _ID,
+# _ISSUER) or an Apple ID (APPLE_ID, APPLE_APP_SPECIFIC_PASSWORD, APPLE_TEAM_ID).
 #
 #   cd desktop && npm run release:mac                 # build + verify locally
 #   PUBLISH=always GH_TOKEN=… npm run release:mac     # …and publish to GitHub Releases (what CI does)
@@ -17,7 +19,7 @@ xcrun --find notarytool >/dev/null 2>&1 || fail "notarytool missing: update Xcod
 ok "Xcode tools"
 
 ids=$(security find-identity -v -p codesigning | grep "Developer ID Application" || true)
-[ -n "$ids" ] || fail "no \"Developer ID Application\" certificate in your keychain (README step 2)"
+[ -n "$ids" ] || fail "no \"Developer ID Application\" certificate in your keychain"
 [ "$(printf '%s\n' "$ids" | wc -l)" -eq 1 ] || [ -n "${CSC_NAME:-}" ] ||
   fail "several Developer ID certificates: pick one with CSC_NAME=\"Your Name (TEAMID)\""
 ok "signing certificate: $(printf '%s\n' "$ids" | head -1 | sed 's/.*"\(.*\)"/\1/')"
@@ -31,14 +33,14 @@ elif [ -n "${APPLE_KEYCHAIN_PROFILE:-}" ]; then
   # data-protection keychain, which notarytool only searches when no keychain path is given
   xcrun notarytool history --keychain-profile "$APPLE_KEYCHAIN_PROFILE" ${APPLE_KEYCHAIN:+--keychain "$APPLE_KEYCHAIN"} \
     >/dev/null 2>&1 ||
-    fail "notarytool can't use keychain profile \"$APPLE_KEYCHAIN_PROFILE\" (README step 3)"
+    fail "notarytool can't use keychain profile \"$APPLE_KEYCHAIN_PROFILE\" (xcrun notarytool store-credentials)"
   ok "notary credentials: keychain profile $APPLE_KEYCHAIN_PROFILE"
 elif [ -n "${APPLE_ID:-}" ]; then
   [ -n "${APPLE_APP_SPECIFIC_PASSWORD:-}" ] && [ -n "${APPLE_TEAM_ID:-}" ] ||
     fail "set APPLE_APP_SPECIFIC_PASSWORD and APPLE_TEAM_ID too"
   ok "notary credentials: Apple ID"
 else
-  fail "no notary credentials: set APPLE_KEYCHAIN_PROFILE (or an API key / Apple ID, README step 3)"
+  fail "no notary credentials: set APPLE_KEYCHAIN_PROFILE (or an API key / Apple ID, see the top of this script)"
 fi
 
 if [ "${PUBLISH:-never}" != never ]; then

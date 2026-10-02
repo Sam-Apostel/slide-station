@@ -1,4 +1,4 @@
-# Slide Station as a container next to Immich (README "Next to Immich", ARCHITECTURE "Hosted container").
+# Slide Station as a container next to Immich (docs/self-hosting.md, ARCHITECTURE "Hosted container").
 #
 #   docker build -t slide-station .
 #   docker run -p 8765:8765 -v slide-station:/data slide-station

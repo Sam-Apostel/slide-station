@@ -114,7 +114,7 @@ the real scanner on a real iPad (phase 1) and measuring memory there. The ProUI 
    the iPad can be finished on the Mac.
 
 (The lighter alternative — the iPad as a browser client of the Mac server over the LAN — is still
-cheap, but needs the Mac on, which defeats the "on her own" goal.)
+cheap, but needs the Mac on, which defeats the point of scanning without a computer.)
 
 ## 4. Hosted Slide Station
 

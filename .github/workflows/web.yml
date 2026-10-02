@@ -1,9 +1,8 @@
-name: Web version
+name: GitHub Pages redirect
 
-# Builds the browser-only version (frontend: `npm run build:web`, no backend) and publishes it to
-# GitHub Pages. Manual for now: hosting it publicly ships the ProUI components the app uses, and
-# ROADMAP §4 asks for their licence terms to be confirmed first. One-time setup: Settings → Pages →
-# Source: GitHub Actions. Runs on GitHub's runners (the release workflow's Mac isn't needed).
+# The browser version and the homepage live on https://slide-station.sams.land now (site/, on
+# Railway). This publishes a page at the old GitHub Pages address that sends visitors there:
+# /slide-station/ → the homepage. Run it once by hand; nothing else changes on Pages.
 
 on:
   workflow_dispatch:
@@ -20,23 +19,22 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: frontend
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-          cache-dependency-path: frontend/package-lock.json
-      - run: npm ci
-      - run: npm run typecheck
-      - run: npm test # the browser pipeline against the Python one (golden fixtures)
-      - run: npm run build:web
+      - name: Redirect page
+        run: |
+          mkdir out
+          cat > out/index.html <<'HTML'
+          <!doctype html>
+          <meta charset="utf-8">
+          <title>Slide Station has moved</title>
+          <link rel="canonical" href="https://slide-station.sams.land/">
+          <meta http-equiv="refresh" content="0; url=https://slide-station.sams.land/">
+          <p>Slide Station lives at <a href="https://slide-station.sams.land/">slide-station.sams.land</a> now.
+          HTML
+          cp out/index.html out/404.html
       - uses: actions/upload-pages-artifact@v3
         with:
-          path: frontend/dist-web
+          path: out
 
   deploy:
     needs: build

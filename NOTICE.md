@@ -95,6 +95,18 @@ model card names the source bundle and its checksums) into the library's `models
 folder. Nothing of it is committed or bundled. (Ready-made open / closed eye classifiers were not
 used: the usual ones on Hugging Face are licensed for non-commercial use only, CC BY-NC.)
 
+## The website (`site/`)
+
+- **Fraunces** (`site/public/fonts/fraunces.woff2`), the headline font: SIL Open Font License 1.1,
+  © The Fraunces Project Authors (<https://github.com/undercasetype/Fraunces>).
+- **Example slides** (`site/public/img/`, the before / after comparison): 35mm slides from
+  [DOCUMERICA](https://en.wikipedia.org/wiki/Documerica), the US Environmental Protection Agency's
+  1971–77 photography project, held by the National Archives. As works of the US federal
+  government they are in the public domain. Toddler: Lyntha Scott Eiler (NARA 544380); children in
+  a park, Baltimore: Jim Pickerell (NARA 546781); Pyramid Lake: Jonas Dovydenas (NARA 552893);
+  Rockport harbour: Deborah Amel Parks (NARA 548217). The `-after` files and the app screenshots
+  are those scans developed by Slide Station.
+
 ## Python and JavaScript dependencies
 
 See `pyproject.toml` and `frontend/package.json`; each keeps its own licence.

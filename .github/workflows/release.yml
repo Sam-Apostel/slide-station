@@ -1,9 +1,8 @@
 name: Release
 
 # Every push to main becomes a signed, notarised release that the desktop app picks up by itself
-# (desktop/updater.cjs). Runs on Sam's Mac, like the Reizo CI: a self-hosted runner has the
-# Developer ID certificate and notarytool profile in its keychain, and costs no Actions minutes.
-# Setup and safety notes: desktop/README.md → "Automatic releases".
+# (desktop/updater.cjs). It runs on a self-hosted Mac runner that has the signing certificate and
+# notarytool credentials. Never add a pull_request trigger: the runner must only build main.
 
 on:
   push:
@@ -12,6 +11,7 @@ on:
       - "**.md"
       - "tests/**"
       - "apple/**" # the native app ships separately (TestFlight), not in the desktop release
+      - "site/**" # the website deploys on Railway by itself
       - ".github/ISSUE_TEMPLATE/**"
   workflow_dispatch:
 
