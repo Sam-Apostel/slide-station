@@ -26,6 +26,13 @@ export function visibleJob(state: AppState | null) {
   return !j.finished || Date.now() / 1000 - j.started < 4 || j.error ? j : null;
 }
 
+/** The activity well has news worth a row on a phone: a job, new scans, watched folders waiting.
+ *  (Otherwise it only offers to pick a folder, which the phone's Tray tool does.) */
+export function wellHasNews(state: AppState | null) {
+  const w = state?.watch;
+  return !!(visibleJob(state) || state?.sources.some((x) => x.new > 0) || (w && (w.waiting || w.queued || w.errors)));
+}
+
 type TopBarProps = {
   state: AppState | null;
   sessionId: string;
@@ -53,14 +60,15 @@ export function TraySwitcher({
   sessionId,
   onSelectSession,
   onNewTray,
-}: Pick<TopBarProps, "state" | "sessionId" | "onSelectSession" | "onNewTray">) {
+  selectClassName,
+}: Pick<TopBarProps, "state" | "sessionId" | "onSelectSession" | "onNewTray"> & { selectClassName?: string }) {
   const sessions = state?.sessions ?? [];
   return (
     <>
       <NativeSelect
         size="sm"
         aria-label="Tray"
-        className="w-[240px] font-medium"
+        className={cn("w-[240px] font-medium", selectClassName)}
         value={sessions.some((s) => s.id === sessionId) ? sessionId : ""}
         onChange={(e) => onSelectSession(e.target.value)}
         disabled={!sessions.length}

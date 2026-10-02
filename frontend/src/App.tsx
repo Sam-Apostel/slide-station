@@ -7,10 +7,13 @@ import { Kbd } from "@/components/ui/kbd";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/components/ui/resizable";
 import { ConfirmProvider, useConfirm } from "@/components/confirm";
-import { ActivityWell, AppActions, TopBar, TraySwitcher } from "@/components/top-bar";
+import { ActivityWell, AppActions, TopBar, TraySwitcher, wellHasNews } from "@/components/top-bar";
 import { Filmstrip, type Filter } from "@/components/filmstrip";
-import { Stage } from "@/components/stage";
-import { Inspector } from "@/components/inspector";
+import { ScanStack, Stage } from "@/components/stage";
+import { Inspector, type SectionId } from "@/components/inspector";
+import { CompactShell, type Tool } from "@/components/compact";
+import { ProButton } from "@/components/ui/pro-button";
+import { useLayout } from "@/lib/layout";
 import { EmptyState } from "@/components/empty-state";
 import { SlideMenu } from "@/components/slide-menu";
 import { CommandPalette } from "@/components/command-palette";
@@ -36,6 +39,7 @@ import {
   type Source,
 } from "@/lib/api";
 import { desktop, isMac } from "@/lib/desktop";
+import { ChartNoAxesColumn, CircleHelp, FolderInput, Merge } from "lucide-react";
 
 type Panels = { filmstrip: boolean; inspector: boolean };
 const ALL_PANELS: Panels = { filmstrip: true, inspector: true };
@@ -67,12 +71,14 @@ function storedPanels(): Panels {
 }
 
 export default function App() {
+  // on a phone the bottom of the screen is the Develop bar: toasts come in from the top there
+  const compact = useLayout() !== "wide";
   return (
     <ConfirmProvider>
       <TooltipProvider delayDuration={500} skipDelayDuration={200}>
         <SlideStationApp />
       </TooltipProvider>
-      <Toaster theme="dark" position="bottom-center" />
+      <Toaster theme="dark" position={compact ? "top-center" : "bottom-center"} />
     </ConfirmProvider>
   );
 }
@@ -139,6 +145,10 @@ function SlideStationApp() {
   const [offer, setOffer] = React.useState<Offer | null>(null);
   const [newTray, setNewTray] = React.useState<{ open: boolean; source?: Source; folder?: string }>({ open: false });
   const [panels, setPanels] = React.useState(storedPanels);
+  const screen = useLayout();
+  const compact = screen !== "wide";
+  // a phone's open tool: its panel under the photo (upright) or beside it (on its side)
+  const [tool, setTool] = React.useState<Tool | null>(null);
   // What focus mode hid, so the same shortcut brings exactly that back.
   const beforeFocus = React.useRef<Panels | null>(null);
 
@@ -378,257 +388,156 @@ function SlideStationApp() {
     </SlideMenu>
   );
 
-  return (
-    <div className="flex h-dvh flex-col overflow-hidden bg-background text-foreground">
-      {desktop ? (
-        <WindowTitlebar
-          title={session?.summary.name ?? "Slide Station"}
-          left={
-            <TraySwitcher
-              state={state}
-              sessionId={app.openId}
-              onSelectSession={(id) => app.loadSession(id)}
-              onNewTray={() => openNew()}
-            />
-          }
-          center={
-            <ActivityWell
-              state={state}
-              onImport={openImport}
-              onEject={(src) => app.eject(src.path)}
-              onChooseFolder={() => importFolder()}
-              onCapture={canCapture && session ? app.capture : undefined}
-              onResume={app.resumeJob}
-              onSettings={() => openSettings("library")}
-            />
-          }
-          right={
-            <>
-              {toggles}
-              <AppActions
-                onHelp={() => setHelpOpen(true)}
-                onSettings={() => openSettings()}
-                onStats={views.stats}
-                onPeople={onPeople}
-              />
-            </>
-          }
-        />
-      ) : (
-        <TopBar
-          panelToggles={toggles}
-          state={state}
-          sessionId={app.openId}
-          onSelectSession={(id) => app.loadSession(id)}
-          onNewTray={() => openNew()}
-          onImport={openImport}
-          onEject={(src) => app.eject(src.path)}
-          onChooseFolder={() => importFolder()}
-          onCapture={canCapture && session ? app.capture : undefined}
-          onResume={app.resumeJob}
-          onHelp={() => setHelpOpen(true)}
-          onSettings={() => openSettings()}
-          onStats={views.stats}
-          onPeople={onPeople}
-        />
-      )}
+  const stage = session ? (
+    grid ? (
+      <ReviewGrid
+        session={session}
+        sessionId={sessionId}
+        sel={app.sel}
+        onSelect={app.select}
+        onOpen={(i) => {
+          app.select(i);
+          setGrid(false);
+        }}
+        onClose={() => setGrid(false)}
+        columns={gridCols}
+        slideMenu={slideMenu}
+      />
+    ) : (
+      <Stage
+        session={session}
+        sessionId={sessionId}
+        sel={app.sel}
+        before={before}
+        onBefore={setBefore}
+        onToggleScan={app.toggleScan}
+        onSplit={app.splitAt}
+        compare={compare}
+        onCompare={() => setCompare((v) => !v)}
+        onUndo={app.undo}
+        onRedo={app.redo}
+        slideMenu={slideMenu}
+        cropping={cropping}
+        localOverlay={
+          local.open && !app.current?.locked
+            ? (img) => <LocalOverlay img={img} app={app} tool={local} />
+            : null
+        }
+        onAngle={(a) => app.setParam("angle", Math.round(a * 10) / 10)}
+        onCropEnd={(rect, restoreAngle) => {
+          setCropping(false);
+          if (rect !== undefined) app.setParam("crop", rect, true);
+          else if (restoreAngle !== undefined && restoreAngle !== (app.current?.params.angle ?? 0))
+            app.setParam("angle", restoreAngle, true);
+        }}
+        picking={picking}
+        onPicked={(x, y) => {
+          setPicking(false);
+          if (x !== null && y !== null) app.pickNeutral(x, y);
+        }}
+        zoom={zoom}
+        onZoom={setZoom}
+        loupe={loupe}
+        onLoupe={setLoupe}
+        onGrid={views.toggleGrid}
+        face={face}
+        marking={marking}
+        onMarked={onMarked}
+        back={backToPeople}
+        compact={compact}
+        onSwipe={(d) => app.select(app.sel + d)}
+      />
+    )
+  ) : null;
 
-      <main className="flex min-h-0 flex-1">
-        {state && peopleOpen ? (
-          <PeoplePlaces
-            job={state.job ?? null}
-            from={peopleFrom ?? undefined}
-            onClose={() => (setPeopleOpen(false), setPeopleFrom(null))}
-            onSettings={() => openSettings("smart")}
-            onOpenSlide={(sid, gid, from) => {
-              setPeopleFrom(from);
-              setGrid(false);
-              app.openSlide(sid, gid);
-            }}
-            onPlaced={(sids) => sessionId && sids.includes(sessionId) && app.loadSession(sessionId, true)}
-          />
-        ) : !state ? null : !hasTrays ? (
-          <EmptyState source={source} onImport={openImport} onImportFolder={() => importFolder()} hosted={hosted} />
-        ) : session ? (
-          <ResizablePanelGroup
-            key={panelIds.join()}
-            id="panel-widths"
-            defaultLayout={layout.defaultLayout}
-            onLayoutChanged={layout.onLayoutChanged}
-          >
-            {panels.filmstrip && (
-              <>
-                <ResizablePanel
-                  id="filmstrip"
-                  defaultSize={250}
-                  minSize={180}
-                  maxSize={560}
-                  groupResizeBehavior="preserve-pixel-size"
-                >
-                  <Filmstrip
-                    session={session}
-                    sessionId={sessionId}
-                    sel={app.sel}
-                    filter={filter}
-                    onFilter={setFilter}
-                    tag={tag}
-                    onTag={setTag}
-                    onSelect={app.select}
-                    slideMenu={slideMenu}
-                    onScene={(sc, n) =>
-                      setOffer({ kind: "tags", value: "", from: sc.start, to: sc.end, pick: true, label: `scene ${n}` })
-                    }
-                  />
-                </ResizablePanel>
-                <ResizableHandle aria-label="Resize filmstrip" />
-              </>
-            )}
-            <ResizablePanel id="stage" minSize={320}>
-              {grid ? (
-                <ReviewGrid
-                  session={session}
-                  sessionId={sessionId}
-                  sel={app.sel}
-                  onSelect={app.select}
-                  onOpen={(i) => {
-                    app.select(i);
-                    setGrid(false);
-                  }}
-                  onClose={() => setGrid(false)}
-                  columns={gridCols}
-                  slideMenu={slideMenu}
-                />
-              ) : (
-                <Stage
-                  session={session}
-                  sessionId={sessionId}
-                  sel={app.sel}
-                  before={before}
-                  onBefore={setBefore}
-                  onToggleScan={app.toggleScan}
-                  onSplit={app.splitAt}
-                  compare={compare}
-                  onCompare={() => setCompare((v) => !v)}
-                  onUndo={app.undo}
-                  onRedo={app.redo}
-                  slideMenu={slideMenu}
-                  cropping={cropping}
-                  localOverlay={
-                    local.open && !app.current?.locked
-                      ? (img) => <LocalOverlay img={img} app={app} tool={local} />
-                      : null
-                  }
-                  onAngle={(a) => app.setParam("angle", Math.round(a * 10) / 10)}
-                  onCropEnd={(rect, restoreAngle) => {
-                    setCropping(false);
-                    if (rect !== undefined) app.setParam("crop", rect, true);
-                    else if (restoreAngle !== undefined && restoreAngle !== (app.current?.params.angle ?? 0))
-                      app.setParam("angle", restoreAngle, true);
-                  }}
-                  picking={picking}
-                  onPicked={(x, y) => {
-                    setPicking(false);
-                    if (x !== null && y !== null) app.pickNeutral(x, y);
-                  }}
-                  zoom={zoom}
-                  onZoom={setZoom}
-                  loupe={loupe}
-                  onLoupe={setLoupe}
-                  onGrid={views.toggleGrid}
-                  face={face}
-                  marking={marking}
-                  onMarked={onMarked}
-                  back={backToPeople}
-                />
-              )}
-            </ResizablePanel>
-            {panels.inspector && (
-              <>
-                <ResizableHandle aria-label="Resize inspector" />
-                <ResizablePanel
-                  id="inspector"
-                  defaultSize={300}
-                  minSize={272}
-                  maxSize={480}
-                  groupResizeBehavior="preserve-pixel-size"
-                >
-                  <Inspector
-                    app={app}
-                    session={session}
-                    sessionId={sessionId}
-                    busy={busy}
-                    onUpload={upload}
-                    onClean={clean}
-                    picking={picking}
-                    onPick={() => setPicking((v) => !v)}
-                    cropping={cropping}
-                    onCrop={() => app.current?.locked || setCropping((v) => !v)}
-                    local={local}
-                    setLocal={setLocal}
-                    onReimport={reimport}
-                    onSave={standalone ? save : undefined}
-                    onDateRange={() => setDateRangeOpen(true)}
-                    onPlaceRange={placeRange}
-                    placesDownloading={
-                      (state?.job?.kind === "places" || state?.job?.kind === "ocr") && !state.job.finished
-                    }
-                    onPresets={views.presets}
-                    onDevelopLike={views.developLike}
-                    onAccepted={offerNeighbours}
-                    face={face}
-                    onFace={setFace}
-                    people={{
-                      on: !standalone && !!state?.config.people_enabled,
-                      marking,
-                      onMark: () => setMarking((v) => !v),
-                      marked,
-                    }}
-                    onStockRange={(stock) =>
-                      setOffer({ kind: "stock", value: stock, from: app.sel, to: session.groups.length - 1 })
-                    }
-                    insights={{
-                      downloading: state?.job?.kind === "model" && !state.job.finished,
-                      ocrDownloading: state?.job?.kind === "ocr" && !state.job.finished,
-                      onAccepted: offerNeighbours,
-                      onReview: () => setReviewOpen(true),
-                      onSettings: () => openSettings("smart"),
-                    }}
-                  />
-                </ResizablePanel>
-              </>
-            )}
-          </ResizablePanelGroup>
-        ) : null}
-      </main>
+  const filmstrip = (row = false) =>
+    session && (
+      <Filmstrip
+        row={row}
+        session={session}
+        sessionId={sessionId}
+        sel={app.sel}
+        filter={filter}
+        onFilter={setFilter}
+        tag={tag}
+        onTag={setTag}
+        onSelect={app.select}
+        slideMenu={slideMenu}
+        onScene={(sc, n) =>
+          setOffer({ kind: "tags", value: "", from: sc.start, to: sc.end, pick: true, label: `scene ${n}` })
+        }
+      />
+    );
 
-      <ProStatusbar>
-        {session ? (
-          <>
-            <span>{plural(session.summary.slides, "slide")}</span>
-            {session.summary.slides > 0 && !session.groups.some(needsReview) ? (
-              <span className="ss-all-developed">✓ All developed</span>
-            ) : (
-              <span>{session.groups.filter(needsReview).length} to develop</span>
-            )}
-            <span>{session.summary.uploaded} in Immich</span>
-            {session.summary.skipped > 0 && <span>{session.summary.skipped} skipped</span>}
-          </>
-        ) : (
-          <span>{hasTrays ? "Loading…" : "No trays yet"}</span>
-        )}
-        <span className="ml-auto flex items-center gap-3 [&_kbd]:h-4 [&_kbd]:min-w-4 [&_kbd]:text-[10px]">
-          <span>
-            <Kbd>←</Kbd> <Kbd>→</Kbd> browse
-          </span>
-          <span>
-            <Kbd>Space</Kbd> develop
-          </span>
-          <span>
-            <Kbd>?</Kbd> all shortcuts
-          </span>
-        </span>
-      </ProStatusbar>
+  const peopleTool = {
+    on: !standalone && !!state?.config.people_enabled,
+    marking,
+    onMark: () => setMarking((v) => !v),
+    marked,
+  };
 
+  /** The inspector, or one of its sections as a phone's tool. */
+  const inspector = (only?: SectionId) =>
+    session && (
+      <Inspector
+        app={app}
+        session={session}
+        sessionId={sessionId}
+        busy={busy}
+        onUpload={upload}
+        onClean={clean}
+        picking={picking}
+        onPick={() => setPicking((v) => !v)}
+        cropping={cropping}
+        onCrop={() => app.current?.locked || setCropping((v) => !v)}
+        local={local}
+        setLocal={setLocal}
+        onReimport={reimport}
+        onSave={standalone ? save : undefined}
+        onDateRange={() => setDateRangeOpen(true)}
+        onPlaceRange={placeRange}
+        placesDownloading={(state?.job?.kind === "places" || state?.job?.kind === "ocr") && !state.job.finished}
+        onPresets={views.presets}
+        onDevelopLike={views.developLike}
+        onAccepted={offerNeighbours}
+        face={face}
+        onFace={setFace}
+        people={peopleTool}
+        onStockRange={(stock) =>
+          setOffer({ kind: "stock", value: stock, from: app.sel, to: session.groups.length - 1 })
+        }
+        insights={{
+          downloading: state?.job?.kind === "model" && !state.job.finished,
+          ocrDownloading: state?.job?.kind === "ocr" && !state.job.finished,
+          onAccepted: offerNeighbours,
+          onReview: () => setReviewOpen(true),
+          onSettings: () => openSettings("smart"),
+        }}
+        only={only}
+      />
+    );
+
+  // instead of a tray: People & Places, or the first import
+  const main =
+    state && peopleOpen ? (
+      <PeoplePlaces
+        job={state.job ?? null}
+        from={peopleFrom ?? undefined}
+        onClose={() => (setPeopleOpen(false), setPeopleFrom(null))}
+        onSettings={() => openSettings("smart")}
+        onOpenSlide={(sid, gid, from) => {
+          setPeopleFrom(from);
+          setGrid(false);
+          app.openSlide(sid, gid);
+        }}
+        onPlaced={(sids) => sessionId && sids.includes(sessionId) && app.loadSession(sessionId, true)}
+      />
+    ) : state && !hasTrays ? (
+      <EmptyState source={source} onImport={openImport} onImportFolder={() => importFolder()} hosted={hosted} />
+    ) : null;
+
+  const dialogs = (
+    <>
       <SettingsDialog
         open={settingsOpen}
         onOpenChange={setSettingsOpen}
@@ -709,6 +618,243 @@ function SlideStationApp() {
           </div>
         </div>
       )}
+    </>
+  );
+
+  if (compact) {
+    const g = app.current;
+    const tools: Tool[] = g
+      ? [
+          "slides",
+          "rotation",
+          "colour",
+          "curve",
+          "local",
+          "scans",
+          "details",
+          ...(g.faces?.length || (peopleTool.on && !g.skip) ? (["people"] as const) : []),
+          "insights",
+          "tray",
+        ]
+      : ["slides", "tray"];
+    const openTool = (t: Tool | null) => {
+      setTool(t);
+      // the Local tool shapes its adjustments on the photo: it opens and closes with its panel
+      setLocal((l) => ({ ...l, open: t === "local" && !g?.locked }));
+      if (t !== "rotation") setCropping(false);
+    };
+    const toolPanel = (t: Tool) =>
+      t === "slides" ? (
+        filmstrip()
+      ) : t === "scans" ? (
+        g && (
+          <div className="flex flex-col gap-3 p-3">
+            <div
+              className="flex flex-wrap items-center gap-1.5 [&>span:first-child]:basis-full [&>span:first-child]:pb-1"
+              aria-label="Scans in this slide"
+            >
+              <ScanStack g={g} sessionId={sessionId} onToggleScan={app.toggleScan} onSplit={app.splitAt} />
+            </div>
+            <ProButton
+              className="self-start"
+              onClick={app.mergeNext}
+              disabled={!session || app.sel >= session.groups.length - 1 || g.locked}
+            >
+              <Merge /> Merge with the next slide
+            </ProButton>
+          </div>
+        )
+      ) : t === "tray" ? (
+        <>
+          <div className="flex shrink-0 flex-col gap-2 border-b border-border p-3">
+            <div className="flex gap-1.5">
+              <TraySwitcher
+                state={state}
+                sessionId={app.openId}
+                onSelectSession={(id) => app.loadSession(id)}
+                onNewTray={() => openNew()}
+                selectClassName="min-w-0 flex-1"
+              />
+            </div>
+            <div className="flex flex-wrap gap-1.5">
+              <ProButton onClick={() => importFolder()}>
+                <FolderInput /> Import scans
+              </ProButton>
+              <ProButton onClick={views.stats}>
+                <ChartNoAxesColumn /> Stats
+              </ProButton>
+              <ProButton onClick={() => setHelpOpen(true)}>
+                <CircleHelp /> Help
+              </ProButton>
+            </div>
+          </div>
+          {inspector("tray")}
+        </>
+      ) : (
+        inspector(t)
+      );
+    return (
+      <>
+        <CompactShell
+          layout={screen}
+          app={app}
+          trayName={session?.summary.name ?? "Slide Station"}
+          well={
+            wellHasNews(state) ? (
+              <ActivityWell
+                state={state}
+                onImport={openImport}
+                onEject={(src) => app.eject(src.path)}
+                onChooseFolder={() => importFolder()}
+                onCapture={canCapture && session ? app.capture : undefined}
+                onResume={app.resumeJob}
+                onSettings={() => openSettings("library")}
+              />
+            ) : null
+          }
+          onPeople={onPeople}
+          onSettings={() => openSettings()}
+          main={main ?? (session ? undefined : <p className="p-6 text-[13px] text-muted-foreground">Loading…</p>)}
+          stage={stage}
+          strip={filmstrip(true)}
+          tools={tools}
+          tool={tool}
+          onTool={openTool}
+          panel={toolPanel}
+          immersive={cropping}
+        />
+        {dialogs}
+      </>
+    );
+  }
+
+  return (
+    <div className="flex h-dvh flex-col overflow-hidden bg-background text-foreground">
+      {desktop ? (
+        <WindowTitlebar
+          title={session?.summary.name ?? "Slide Station"}
+          left={
+            <TraySwitcher
+              state={state}
+              sessionId={app.openId}
+              onSelectSession={(id) => app.loadSession(id)}
+              onNewTray={() => openNew()}
+            />
+          }
+          center={
+            <ActivityWell
+              state={state}
+              onImport={openImport}
+              onEject={(src) => app.eject(src.path)}
+              onChooseFolder={() => importFolder()}
+              onCapture={canCapture && session ? app.capture : undefined}
+              onResume={app.resumeJob}
+              onSettings={() => openSettings("library")}
+            />
+          }
+          right={
+            <>
+              {toggles}
+              <AppActions
+                onHelp={() => setHelpOpen(true)}
+                onSettings={() => openSettings()}
+                onStats={views.stats}
+                onPeople={onPeople}
+              />
+            </>
+          }
+        />
+      ) : (
+        <TopBar
+          panelToggles={toggles}
+          state={state}
+          sessionId={app.openId}
+          onSelectSession={(id) => app.loadSession(id)}
+          onNewTray={() => openNew()}
+          onImport={openImport}
+          onEject={(src) => app.eject(src.path)}
+          onChooseFolder={() => importFolder()}
+          onCapture={canCapture && session ? app.capture : undefined}
+          onResume={app.resumeJob}
+          onHelp={() => setHelpOpen(true)}
+          onSettings={() => openSettings()}
+          onStats={views.stats}
+          onPeople={onPeople}
+        />
+      )}
+
+      <main className="flex min-h-0 flex-1">
+        {main ?? (session ? (
+          <ResizablePanelGroup
+            key={panelIds.join()}
+            id="panel-widths"
+            defaultLayout={layout.defaultLayout}
+            onLayoutChanged={layout.onLayoutChanged}
+          >
+            {panels.filmstrip && (
+              <>
+                <ResizablePanel
+                  id="filmstrip"
+                  defaultSize={250}
+                  minSize={180}
+                  maxSize={560}
+                  groupResizeBehavior="preserve-pixel-size"
+                >
+                  {filmstrip()}
+                </ResizablePanel>
+                <ResizableHandle aria-label="Resize filmstrip" />
+              </>
+            )}
+            <ResizablePanel id="stage" minSize={320}>
+              {stage}
+            </ResizablePanel>
+            {panels.inspector && (
+              <>
+                <ResizableHandle aria-label="Resize inspector" />
+                <ResizablePanel
+                  id="inspector"
+                  defaultSize={300}
+                  minSize={272}
+                  maxSize={480}
+                  groupResizeBehavior="preserve-pixel-size"
+                >
+                  {inspector()}
+                </ResizablePanel>
+              </>
+            )}
+          </ResizablePanelGroup>
+        ) : null)}
+      </main>
+
+      <ProStatusbar>
+        {session ? (
+          <>
+            <span>{plural(session.summary.slides, "slide")}</span>
+            {session.summary.slides > 0 && !session.groups.some(needsReview) ? (
+              <span className="ss-all-developed">✓ All developed</span>
+            ) : (
+              <span>{session.groups.filter(needsReview).length} to develop</span>
+            )}
+            <span>{session.summary.uploaded} in Immich</span>
+            {session.summary.skipped > 0 && <span>{session.summary.skipped} skipped</span>}
+          </>
+        ) : (
+          <span>{hasTrays ? "Loading…" : "No trays yet"}</span>
+        )}
+        <span className="ml-auto flex items-center gap-3 [&_kbd]:h-4 [&_kbd]:min-w-4 [&_kbd]:text-[10px]">
+          <span>
+            <Kbd>←</Kbd> <Kbd>→</Kbd> browse
+          </span>
+          <span>
+            <Kbd>Space</Kbd> develop
+          </span>
+          <span>
+            <Kbd>?</Kbd> all shortcuts
+          </span>
+        </span>
+      </ProStatusbar>
+
+      {dialogs}
     </div>
   );
 }

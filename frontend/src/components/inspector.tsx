@@ -59,6 +59,7 @@ import {
 } from "@/lib/api";
 import { CHANNELS, isStraight } from "@/lib/curves";
 import type { SlideStation } from "@/hooks/use-slide-station";
+import { cn } from "@/lib/utils";
 
 function rotationNote(rotation: number, reason: string) {
   if (!rotation) return "";
@@ -67,7 +68,7 @@ function rotationNote(rotation: number, reason: string) {
   return `${rotation}°`;
 }
 
-type SectionId = "rotation" | "curve" | "colour" | "local" | "details" | "people" | "insights" | "tray";
+export type SectionId = "rotation" | "curve" | "colour" | "local" | "details" | "people" | "insights" | "tray";
 
 function storedSections(): Record<string, boolean> {
   try {
@@ -170,6 +171,7 @@ export function Inspector({
   face,
   onFace,
   people,
+  only,
 }: {
   app: SlideStation;
   session: SessionPayload;
@@ -217,16 +219,21 @@ export function Inspector({
    *  `marking`: the stage waits for a click on someone the face finder missed; `marked`: the face
    *  that made. */
   people?: { on: boolean; marking: boolean; onMark: () => void; marked: string | null };
+  /** Just this section, open, as a tool panel on a phone (the Tray one with the upload and the card
+   *  under it). The Develop row is the phone's own bottom bar then. */
+  only?: SectionId;
 }) {
   const { current: g, sel } = app;
   const sm = session.summary;
   const boxes = app.state?.boxes ?? [];
   const blockers = session.cleanup_blockers;
-  const section = useSections();
+  const sections = useSections();
+  const section = (id: SectionId) => (only ? { expanded: true, onExpandedChange: () => {} } : sections(id));
+  const shows = (id: SectionId) => !only || only === id;
   const undeveloped = session.groups.filter(needsReview).length;
 
   return (
-    <ProInspector className="size-full min-h-0 border-l border-border">
+    <ProInspector className={cn("size-full min-h-0", only ? "ss-tool-panel" : "border-l border-border")}>
       <div className="min-h-0 flex-1 overflow-y-auto scrollbar-thin">
         {g?.locked && (
           <div className="ss-locked flex-wrap" role="status">
@@ -254,115 +261,125 @@ export function Inspector({
         {g && (
           // a locked slide shows its settings but can't change them (the server refuses too)
           <div aria-disabled={g.locked || undefined} className={g.locked ? "ss-readonly" : undefined}>
-            <ProDisclosureGroup title="Frame" summary={frameNote(g)} {...section("rotation")}>
-              <div className="flex items-center gap-1.5 px-3 py-2.5">
-                <ProButtonGroup>
-                  <Tip label="Rotate left" keys="⇧R">
-                    <ProButton plain onClick={() => app.rotate(-90)} aria-label="Rotate left">
-                      <RotateCcw />
+            {shows("rotation") && (
+              <ProDisclosureGroup title="Frame" summary={frameNote(g)} {...section("rotation")}>
+                <div className="flex items-center gap-1.5 px-3 py-2.5">
+                  <ProButtonGroup>
+                    <Tip label="Rotate left" keys="⇧R">
+                      <ProButton plain onClick={() => app.rotate(-90)} aria-label="Rotate left">
+                        <RotateCcw />
+                      </ProButton>
+                    </Tip>
+                    <Tip label="Rotate right" keys="R">
+                      <ProButton plain onClick={() => app.rotate(90)} aria-label="Rotate right">
+                        <RotateCw />
+                      </ProButton>
+                    </Tip>
+                    <Tip label="Upside down">
+                      <ProButton plain onClick={() => app.rotate(180)}>
+                        180°
+                      </ProButton>
+                    </Tip>
+                    <Tip label="Mirror" keys="H">
+                      <ProButton
+                        plain
+                        aria-label="Mirror"
+                        aria-pressed={g.mirror || undefined}
+                        data-on={g.mirror || undefined}
+                        onClick={app.mirror}
+                      >
+                        <FlipHorizontal2 />
+                      </ProButton>
+                    </Tip>
+                  </ProButtonGroup>
+                  <Tip label="Crop and straighten" keys="K">
+                    <ProButton aria-pressed={cropping || undefined} data-on={cropping || undefined} onClick={onCrop}>
+                      <Crop /> Crop
                     </ProButton>
                   </Tip>
-                  <Tip label="Rotate right" keys="R">
-                    <ProButton plain onClick={() => app.rotate(90)} aria-label="Rotate right">
-                      <RotateCw />
-                    </ProButton>
-                  </Tip>
-                  <Tip label="Upside down">
-                    <ProButton plain onClick={() => app.rotate(180)}>
-                      180°
-                    </ProButton>
-                  </Tip>
-                  <Tip label="Mirror" keys="H">
-                    <ProButton
-                      plain
-                      aria-label="Mirror"
-                      aria-pressed={g.mirror || undefined}
-                      data-on={g.mirror || undefined}
-                      onClick={app.mirror}
-                    >
-                      <FlipHorizontal2 />
-                    </ProButton>
-                  </Tip>
-                </ProButtonGroup>
-                <Tip label="Crop and straighten" keys="K">
-                  <ProButton aria-pressed={cropping || undefined} data-on={cropping || undefined} onClick={onCrop}>
-                    <Crop /> Crop
-                  </ProButton>
-                </Tip>
-                {!!(g.params.crop || g.params.angle) && (
-                  <Tip label="Remove crop and straighten">
-                    <ProButton
-                      plain
-                      className="ml-auto"
-                      aria-label="Uncrop"
-                      onClick={() => {
-                        app.setParam("crop", null, true);
-                        app.setParam("angle", 0, true);
-                      }}
-                    >
-                      <Undo2 />
-                    </ProButton>
-                  </Tip>
-                )}
-              </div>
-              <MountSuggestion app={app} g={g} />
-            </ProDisclosureGroup>
+                  {!!(g.params.crop || g.params.angle) && (
+                    <Tip label="Remove crop and straighten">
+                      <ProButton
+                        plain
+                        className="ml-auto"
+                        aria-label="Uncrop"
+                        onClick={() => {
+                          app.setParam("crop", null, true);
+                          app.setParam("angle", 0, true);
+                        }}
+                      >
+                        <Undo2 />
+                      </ProButton>
+                    </Tip>
+                  )}
+                </div>
+                <MountSuggestion app={app} g={g} />
+              </ProDisclosureGroup>
+            )}
 
-            <ProDisclosureGroup title="Tone curve" summary={curveNote(g.params.curves)} {...section("curve")}>
-              <div className="px-3 py-2.5">
-                <ToneCurve
-                  sessionId={sessionId}
-                  group={g}
-                  onChange={(c) => app.setParam("curves", c)}
-                  onFit={() => app.fitCurves()}
-                  onFitAll={() => app.fitCurves(true)}
+            {shows("curve") && (
+              <ProDisclosureGroup title="Tone curve" summary={curveNote(g.params.curves)} {...section("curve")}>
+                <div className="px-3 py-2.5">
+                  <ToneCurve
+                    sessionId={sessionId}
+                    group={g}
+                    onChange={(c) => app.setParam("curves", c)}
+                    onFit={() => app.fitCurves()}
+                    onFitAll={() => app.fitCurves(true)}
+                  />
+                </div>
+              </ProDisclosureGroup>
+            )}
+
+            {shows("colour") && (
+              <ProDisclosureGroup
+                title="Adjust"
+                summary={adjustSummary(g, session.defaults)}
+                right={<AdjustActions app={app} onPresets={onPresets} onDevelopLike={onDevelopLike} />}
+                {...section("colour")}
+              >
+                <AdjustPanel app={app} session={session} picking={picking} onPick={onPick} />
+              </ProDisclosureGroup>
+            )}
+
+            {shows("local") && (
+              <ProDisclosureGroup
+                title="Local"
+                summary={localNote(g)}
+                right={
+                  <Tip label={local.open ? "Close the Local tool" : "Shape them on the photo"} keys="A">
+                    <ProButton
+                      plain
+                      aria-label="Local tool"
+                      aria-pressed={local.open || undefined}
+                      data-on={local.open || undefined}
+                      onClick={() => g.locked || setLocal((t) => ({ ...t, open: !t.open }))}
+                    >
+                      <SunDim />
+                    </ProButton>
+                  </Tip>
+                }
+                {...section("local")}
+              >
+                <LocalPanel app={app} tool={local} setTool={setLocal} />
+              </ProDisclosureGroup>
+            )}
+
+            {shows("details") && (
+              <ProDisclosureGroup title="Details" summary={detailsNote(g, session.stock ?? "")} {...section("details")}>
+                <SlideDetails
+                  app={app}
+                  session={session}
+                  onDateRange={onDateRange}
+                  onAccepted={onAccepted}
+                  onStockRange={onStockRange}
+                  onPlaceRange={onPlaceRange}
+                  placesDownloading={placesDownloading}
                 />
-              </div>
-            </ProDisclosureGroup>
+              </ProDisclosureGroup>
+            )}
 
-            <ProDisclosureGroup
-              title="Adjust"
-              summary={adjustSummary(g, session.defaults)}
-              right={<AdjustActions app={app} onPresets={onPresets} onDevelopLike={onDevelopLike} />}
-              {...section("colour")}
-            >
-              <AdjustPanel app={app} session={session} picking={picking} onPick={onPick} />
-            </ProDisclosureGroup>
-
-            <ProDisclosureGroup
-              title="Local"
-              summary={localNote(g)}
-              right={
-                <Tip label={local.open ? "Close the Local tool" : "Shape them on the photo"} keys="A">
-                  <ProButton
-                    plain
-                    aria-label="Local tool"
-                    aria-pressed={local.open || undefined}
-                    data-on={local.open || undefined}
-                    onClick={() => g.locked || setLocal((t) => ({ ...t, open: !t.open }))}
-                  >
-                    <SunDim />
-                  </ProButton>
-                </Tip>
-              }
-              {...section("local")}
-            >
-              <LocalPanel app={app} tool={local} setTool={setLocal} />
-            </ProDisclosureGroup>
-
-            <ProDisclosureGroup title="Details" summary={detailsNote(g, session.stock ?? "")} {...section("details")}>
-              <SlideDetails
-                app={app}
-                session={session}
-                onDateRange={onDateRange}
-                onAccepted={onAccepted}
-                onStockRange={onStockRange}
-                onPlaceRange={onPlaceRange}
-                placesDownloading={placesDownloading}
-              />
-            </ProDisclosureGroup>
-
-            {(!!g.faces?.length || (people?.on && !g.skip)) && (
+            {shows("people") && (!!g.faces?.length || (people?.on && !g.skip)) && (
               <ProDisclosureGroup title="People" summary={peopleNote(g)} {...section("people")}>
                 <SlidePeople
                   app={app}
@@ -376,7 +393,7 @@ export function Inspector({
               </ProDisclosureGroup>
             )}
 
-            {insights && (
+            {shows("insights") && insights && (
               <ProDisclosureGroup title="Insights" summary={insightsNote(g, session)} {...section("insights")}>
                 <InsightsPanel app={app} session={session} sessionId={sessionId} {...insights} />
               </ProDisclosureGroup>
@@ -384,157 +401,161 @@ export function Inspector({
           </div>
         )}
 
-        <ProDisclosureGroup title="Tray" summary={sm.name} showsBottomSeparator={false} {...section("tray")}>
-          <div className="flex flex-col gap-2 px-3 pt-2.5 pb-3">
-            <TrayPlace
-              box={sm.box}
-              side={sm.side}
-              boxes={boxes}
-              onChange={(place) => app.patchSession(place)}
-            />
-            {session.box && (
-              <div className="flex gap-2">
-                <div className="flex w-[92px] shrink-0 flex-col gap-1">
-                  <Label htmlFor={`${sessionId}-size`} className="text-[11px] font-normal text-muted-foreground">
-                    Trays of
-                  </Label>
-                  <NativeSelect
-                    id={`${sessionId}-size`}
-                    value={session.box.size}
-                    onChange={(e) => app.patchBox(session.box!.number, { size: Number(e.target.value) })}
-                  >
-                    {BOX_SIZES.map((n) => (
-                      <NativeSelectOption key={n} value={n}>
-                        {n}
-                      </NativeSelectOption>
-                    ))}
-                  </NativeSelect>
+        {shows("tray") && (
+          <ProDisclosureGroup title="Tray" summary={sm.name} showsBottomSeparator={false} {...section("tray")}>
+            <div className="flex flex-col gap-2 px-3 pt-2.5 pb-3">
+              <TrayPlace
+                box={sm.box}
+                side={sm.side}
+                boxes={boxes}
+                onChange={(place) => app.patchSession(place)}
+              />
+              {session.box && (
+                <div className="flex gap-2">
+                  <div className="flex w-[92px] shrink-0 flex-col gap-1">
+                    <Label htmlFor={`${sessionId}-size`} className="text-[11px] font-normal text-muted-foreground">
+                      Trays of
+                    </Label>
+                    <NativeSelect
+                      id={`${sessionId}-size`}
+                      value={session.box.size}
+                      onChange={(e) => app.patchBox(session.box!.number, { size: Number(e.target.value) })}
+                    >
+                      {BOX_SIZES.map((n) => (
+                        <NativeSelectOption key={n} value={n}>
+                          {n}
+                        </NativeSelectOption>
+                      ))}
+                    </NativeSelect>
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <TrayField
+                      key={`${session.box.number}-writing`}
+                      label="Written on the box"
+                      value={session.box.writing}
+                      placeholder="as it says"
+                      onCommit={(v) => app.patchBox(session.box!.number, { writing: v })}
+                    />
+                  </div>
                 </div>
-                <div className="min-w-0 flex-1">
-                  <TrayField
-                    key={`${session.box.number}-writing`}
-                    label="Written on the box"
-                    value={session.box.writing}
-                    placeholder="as it says"
-                    onCommit={(v) => app.patchBox(session.box!.number, { writing: v })}
-                  />
-                </div>
-              </div>
-            )}
-            <TrayField label="Name" value={sm.name} onCommit={(v) => app.patchSession({ name: v })} />
-            {session.album_from_settings ? (
-              <Tip label="Every tray goes into this album: change it in Settings" side="left">
-                <div className="flex flex-col gap-1">
-                  <Label className="text-[11px] font-normal text-muted-foreground">Immich album</Label>
-                  <Input value={session.album_label ?? ""} readOnly aria-label="Immich album (set in Settings)" />
-                </div>
+              )}
+              <TrayField label="Name" value={sm.name} onCommit={(v) => app.patchSession({ name: v })} />
+              {session.album_from_settings ? (
+                <Tip label="Every tray goes into this album: change it in Settings" side="left">
+                  <div className="flex flex-col gap-1">
+                    <Label className="text-[11px] font-normal text-muted-foreground">Immich album</Label>
+                    <Input value={session.album_label ?? ""} readOnly aria-label="Immich album (set in Settings)" />
+                  </div>
+                </Tip>
+              ) : (
+                <TrayField label="Immich album" value={sm.album} onCommit={(v) => app.patchSession({ album: v })} />
+              )}
+              <TrayField
+                label="Date"
+                placeholder="e.g. 1985-07 — for slides without their own"
+                value={sm.date}
+                onCommit={async (v) => {
+                  if (await app.patchSession({ date: v }))
+                    toast("Date saved — slides already in Immich get the new date on the next upload");
+                }}
+              />
+              <TrayStock value={session.stock ?? ""} onChange={(stock) => app.patchSession({ stock })} />
+              {session.groups.some((x) => x.status === "uploaded" || x.status === "changed") && (
+                <Tip label="Bring captions and dates edited in Immich back into this tray">
+                  <ProButton className="self-start" onClick={app.pullFromImmich}>
+                    <CloudDownload /> Pull from Immich
+                  </ProButton>
+                </Tip>
+              )}
+            </div>
+          </ProDisclosureGroup>
+        )}
+      </div>
+
+      {/* Pinned: the two things you do on every slide and every tray are always one click away. */}
+      {shows("tray") && (
+        <div className="flex shrink-0 flex-col gap-2 border-t border-border bg-(--ss-panel) px-3 pt-3 pb-3">
+          {g && !only && (
+            <div className="flex gap-1.5">
+              <button
+                type="button"
+                className="ss-develop flex-1"
+                data-done={g.reviewed || undefined}
+                onClick={app.review}
+                aria-label={g.reviewed ? "Developed, go to the next slide to develop" : "Develop and go to next"}
+              >
+                {g.reviewed ? <CheckCheck aria-hidden /> : <Aperture aria-hidden />}
+                <span>{g.reviewed ? "Developed" : "Develop"}</span>
+                <ArrowRight aria-hidden className="ss-develop-arrow" />
+                <Kbd>Space</Kbd>
+              </button>
+              <Tip label={g.skip ? "Unskip slide" : "Skip: leave this slide out of the upload"} keys="X">
+                <ProButton
+                  size="lg"
+                  className="ss-square"
+                  aria-label={g.skip ? "Unskip slide" : "Skip slide"}
+                  aria-pressed={g.skip || undefined}
+                  data-on={g.skip || undefined}
+                  onClick={app.toggleSkip}
+                >
+                  <SkipForward />
+                </ProButton>
+              </Tip>
+              <Tip label="Merge with the next slide" keys="M">
+                <ProButton
+                  size="lg"
+                  className="ss-square"
+                  aria-label="Merge with next"
+                  onClick={app.mergeNext}
+                  disabled={sel >= session.groups.length - 1 || g.locked}
+                >
+                  <Merge />
+                </ProButton>
+              </Tip>
+            </div>
+          )}
+          <UploadArea
+            sm={sm}
+            undeveloped={undeveloped}
+            busy={busy}
+            onUpload={onUpload}
+            restale={!!session.placement_stale}
+            album={session.album_label ?? sm.album}
+          />
+          <div className="flex gap-1.5">
+            <Tip
+              label={
+                sm.card_cleaned
+                  ? "Card cleaned — you can eject the scanner"
+                  : blockers.length
+                    ? `Unlocks when: ${blockers.join("; ")}`
+                    : "Delete this tray's scans from the card (only files matching the verified copies)"
+              }
+              side="top"
+            >
+              {/* span: a disabled button shows no tooltip */}
+              <span className="flex-1">
+                <ProButton fullWidth onClick={onClean} disabled={blockers.length > 0 || busy || sm.card_cleaned}>
+                  <Eraser /> {sm.card_cleaned ? "Card cleaned" : "Clean card"}
+                </ProButton>
+              </span>
+            </Tip>
+            {onSave ? (
+              <Tip label="Save the finished slides to disk: a folder you pick, or a zip" side="top">
+                <ProButton onClick={onSave} disabled={busy || !sm.slides} aria-label="Save to disk">
+                  <Download />
+                </ProButton>
               </Tip>
             ) : (
-              <TrayField label="Immich album" value={sm.album} onCommit={(v) => app.patchSession({ album: v })} />
-            )}
-            <TrayField
-              label="Date"
-              placeholder="e.g. 1985-07 — for slides without their own"
-              value={sm.date}
-              onCommit={async (v) => {
-                if (await app.patchSession({ date: v }))
-                  toast("Date saved — slides already in Immich get the new date on the next upload");
-              }}
-            />
-            <TrayStock value={session.stock ?? ""} onChange={(stock) => app.patchSession({ stock })} />
-            {session.groups.some((x) => x.status === "uploaded" || x.status === "changed") && (
-              <Tip label="Bring captions and dates edited in Immich back into this tray">
-                <ProButton className="self-start" onClick={app.pullFromImmich}>
-                  <CloudDownload /> Pull from Immich
+              <Tip label="Show the finished files" side="top">
+                <ProButton onClick={app.reveal} aria-label="Show files">
+                  <FolderOpen />
                 </ProButton>
               </Tip>
             )}
           </div>
-        </ProDisclosureGroup>
-      </div>
-
-      {/* Pinned: the two things you do on every slide and every tray are always one click away. */}
-      <div className="flex shrink-0 flex-col gap-2 border-t border-border bg-(--ss-panel) px-3 pt-3 pb-3">
-        {g && (
-          <div className="flex gap-1.5">
-            <button
-              type="button"
-              className="ss-develop flex-1"
-              data-done={g.reviewed || undefined}
-              onClick={app.review}
-              aria-label={g.reviewed ? "Developed, go to the next slide to develop" : "Develop and go to next"}
-            >
-              {g.reviewed ? <CheckCheck aria-hidden /> : <Aperture aria-hidden />}
-              <span>{g.reviewed ? "Developed" : "Develop"}</span>
-              <ArrowRight aria-hidden className="ss-develop-arrow" />
-              <Kbd>Space</Kbd>
-            </button>
-            <Tip label={g.skip ? "Unskip slide" : "Skip: leave this slide out of the upload"} keys="X">
-              <ProButton
-                size="lg"
-                className="ss-square"
-                aria-label={g.skip ? "Unskip slide" : "Skip slide"}
-                aria-pressed={g.skip || undefined}
-                data-on={g.skip || undefined}
-                onClick={app.toggleSkip}
-              >
-                <SkipForward />
-              </ProButton>
-            </Tip>
-            <Tip label="Merge with the next slide" keys="M">
-              <ProButton
-                size="lg"
-                className="ss-square"
-                aria-label="Merge with next"
-                onClick={app.mergeNext}
-                disabled={sel >= session.groups.length - 1 || g.locked}
-              >
-                <Merge />
-              </ProButton>
-            </Tip>
-          </div>
-        )}
-        <UploadArea
-          sm={sm}
-          undeveloped={undeveloped}
-          busy={busy}
-          onUpload={onUpload}
-          restale={!!session.placement_stale}
-          album={session.album_label ?? sm.album}
-        />
-        <div className="flex gap-1.5">
-          <Tip
-            label={
-              sm.card_cleaned
-                ? "Card cleaned — you can eject the scanner"
-                : blockers.length
-                  ? `Unlocks when: ${blockers.join("; ")}`
-                  : "Delete this tray's scans from the card (only files matching the verified copies)"
-            }
-            side="top"
-          >
-            {/* span: a disabled button shows no tooltip */}
-            <span className="flex-1">
-              <ProButton fullWidth onClick={onClean} disabled={blockers.length > 0 || busy || sm.card_cleaned}>
-                <Eraser /> {sm.card_cleaned ? "Card cleaned" : "Clean card"}
-              </ProButton>
-            </span>
-          </Tip>
-          {onSave ? (
-            <Tip label="Save the finished slides to disk: a folder you pick, or a zip" side="top">
-              <ProButton onClick={onSave} disabled={busy || !sm.slides} aria-label="Save to disk">
-                <Download />
-              </ProButton>
-            </Tip>
-          ) : (
-            <Tip label="Show the finished files" side="top">
-              <ProButton onClick={app.reveal} aria-label="Show files">
-                <FolderOpen />
-              </ProButton>
-            </Tip>
-          )}
         </div>
-      </div>
+      )}
     </ProInspector>
   );
 }
