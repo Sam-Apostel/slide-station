@@ -95,6 +95,7 @@ export function Filmstrip({
   onSelect,
   slideMenu,
   onScene,
+  row = false,
 }: {
   session: SessionPayload;
   sessionId: string;
@@ -109,6 +110,9 @@ export function Filmstrip({
   slideMenu: (index: number, el: React.ReactElement) => React.ReactElement;
   /** "Apply to this scene…" on a scene's separator (scene number n, 1-based). */
   onScene: (scene: Scene, n: number) => void;
+  /** One scrolling row of small mounts under the photo (a phone held upright): no header, filters
+   *  or scenes, those are in the Slides tool. */
+  row?: boolean;
 }) {
   const sm = session.summary;
   // scenes of the tray (look-alikes): a separator before the first shown slide of each
@@ -139,7 +143,7 @@ export function Filmstrip({
 
   React.useEffect(() => {
     const tile = selRef.current;
-    tile?.scrollIntoView({ block: "nearest" });
+    tile?.scrollIntoView({ block: "nearest", inline: row ? "center" : "nearest" });
     // Keys move the selection from anywhere, so a clicked tile keeping focus would stay ringed
     // after ← → / Space moved on: focus follows the selection while it's in the strip.
     if (tile && tile !== document.activeElement && document.activeElement?.closest(".ss-mount")) {
@@ -147,6 +151,101 @@ export function Filmstrip({
     }
   }, [sel, filter, tagOn]);
 
+  const tiles = groups.map((g, k) => {
+    const isSel = g.index === sel;
+    const scene = sceneOf(g.index);
+    const newScene = scene >= 0 && (k === 0 || sceneOf(groups[k - 1].index) !== scene);
+    const tile = slideMenu(
+      g.index,
+      <button
+        key={g.id}
+        ref={isSel ? selRef : undefined}
+        type="button"
+        onClick={() => onSelect(g.index)}
+        aria-label={`Slide ${g.index + 1}, ${STATUS_LABEL[g.status]}`}
+        aria-current={isSel || undefined}
+        data-status={g.status}
+        data-finish={FINISH[g.status]}
+        data-gilding={gilding.has(g.id) || undefined}
+        onAnimationEnd={(e) => e.animationName === "ss-gild" && gilded(g.id)}
+        className="ss-mount"
+      >
+        {/* the mount's window, with the photo sunk into it */}
+        <span className="ss-mount-window">
+          <PreviewImg
+            url={previewUrl(sessionId, g, 320)}
+            alt=""
+            draggable={false}
+            onLoad={(e) => {
+              const i = e.currentTarget;
+              i.closest<HTMLElement>(".ss-mount")!.dataset.portrait = String(i.naturalHeight > i.naturalWidth);
+            }}
+            className={cn("size-full object-cover", g.skip && "opacity-25 grayscale")}
+          />
+        </span>
+        {g.active.length > 1 && <HdrMark n={g.active.length} />}
+        {/* along the bottom edge, or down the side when the slide is turned; always upright */}
+        <span className="ss-mount-foot">
+          {!FINISH[g.status] && (
+            // developed and uploaded slides are gilded or green instead
+            <span
+              title={STATUS_LABEL[g.status]}
+              className={cn("ss-mount-dot border-[1.5px] border-black/50", STATUS_DOT[g.status])}
+            />
+          )}
+          <span className="ss-mount-number">{String(g.index + 1).padStart(2, "0")}</span>
+          {g.date_est?.value && (
+            // stamped on the mount like the lab did, dimmer when it's an estimate
+            <span className="ss-mount-year" data-estimated={g.date_est.source !== "own" || undefined}>
+              ’{g.date_est.value.slice(2, 4)}
+            </span>
+          )}
+        </span>
+        <span className="absolute top-[5px] right-[5px] flex gap-[3px]">
+          {g.locked && (
+            <TileBadge title="Locked: original scans deleted after upload">
+              <Lock className="size-2.5" aria-label="Locked" />
+            </TileBadge>
+          )}
+        </span>
+      </button>,
+    );
+    if (!newScene || row) return tile;
+    const sc = scenes[scene];
+    return (
+      <React.Fragment key={g.id}>
+        <div className="ss-scene col-span-full" role="separator" aria-label={`Scene ${scene + 1}`}>
+          <span className="min-w-0 flex-1 truncate">
+            Scene {scene + 1}
+            {sc.label && <b> · {sc.label}</b>}
+            <span className="text-(--ss-dim)">
+              {" "}
+              · {sc.start + 1}–{sc.end + 1}
+            </span>
+          </span>
+          <Tip label="Give every slide of this scene a tag, date or caption">
+            <button type="button" onClick={() => onScene(sc, scene + 1)}>
+              Apply to scene…
+            </button>
+          </Tip>
+        </div>
+        {tile}
+      </React.Fragment>
+    );
+  });
+  const none = !groups.length && (
+    <p className="col-span-full py-6 text-center text-[11px] text-(--ss-dim)">
+      {session.groups.length ? "No slides match this filter" : "No slides yet"}
+    </p>
+  );
+
+  if (row)
+    return (
+      <div className="ss-strip flex size-full items-center gap-2.5 overflow-x-auto overscroll-x-contain px-3 py-2" aria-label="Slides">
+        {tiles}
+        {none}
+      </div>
+    );
   return (
     <aside className="flex size-full min-h-0 flex-col border-r border-border bg-[var(--pro-canvas)]">
       <div className="border-b border-border bg-(--ss-panel) px-3 pt-2.5 pb-2">
@@ -179,93 +278,8 @@ export function Filmstrip({
         </div>
       )}
       <div className="grid min-h-0 flex-1 auto-rows-min grid-cols-[repeat(auto-fill,minmax(104px,1fr))] gap-3 overflow-y-auto p-3 scrollbar-thin">
-        {groups.map((g, k) => {
-          const isSel = g.index === sel;
-          const scene = sceneOf(g.index);
-          const newScene = scene >= 0 && (k === 0 || sceneOf(groups[k - 1].index) !== scene);
-          const tile = slideMenu(
-            g.index,
-            <button
-              key={g.id}
-              ref={isSel ? selRef : undefined}
-              type="button"
-              onClick={() => onSelect(g.index)}
-              aria-label={`Slide ${g.index + 1}, ${STATUS_LABEL[g.status]}`}
-              aria-current={isSel || undefined}
-              data-status={g.status}
-              data-finish={FINISH[g.status]}
-              data-gilding={gilding.has(g.id) || undefined}
-              onAnimationEnd={(e) => e.animationName === "ss-gild" && gilded(g.id)}
-              className="ss-mount"
-            >
-              {/* the mount's window, with the photo sunk into it */}
-              <span className="ss-mount-window">
-                <PreviewImg
-                  url={previewUrl(sessionId, g, 320)}
-                  alt=""
-                  draggable={false}
-                  onLoad={(e) => {
-                    const i = e.currentTarget;
-                    i.closest<HTMLElement>(".ss-mount")!.dataset.portrait = String(i.naturalHeight > i.naturalWidth);
-                  }}
-                  className={cn("size-full object-cover", g.skip && "opacity-25 grayscale")}
-                />
-              </span>
-              {g.active.length > 1 && <HdrMark n={g.active.length} />}
-              {/* along the bottom edge, or down the side when the slide is turned; always upright */}
-              <span className="ss-mount-foot">
-                {!FINISH[g.status] && (
-                  // developed and uploaded slides are gilded or green instead
-                  <span
-                    title={STATUS_LABEL[g.status]}
-                    className={cn("ss-mount-dot border-[1.5px] border-black/50", STATUS_DOT[g.status])}
-                  />
-                )}
-                <span className="ss-mount-number">{String(g.index + 1).padStart(2, "0")}</span>
-                {g.date_est?.value && (
-                  // stamped on the mount like the lab did, dimmer when it's an estimate
-                  <span className="ss-mount-year" data-estimated={g.date_est.source !== "own" || undefined}>
-                    ’{g.date_est.value.slice(2, 4)}
-                  </span>
-                )}
-              </span>
-              <span className="absolute top-[5px] right-[5px] flex gap-[3px]">
-                {g.locked && (
-                  <TileBadge title="Locked: original scans deleted after upload">
-                    <Lock className="size-2.5" aria-label="Locked" />
-                  </TileBadge>
-                )}
-              </span>
-            </button>,
-          );
-          if (!newScene) return tile;
-          const sc = scenes[scene];
-          return (
-            <React.Fragment key={g.id}>
-              <div className="ss-scene col-span-full" role="separator" aria-label={`Scene ${scene + 1}`}>
-                <span className="min-w-0 flex-1 truncate">
-                  Scene {scene + 1}
-                  {sc.label && <b> · {sc.label}</b>}
-                  <span className="text-(--ss-dim)">
-                    {" "}
-                    · {sc.start + 1}–{sc.end + 1}
-                  </span>
-                </span>
-                <Tip label="Give every slide of this scene a tag, date or caption">
-                  <button type="button" onClick={() => onScene(sc, scene + 1)}>
-                    Apply to scene…
-                  </button>
-                </Tip>
-              </div>
-              {tile}
-            </React.Fragment>
-          );
-        })}
-        {!groups.length && (
-          <p className="col-span-full py-6 text-center text-[11px] text-(--ss-dim)">
-            {session.groups.length ? "No slides match this filter" : "No slides yet"}
-          </p>
-        )}
+        {tiles}
+        {none}
       </div>
     </aside>
   );

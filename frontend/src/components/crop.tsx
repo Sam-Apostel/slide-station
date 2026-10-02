@@ -271,7 +271,7 @@ export function CropBar({
         </span>
       </label>
 
-      <span className="flex items-center gap-1 text-[11px] text-muted-foreground">
+      <span className="ss-key-hint flex items-center gap-1 text-[11px] text-muted-foreground">
         <Kbd>←</Kbd>
         <Kbd>→</Kbd>
         <Kbd>↑</Kbd>

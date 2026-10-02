@@ -93,6 +93,10 @@ wants them.
     auto-rotate and best-of-bracket do the rest. Immich settings arrive by scanning a QR code
     generated on the Mac, so nobody types an API key on the iPad.
   - **Studio mode**: today's tools (curves, adjust, crop, dates), for pencil and trackpad.
+  - **Next: the phone layouts** of the web app (ARCHITECTURE §4, "Phones") as the compact-width
+    screens, so an iPhone gets the whole editor and not only Simple: the photo with the tools
+    under it (upright) or in a rail (on its side), the tools being Studio's panels one at a time.
+    Hide the "Studio mode on iPad" setting on iPhone, where it does nothing.
 - Distribution: TestFlight (the same Apple Developer account as Mac signing), later the App Store.
 - Later: the same SwiftUI app on the Mac could replace Electron + Python, leaving one codebase.
   Keep the Python app as the reference until the Swift one matches it.
@@ -133,6 +137,11 @@ Done: mount detection and straighten-to-mount; RAW files and tethered capture th
   exposures per slide automatically, so bracketing costs nothing.
 - **Carousel auto-advance** for the camera rig: a projector mechanism stepping the tray between
   captures.
+- **iPhone camera capture**: the iPhone as the camera, a second bright screen (an iPad or an old
+  phone in a "light box" mode: full white, adjustable warmth) as the light, and a mount. Hands-free:
+  shoot when a new slide sits still in the frame, bracket automatically (fused like the scanner's
+  brackets), focus / exposure / white balance locked once at setup against the bare light. Not on
+  the iPhone's Camera Control: too fiddly, and it only works while a capture session runs.
 
 ## 6. The tool itself
 

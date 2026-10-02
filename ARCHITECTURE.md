@@ -122,6 +122,20 @@ frontend/src/
   1–9 toggles); `ProInspector` right rail with the tone curve, the Adjust panel and a pinned upload/clean footer;
   `ProStatusbar`. Toasts are sonner; `window.confirm` became a promise-based `AlertDialog`
   (`components/confirm.tsx`).
+- **Phones** (`lib/layout.ts`, `components/compact.tsx`): the side-by-side panels need about 780 px,
+  so below that (or on a phone on its side: wide but under 560 px tall) `useLayout` picks
+  `"portrait"` or `"landscape"` and `App.tsx` renders `CompactShell` instead. Same state, same
+  components: the stage (`compact`: no loupe, swipe for ← →, double-tap to zoom, long-press for the
+  slide menu), the filmstrip (`row` under the photo; the whole thing in the Slides tool) and the
+  inspector one section at a time (`only`) as **tools**, plus Scans (the stack, split, merge) and
+  Tray (switch / new tray, import, upload, clean). Upright: photo, the open tool's panel (or the
+  row of slides), the tool row, a bar with ‹ Skip Turn Develop. On its side: photo full height, the
+  panel beside it, the tools in a rail with Develop at the bottom. Crop takes the whole screen.
+  `useLayout` mirrors itself on `<html data-layout / data-compact>`, which `theme.css` sizes
+  controls by (dialogs are portalled): 16 px fields (iOS zooms into smaller ones), 32 px+ buttons,
+  thicker sliders, safe areas, no keyboard hints. The desktop app is always `"wide"`.
+  `tests/phone_flow.py` checks both phone layouts at iPhone size and that tablets and laptops keep
+  the panels. Dialogs scroll on any short screen (`theme.css`).
 - Filmstrip | stage | inspector sit in a `resizable` panel group. The side panels keep their pixel
   width when the window resizes; widths are saved per combination of visible panels
   (`useDefaultLayout`, key `panel-widths`), and the group remounts when a panel is shown/hidden.

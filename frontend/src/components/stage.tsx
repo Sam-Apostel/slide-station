@@ -104,6 +104,8 @@ export function Stage({
   marking = false,
   onMarked,
   back,
+  compact = false,
+  onSwipe,
 }: {
   session: SessionPayload;
   sessionId: string;
@@ -145,6 +147,11 @@ export function Stage({
   onMarked?: (at: [number, number] | null) => void;
   /** Came here from a page in People & Places: the way back to it. */
   back?: { label: string; onBack: () => void; onDismiss: () => void };
+  /** A phone layout: a slimmer bar (no loupe: there is no pointer to follow), the scans in their
+   *  own tool, and the photo takes gestures — swipe for the next / previous slide, double-tap to zoom. */
+  compact?: boolean;
+  /** Swiped across the photo: 1 = the next slide, -1 = the previous one. */
+  onSwipe?: (dir: 1 | -1) => void;
 }) {
   const g: Group | undefined = session.groups[sel];
   const next = session.groups[sel + 1];
@@ -229,6 +236,39 @@ export function Stage({
     return () => window.removeEventListener("keydown", key, true);
   }, [marking, onMarked]);
 
+  // ---- touch: swipe between slides, double-tap to zoom in where tapped (dblclick is unreliable
+  // on touch screens). Only while nothing else on the photo takes the finger.
+  const free = !!g && !cropping && !zooming && !comparing && !localOn && !picking && !marking;
+  const touch = React.useRef<{ x: number; y: number; t: number; id: number } | null>(null);
+  const lastTap = React.useRef<{ x: number; y: number; t: number } | null>(null);
+  const gestures = {
+    onPointerDown: (e: React.PointerEvent) => {
+      if (!free || e.pointerType === "mouse" || !e.isPrimary) return;
+      touch.current = { x: e.clientX, y: e.clientY, t: e.timeStamp, id: e.pointerId };
+    },
+    onPointerCancel: () => (touch.current = null),
+    onPointerUp: (e: React.PointerEvent) => {
+      const t = touch.current;
+      touch.current = null;
+      if (!t || t.id !== e.pointerId || !free) return;
+      const dx = e.clientX - t.x;
+      const dy = e.clientY - t.y;
+      if (Math.abs(dx) > 48 && Math.abs(dx) > 1.5 * Math.abs(dy) && e.timeStamp - t.t < 700) {
+        lastTap.current = null;
+        onSwipe?.(dx < 0 ? 1 : -1);
+        return;
+      }
+      if (Math.hypot(dx, dy) > 10 || e.timeStamp - t.t > 300) return (lastTap.current = null), undefined;
+      const prev = lastTap.current;
+      if (prev && e.timeStamp - prev.t < 320 && Math.hypot(e.clientX - prev.x, e.clientY - prev.y) < 40) {
+        lastTap.current = null;
+        if (imgEl) onZoom(photoPoint(imgEl, e.clientX, e.clientY) ?? [0.5, 0.5]);
+        return;
+      }
+      lastTap.current = { x: e.clientX, y: e.clientY, t: e.timeStamp };
+    },
+  };
+
   return (
     <section className="flex size-full min-h-0 min-w-0 flex-col bg-[var(--pro-well)]">
       <div className="flex h-9 shrink-0 items-center justify-between gap-2 border-b border-border bg-(--ss-bar) px-3.5">
@@ -253,7 +293,7 @@ export function Stage({
               )}
             >
               <span className={cn("size-[7px] rounded-full border border-transparent", STATUS_DOT[g.status])} />
-              {STATUS_LABEL[g.status]}
+              {compact ? <span className="sr-only">{STATUS_LABEL[g.status]}</span> : STATUS_LABEL[g.status]}
             </span>
             {g.locked && (
               <Tip label="Its original scans were deleted after upload, so it can't be edited. Immich has the final version.">
@@ -290,16 +330,18 @@ export function Stage({
                 <ZoomIn />
               </ProButton>
             </Tip>
-            <Tip label="Loupe: 100 % under the pointer" keys="L">
-              <ProButton
-                aria-label="Loupe"
-                aria-pressed={loupe || undefined}
-                data-on={loupe || undefined}
-                onClick={() => onLoupe(!loupe)}
-              >
-                <Search />
-              </ProButton>
-            </Tip>
+            {!compact && (
+              <Tip label="Loupe: 100 % under the pointer" keys="L">
+                <ProButton
+                  aria-label="Loupe"
+                  aria-pressed={loupe || undefined}
+                  data-on={loupe || undefined}
+                  onClick={() => onLoupe(!loupe)}
+                >
+                  <Search />
+                </ProButton>
+              </Tip>
+            )}
             <Tip label="Split view: before | after" keys="Y">
               <ProButton
                 aria-label="Split before and after"
@@ -325,9 +367,10 @@ export function Stage({
       </div>
 
       <div
-        className={cn("relative min-h-0 flex-1 overflow-hidden", looking && "cursor-crosshair")}
+        className={cn("relative min-h-0 flex-1 overflow-hidden", looking && "cursor-crosshair", compact && "ss-stage-touch")}
         onPointerMove={track}
         onPointerLeave={() => setLoupeAt(null)}
+        {...(compact && gestures)}
       >
         {g &&
           shown &&
@@ -476,61 +519,81 @@ export function Stage({
           onDone={() => finish.current(true)}
         />
       )}
-      {g && !cropping && (
+      {g && !cropping && !compact && (
         <div
           className="flex min-h-[72px] shrink-0 items-center gap-1.5 overflow-x-auto border-t border-border bg-(--ss-bar) px-3.5 py-2"
           aria-label="Scans in this slide"
         >
-          <span className="mr-1.5 text-[11px] whitespace-nowrap text-muted-foreground">
-            {g.scans.length > 1 ? `Stack of ${g.scans.length} scans · click to leave one out` : "Single scan"}
-          </span>
-          {g.scans.map((sc, k) => {
-            const off = g.excluded.includes(sc);
-            return (
-              <React.Fragment key={sc}>
-                {k > 0 && (
-                  <Tip label="Split: this scan and the ones after it are a different slide" side="top">
-                    <button
-                      type="button"
-                      onClick={() => onSplit(sc)}
-                      aria-label={`Split before scan ${k + 1}`}
-                      className="group grid h-[52px] w-4 shrink-0 cursor-default place-items-center rounded border border-dashed border-transparent text-transparent hover:border-(--ss-line) hover:text-muted-foreground focus-visible:border-(--ss-line) focus-visible:text-muted-foreground"
-                    >
-                      <Scissors className="size-3" />
-                    </button>
-                  </Tip>
-                )}
-                <button
-                  type="button"
-                  onClick={() => onToggleScan(sc)}
-                  title={
-                    off && g.auto_excluded?.[sc]
-                      ? `Left out automatically: ${g.auto_excluded[sc]}. Click to use it anyway.`
-                      : sc
-                  }
-                  aria-pressed={!off}
-                  aria-label={`Scan ${k + 1}${off ? " (left out)" : ""}`}
-                  className={cn(
-                    "relative shrink-0 cursor-default overflow-hidden rounded border-2 border-border",
-                    off && "border-dashed",
-                  )}
-                >
-                  <ScanThumb
-                    url={scanThumbUrl(sessionId, sc)}
-                    alt=""
-                    draggable={false}
-                    className={cn("block h-[52px] min-w-[52px]", off && "opacity-35")}
-                  />
-                  <span className="absolute top-px left-[3px] text-[10px] [text-shadow:0_1px_2px_#000]">{k + 1}</span>
-                  {off && g.auto_excluded?.[sc] && (
-                    <span className="ss-scan-why">{g.auto_excluded[sc]}</span>
-                  )}
-                </button>
-              </React.Fragment>
-            );
-          })}
+          <ScanStack g={g} sessionId={sessionId} onToggleScan={onToggleScan} onSplit={onSplit} />
         </div>
       )}
     </section>
+  );
+}
+
+/** The scans stacked into the slide: click one to leave it out (or use it again), or split the
+ *  stack between two scans. Under the photo in the wide layout, the Scans tool on a phone. */
+export function ScanStack({
+  g,
+  sessionId,
+  onToggleScan,
+  onSplit,
+}: {
+  g: Group;
+  sessionId: string;
+  onToggleScan: (scan: string) => void;
+  onSplit: (scan: string) => void;
+}) {
+  return (
+    <>
+      <span className="mr-1.5 text-[11px] whitespace-nowrap text-muted-foreground">
+        {g.scans.length > 1 ? `Stack of ${g.scans.length} scans · click to leave one out` : "Single scan"}
+      </span>
+      {g.scans.map((sc, k) => {
+        const off = g.excluded.includes(sc);
+        return (
+          <React.Fragment key={sc}>
+            {k > 0 && (
+              <Tip label="Split: this scan and the ones after it are a different slide" side="top">
+                <button
+                  type="button"
+                  onClick={() => onSplit(sc)}
+                  aria-label={`Split before scan ${k + 1}`}
+                  className="ss-split group grid h-[52px] w-4 shrink-0 cursor-default place-items-center rounded border border-dashed border-transparent text-transparent hover:border-(--ss-line) hover:text-muted-foreground focus-visible:border-(--ss-line) focus-visible:text-muted-foreground"
+                >
+                  <Scissors className="size-3" />
+                </button>
+              </Tip>
+            )}
+            <button
+              type="button"
+              onClick={() => onToggleScan(sc)}
+              title={
+                off && g.auto_excluded?.[sc]
+                  ? `Left out automatically: ${g.auto_excluded[sc]}. Click to use it anyway.`
+                  : sc
+              }
+              aria-pressed={!off}
+              aria-label={`Scan ${k + 1}${off ? " (left out)" : ""}`}
+              className={cn(
+                "relative shrink-0 cursor-default overflow-hidden rounded border-2 border-border",
+                off && "border-dashed",
+              )}
+            >
+              <ScanThumb
+                url={scanThumbUrl(sessionId, sc)}
+                alt=""
+                draggable={false}
+                className={cn("block h-[52px] min-w-[52px]", off && "opacity-35")}
+              />
+              <span className="absolute top-px left-[3px] text-[10px] [text-shadow:0_1px_2px_#000]">{k + 1}</span>
+              {off && g.auto_excluded?.[sc] && (
+                <span className="ss-scan-why">{g.auto_excluded[sc]}</span>
+              )}
+            </button>
+          </React.Fragment>
+        );
+      })}
+    </>
   );
 }
