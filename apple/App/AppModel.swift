@@ -1,6 +1,7 @@
 import Observation
 import SlideAlbums
 import SlideFaces
+import SlideInsights
 import SlideKit
 import SwiftUI
 
@@ -46,6 +47,8 @@ final class AppModel {
     let albums = AlbumLibrary()
     /// People on the slides: faces found with the desktop app's models, named once.
     let people: PeopleModel
+    /// Suggested tags, captions and places, from Apple's own models.
+    let insights: InsightsModel
 
     var immich: ImmichSettings {
         get { ImmichSettings(url: albums.connection.url, key: albums.connection.key) }
@@ -68,8 +71,10 @@ final class AppModel {
         RendererSizes.shared.library = lib
         learning = Learning.Model(url: lib.root.appendingPathComponent("learning.json"))
         people = PeopleModel(library: lib, renderer: r)
+        insights = InsightsModel(root: lib.root)
         learningEnabled = UserDefaults.standard.object(forKey: "learningEnabled") as? Bool ?? true
         keepOriginals = UserDefaults.standard.object(forKey: "keepOriginals") as? Bool ?? true
+        insights.start(self)
     }
 
     var slide: Slide? { tray.flatMap { $0.groups.indices.contains(selection) ? $0.groups[selection] : nil } }
@@ -118,6 +123,7 @@ final class AppModel {
         learning = Learning.Model(url: lib.root.appendingPathComponent("learning.json"))
         libraryFolder = folder
         people.use(library: lib, renderer: renderer)
+        insights.use(root: lib.root)
     }
 
     func open(_ id: String) async {
@@ -287,6 +293,7 @@ final class AppModel {
             let r = try await Uploader(library: library).finish(trayID: id, settings: settings, onlyReady: onlyReady, keepOriginals: keep, progress: progress)
             var s = "\(r.uploaded) slides uploaded to “\(r.album)”"
             if r.lost > 0 { s += "; \(r.lost) kept their Immich copy (originals deleted)" }
+            if let t = r.tagProblem { s += ". Tags weren't sent: \(t)" }
             return s
         }
     }
@@ -366,6 +373,11 @@ final class AppModel {
                     t.groups[j].excluded = snapshot.excluded; t.groups[j].history = snapshot.history
                     t.groups[j].date = snapshot.date; t.groups[j].caption = snapshot.caption
                     t.groups[j].writing = snapshot.writing
+                    t.groups[j].tags = snapshot.tags; t.groups[j].place = snapshot.place
+                    // suggestions: unless they were looked at again meanwhile (that copy has these decisions)
+                    if t.groups[j].insights?["key"] == snapshot.insights?["key"] || t.groups[j].insights == nil {
+                        t.groups[j].insights = snapshot.insights
+                    }
                     if snapshot.currentMount != nil { t.groups[j].mount = snapshot.mount }   // found lazily (findMount)
                 }
             }
@@ -574,7 +586,75 @@ final class AppModel {
 
     func setCaption(_ caption: String) {
         guard let s = slide else { return }
-        edit(s.id, debounce: true) { $0.caption = caption.isEmpty ? nil : caption }
+        let key = insights.key
+        edit(s.id, debounce: true) { $0.setCaption(caption, freshKey: key) }
+    }
+
+    // MARK: tags, place and suggestions
+
+    /// The slide's own tags (typed, or suggestions accepted); a suggested tag taken off is dismissed.
+    func setTags(_ tags: [String]) {
+        guard let s = slide else { return }
+        var dismissed: [String] = []
+        edit(s.id) { dismissed = $0.setTags(tags) }
+        insights.learning.record(dismissed, accepted: false)
+    }
+
+    /// The slide's place (nil clears it); the slides between two with the same place get it suggested.
+    func setPlace(_ place: Slide.Place?) {
+        guard let s = slide else { return }
+        edit(s.id) { $0.setPlace(place) }
+        suggestAlongTray()
+    }
+
+    /// Accept or dismiss a suggestion on the slide on screen (all its tags, or `value`); accepting a
+    /// caption takes `text` as edited.
+    func decide(_ kind: Insights.Kind, accept: Bool, value: String? = nil, text: String? = nil) {
+        guard let s = slide else { return }
+        var decided: [String]?
+        let key = insights.key
+        edit(s.id) { decided = $0.decide(kind, accept: accept, value: value, text: text, freshKey: key) }
+        if kind == .tags, let decided { insights.learning.record(decided, accepted: accept) }
+        if kind == .place, accept { suggestAlongTray() }
+    }
+
+    /// Give slides `from`...`to` (indices, either order) what this slide has (server's
+    /// insights/propagate): a tag added to theirs, or this place. Locked slides are left alone.
+    func apply(_ kind: Insights.Kind, value: String, place: Slide.Place? = nil, from a: Int, to b: Int) {
+        guard let t = tray, !t.groups.isEmpty else { return }
+        let lo = max(0, min(a, b)), hi = min(t.groups.count - 1, max(a, b))
+        guard lo <= hi else { return }
+        for i in lo...hi where t.groups[i].locked == nil {
+            let g = t.groups[i]
+            switch kind {
+            case .tags where !(g.tags ?? []).contains(value): edit(g.id) { $0.setTags(($0.tags ?? []) + [value]) }
+            case .place: edit(g.id) { $0.setPlace(place) }
+            default: break
+            }
+        }
+        if kind == .place { suggestAlongTray() }
+    }
+
+    /// Fresh suggestions for a slide from the background worker: merged with what was decided
+    /// meanwhile, if it's still the slide they were made for.
+    func commitInsights(_ slideID: String, _ new: [String: JSONValue], key: (Slide) -> String) {
+        guard let g = tray?.groups.first(where: { $0.id == slideID }), key(g) == new["key"]?.text,
+              g.insights?["key"]?.text != new["key"]?.text else { return }
+        edit(slideID) { g in
+            g.insights = Insights.merge(g.insights, new, ownTags: g.tags ?? [], ownCaption: g.caption ?? "", ownPlace: g.place)
+        }
+        suggestAlongTray()
+    }
+
+    /// A place between two slides with the same place (places.suggest_between).
+    private func suggestAlongTray() {
+        guard var t = tray else { return }
+        let before = t.groups.map(\.insights)
+        Insights.suggestBetween(&t)
+        for (i, g) in t.groups.enumerated() where g.insights != before[i] {
+            let v = g.insights
+            edit(g.id) { $0.insights = v }
+        }
     }
 
     /// What's written on the slide's mount. Not the photo: fine on a locked slide, never uploaded.

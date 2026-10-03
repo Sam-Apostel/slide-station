@@ -52,6 +52,8 @@ targets:
         product: SlideAlbums
       - package: SlideKit
         product: SlideFaces
+      - package: SlideKit
+        product: SlideInsights
       - target: SlideStationWidget
         embed: true
         codeSign: true
@@ -128,6 +130,8 @@ targets:
         product: SlideAlbums
       - package: SlideKit
         product: SlideFaces
+      - package: SlideKit
+        product: SlideInsights
     settings:
       base:
         PRODUCT_NAME: Slide Station

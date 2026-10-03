@@ -98,6 +98,28 @@ public struct ImmichClient: Sendable {
         return (id, o["status"] as? String ?? "created")
     }
 
+    /// Put tags on assets, {tag: [asset ids]}, creating the tags that don't exist yet (`PUT /tags`
+    /// upserts; `immich.tag_each`). Needs tag.create and tag.asset; Immich before v1.113 has none.
+    public func tagEach(_ tags: [String: [String]]) async throws {
+        guard !tags.isEmpty else { return }
+        let (data, response) = try await session.data(for: request("PUT", "tags", json: ["tags": tags.keys.sorted()]))
+        switch (response as? HTTPURLResponse)?.statusCode ?? 0 {
+        case 404: throw SlideKitError.immich("This Immich has no tags yet: update it to v1.113 or later to send tags.")
+        case 403: throw SlideKitError.immich("The API key can't tag photos (403): give it tag.create and tag.asset to send tags.")
+        case 400...: throw SlideKitError.immich("Immich didn't take the tags: \(String(decoding: data.prefix(300), as: UTF8.self))")
+        default: break
+        }
+        let made = try json(data) as? [[String: Any]] ?? []
+        var ids: [String: String] = [:]
+        for t in made { if let id = t["id"] as? String, let v = (t["value"] as? String) ?? (t["name"] as? String) { ids[v] = id } }
+        for (name, assets) in tags {
+            guard let id = ids[name] else { continue }
+            for chunk in stride(from: 0, to: assets.count, by: 200) {
+                _ = try await send(request("PUT", "tags/\(id)/assets", json: ["ids": Array(assets[chunk..<min(assets.count, chunk + 200)])]))
+            }
+        }
+    }
+
     public func trash(_ assets: [String]) async throws {
         guard !assets.isEmpty else { return }
         _ = try await send(request("DELETE", "assets", json: ["ids": assets, "force": false]))

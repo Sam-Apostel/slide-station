@@ -12,6 +12,9 @@ let package = Package(
         // People on your own slides: the desktop app's face models (YuNet, SFace) through ONNX
         // Runtime, the same faces.json / people.json, so a shared library stays one library.
         .library(name: "SlideFaces", targets: ["SlideFaces"]),
+        // Suggestions with Apple's own models: scene tags and sign text (Vision), places (Apple
+        // Maps), captions (Apple Intelligence). Nothing to download.
+        .library(name: "SlideInsights", targets: ["SlideInsights"]),
     ],
     dependencies: [
         .package(path: "../Vendor/ProUI"),
@@ -34,9 +37,11 @@ let package = Package(
             resources: [.copy("Resources/face_detection_yunet_2023mar.onnx")],
             swiftSettings: [.unsafeFlags(["-O"], .when(configuration: .debug))]   // pixel loops, as SlideKit
         ),
+        .target(name: "SlideInsights", dependencies: ["SlideKit"]),
         .testTarget(name: "SlideKitTests", dependencies: ["SlideKit"], resources: [.copy("Golden")]),
         .testTarget(name: "SlideAlbumsTests", dependencies: ["SlideAlbums"]),
         .testTarget(name: "SlideFacesTests", dependencies: ["SlideFaces"], resources: [.copy("Fixtures")]),
+        .testTarget(name: "SlideInsightsTests", dependencies: ["SlideInsights"]),
     ],
     swiftLanguageVersions: [.v5]
 )
