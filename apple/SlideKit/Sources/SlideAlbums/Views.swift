@@ -34,6 +34,46 @@ public struct RemotePhoto: View {
     }
 }
 
+/// A person's face, cut from a photo and shown round, like the People row in Photos. Cut here
+/// rather than fetched (`/people/{id}/thumbnail`): for an album shared by someone else, their
+/// people aren't this account's to fetch.
+public struct FaceAvatar: View {
+    let photoID: String
+    let box: [Double]
+    let client: AlbumClient?
+    var size: CGFloat
+    @State private var face: CGImage?
+
+    public init(photoID: String, box: [Double], client: AlbumClient?, size: CGFloat = 64) {
+        self.photoID = photoID; self.box = box; self.client = client; self.size = size
+    }
+
+    public var body: some View {
+        ZStack {
+            Circle().fill(ProTheme.canvas)
+            if let face { Image(decorative: face, scale: 1).resizable().scaledToFill() } else { Image(systemName: "person.fill").foregroundStyle(ProTheme.dim) }
+        }
+        .frame(width: size, height: size)
+        .clipShape(Circle())
+        .overlay { Circle().strokeBorder(.white.opacity(0.12), lineWidth: 1) }
+        .task(id: "\(photoID)|\(box)") {
+            guard let client, box.count == 4,
+                  let img = try? await PhotoImages.shared.image(photoID, size: .preview, maxPixel: 1440, client: client) else { return }
+            face = Self.crop(img, box)
+        }
+    }
+
+    /// A square around the face with some room (hair, chin), kept inside the photo.
+    static func crop(_ img: CGImage, _ b: [Double]) -> CGImage? {
+        let w = Double(img.width), h = Double(img.height)
+        let cx = (b[0] + b[2]) / 2 * w, cy = (b[1] + b[3]) / 2 * h
+        var side = max((b[2] - b[0]) * w, (b[3] - b[1]) * h) * 1.7
+        side = min(side, w, h)
+        let x = min(max(0, cx - side / 2), w - side), y = min(max(0, cy - side / 2), h - side)
+        return img.cropping(to: CGRect(x: x, y: y, width: side, height: side).integral)
+    }
+}
+
 /// Photos one after the other, full screen, the way a projector shows a tray: a slow cross-fade and
 /// a slight drift, the caption, date and place underneath.
 ///

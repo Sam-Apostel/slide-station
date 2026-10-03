@@ -142,16 +142,20 @@ struct AlbumScreen: View {
     @State private var width: CGFloat = 0
     /// A swipe across the grid that picks photos: where it started, and what was picked before it.
     @State private var sweep: (start: Int, adding: Bool, before: Set<String>)?
+    /// Only the slides with this person (tapped in the People row).
+    @State private var person: AlbumPerson?
 
     private let gap: CGFloat = 2
     private var columns: Int { max(3, Int((width + gap) / ((Platform.isMac ? 150 : 110) + gap))) }
     private var cell: CGFloat { max(1, (width - CGFloat(columns - 1) * gap) / CGFloat(columns)) }
 
     var body: some View {
-        let photos = albums.photos[album.id] ?? []
+        let all = albums.photos[album.id] ?? []
+        let photos = person.map { who in all.filter { ($0.people ?? []).contains { $0.id == who.id } } } ?? all
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
                 header(photos)
+                peopleRow(all)
                 grid(photos)
                 if photos.isEmpty {
                     Text(albums.loading ? "Loading…" : "Nothing in this album yet.").foregroundStyle(ProTheme.muted).padding(.horizontal, 20).padding(.top, 20)
@@ -181,29 +185,20 @@ struct AlbumScreen: View {
 
     private func header(_ photos: [AlbumPhoto]) -> some View {
         VStack(alignment: .leading, spacing: 14) {
-            HStack(alignment: .bottom, spacing: 12) {
-                VStack(alignment: .leading, spacing: 4) {
+            // the name and Follow share a row; the facts below get the whole width
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(alignment: .firstTextBaseline, spacing: 12) {
                     Text(album.name).font(.system(size: 28, weight: .bold)).lineLimit(2)
-                    Text([["\(photos.isEmpty ? album.count : photos.count) slides"], [ImmichDate.span(photos)], [album.sharedBy.map { "shared by \($0)" }]]
-                            .flatMap { $0 }.compactMap { $0 }.joined(separator: " · "))
-                        .foregroundStyle(ProTheme.muted)
+                    Spacer(minLength: 0)
+                    followButton.alignmentGuide(.firstTextBaseline) { $0[VerticalAlignment.center] + 6 }
                 }
-                Spacer(minLength: 0)
-                // says what it is: followed or not (a tinted toggle reads the same either way)
-                let following = albums.isFollowed(album.id)
-                Button { albums.setFollowing(album.id, !following) } label: {
-                    Label(following ? "Following" : "Follow", systemImage: following ? "checkmark" : "plus")
-                        .font(.system(size: 14, weight: .semibold))
-                        .padding(.horizontal, 14).frame(height: 34)
-                        .foregroundStyle(following ? ProTheme.ink : ProTheme.accentInk)
-                        .background(following ? AnyShapeStyle(Color.white.opacity(0.1)) : AnyShapeStyle(ProTheme.accent), in: Capsule())
-                }
-                .buttonStyle(.plain).fixedSize()
-                .help("Followed albums play in the slideshow, the widget and on Apple TV")
+                Text([["\(photos.isEmpty && person == nil ? album.count : photos.count) slides"], [person.map { "with \($0.name)" }], [ImmichDate.span(photos)], [album.sharedBy.map { "shared by \($0)" }]]
+                        .flatMap { $0 }.compactMap { $0 }.joined(separator: " · "))
+                    .foregroundStyle(ProTheme.muted)
             }
             if photos.count > 0 && !selecting {
                 HStack(spacing: 10) {
-                    Button { playing = AlbumSlideshow(photos: photos, title: album.name, shuffle: false) } label: { Label("Play", systemImage: "play.fill") }
+                    Button { playing = AlbumSlideshow(photos: photos, title: person.map { "\(album.name) · \($0.name)" } ?? album.name, shuffle: false) } label: { Label("Play", systemImage: "play.fill") }
                         .buttonStyle(BigButtonStyle(prominent: true))
                     Button { playing = AlbumSlideshow(photos: photos, start: Int.random(in: 0..<photos.count), title: album.name, shuffle: true) } label: { Label("Shuffle", systemImage: "shuffle") }
                         .buttonStyle(BigButtonStyle())
@@ -212,6 +207,69 @@ struct AlbumScreen: View {
             }
         }
         .padding(.horizontal, 20)
+    }
+
+    /// Says what it is: followed or not (a tinted toggle reads the same either way).
+    private var followButton: some View {
+        let following = albums.isFollowed(album.id)
+        return Button { albums.setFollowing(album.id, !following) } label: {
+            Label(following ? "Following" : "Follow", systemImage: following ? "checkmark" : "plus")
+                .font(.system(size: 14, weight: .semibold))
+                .padding(.horizontal, 14).frame(height: 34)
+                .foregroundStyle(following ? ProTheme.ink : ProTheme.accentInk)
+                .background(following ? AnyShapeStyle(Color.white.opacity(0.1)) : AnyShapeStyle(ProTheme.accent), in: Capsule())
+        }
+        .buttonStyle(.plain).fixedSize()
+        .help("Followed albums play in the slideshow, the widget and on Apple TV")
+    }
+
+    // MARK: people
+
+    /// The people Immich recognised in the album, most slides first; tap one for only their slides.
+    @ViewBuilder private func peopleRow(_ all: [AlbumPhoto]) -> some View {
+        let people = AlbumPerson.of(all)
+        if !people.isEmpty {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack {
+                    Text("PEOPLE").font(.system(size: 11, weight: .semibold)).tracking(0.8).foregroundStyle(ProTheme.dim)
+                    Spacer()
+                    if let who = person {
+                        Button { withAnimation(.snappy) { person = nil; selected = [] } } label: {
+                            Label("\(who.name)", systemImage: "xmark.circle.fill").font(.system(size: 13, weight: .medium))
+                                .padding(.horizontal, 10).frame(height: 26)
+                                .background(ProTheme.accent.opacity(0.16), in: Capsule())
+                                .foregroundStyle(ProTheme.accent)
+                        }
+                        .buttonStyle(.plain).accessibilityLabel("Show everyone again")
+                    }
+                }
+                .frame(height: 26)   // the same with or without the chip: the faces don't jump
+                .padding(.horizontal, 20)
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(alignment: .top, spacing: 14) {
+                        ForEach(people) { p in
+                            let on = person?.id == p.id
+                            Button { withAnimation(.snappy) { person = on ? nil : p; selected = [] } } label: {
+                                VStack(spacing: 6) {
+                                    FaceAvatar(photoID: p.photoID, box: p.box, client: albums.client, size: 64)
+                                        .overlay { Circle().strokeBorder(on ? ProTheme.accent : .clear, lineWidth: 2.5) }
+                                        .opacity(person == nil || on ? 1 : 0.45)
+                                    Text(p.name).font(.system(size: 12, weight: on ? .semibold : .regular)).lineLimit(1)
+                                        .foregroundStyle(on ? ProTheme.accent : ProTheme.ink)
+                                    Text("\(p.count)").font(.system(size: 11).monospacedDigit()).foregroundStyle(ProTheme.dim)
+                                }
+                                .frame(width: 72)
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityLabel("\(p.name), \(p.count) slides")
+                            .accessibilityAddTraits(on ? .isSelected : [])
+                        }
+                    }
+                    .padding(.horizontal, 20)
+                }
+            }
+        }
     }
 
     // MARK: the grid
