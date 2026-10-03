@@ -55,7 +55,7 @@ private struct ProButtonPaint: View {
             .contentShape(Rectangle())
             .opacity(enabled ? 1 : 0.55)
             .proDisabledCursor(!enabled)
-            .onHover { hovering = $0 }
+            .proHover { hovering = $0 }
     }
 }
 

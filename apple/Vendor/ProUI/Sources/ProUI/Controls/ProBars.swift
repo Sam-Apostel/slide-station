@@ -52,7 +52,7 @@ private struct ProScopePaint: View {
             .padding(.horizontal, 9).frame(height: 21)
             .background(shape.fill(configuration.isPressed ? Color.black.opacity(0.38) : active ? Color.black.opacity(0.3) : hovering ? Color.white.opacity(0.04) : .clear))
             .modifier(ProRecessedFill(active: active, shape: shape))
-            .opacity(enabled ? 1 : 0.4).onHover { hovering = $0 }
+            .opacity(enabled ? 1 : 0.4).proHover { hovering = $0 }
             .proDisabledCursor(!enabled)
     }
 }

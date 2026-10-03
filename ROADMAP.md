@@ -62,7 +62,7 @@ caption, place, tags), exact-duplicate check before upload, look-alikes already 
 with the untouched scans (ARCHITECTURE §6a, §5e). Nothing open beyond checking it against a real
 server (§0).
 
-## 3. iPad (and later: one native app for iPad and Mac)
+## 3. Native apps: iPad, iPhone, Mac, Apple TV
 
 Goal: plug the Slide N Scan into an iPad and let someone who isn't technical do a tray on their
 own — import, look through, keep or skip, upload — with the detailed tools there for whoever
@@ -93,10 +93,8 @@ wants them.
     auto-rotate and best-of-bracket do the rest. Immich settings arrive by scanning a QR code
     generated on the Mac, so nobody types an API key on the iPad.
   - **Studio mode**: today's tools (curves, adjust, crop, dates), for pencil and trackpad.
-  - **Next: the phone layouts** of the web app (ARCHITECTURE §4, "Phones") as the compact-width
-    screens, so an iPhone gets the whole editor and not only Simple: the photo with the tools
-    under it (upright) or in a rail (on its side), the tools being Studio's panels one at a time.
-    Hide the "Studio mode on iPad" setting on iPhone, where it does nothing.
+  - **The phone layouts** of the web app (ARCHITECTURE §4, "Phones") as the compact-width
+    screens: an iPhone gets the whole editor and not only Simple. Done (`App/Views/Compact`).
 - Distribution: TestFlight (the same Apple Developer account as Mac signing), later the App Store.
 - Later: the same SwiftUI app on the Mac could replace Electron + Python, leaving one codebase.
   Keep the Python app as the reference until the Swift one matches it.
@@ -109,13 +107,24 @@ card cleanup, locked slides). Full-resolution export: 1 s / 1.1 GB for a 20 MP b
 the real scanner on a real iPad (phase 1) and measuring memory there. The ProUI template apps
 (image editor, video editor, DAW…) had nothing to port beyond the kit itself.
 
+**Status (2026-10-03):** the same SwiftUI app now also runs natively on the Mac (sandboxed,
+Studio by default) and on iPhone in the phone layouts; an Apple TV app and a Home Screen widget
+show Immich albums (`SlideAlbums`): the albums an account can see, shared ones followed by
+themselves, a slideshow with captions, dates and places. The Immich server and key sync through
+iCloud Keychain. TestFlight builds go up from `apple/scripts/testflight.sh` / the "Apple apps"
+workflow. Checked in the simulators against `tests/fake_immich.py`; not yet: a real Immich, the
+widget on a Home Screen, the iPhone on its side, the TV with a remote.
+
 **Phases left** (SlideKit, Simple mode and Studio mode are done, see the status above)
 
 1. *On the device (days):* the scanner on the iPad in Files — the app picks the card, bookmarks
    it, notices reconnection, lists and copies scans; then a real tray through Simple mode, and
    memory measured on that iPad model.
-2. Optional: the Mac on the same code; sync trays between devices (iCloud), so a tray started on
-   the iPad can be finished on the Mac.
+2. Sync trays between devices (iCloud), so a tray started on the iPad can be finished on the Mac
+   (the Mac app now runs the same code). The followed albums could sync the same way (they're
+   per device; the connection already syncs).
+3. Apple TV Top Shelf: the followed albums' slides on the TV's home screen.
+4. A Mac widget (the iOS widget's code runs there as it is).
 
 (The lighter alternative — the iPad as a browser client of the Mac server over the LAN — is still
 cheap, but needs the Mac on, which defeats the point of scanning without a computer.)

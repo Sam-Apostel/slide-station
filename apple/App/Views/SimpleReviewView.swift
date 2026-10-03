@@ -8,7 +8,7 @@ import SwiftUI
 struct SimpleReviewView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.horizontalSizeClass) private var width
-    @AppStorage("studio") private var studio = false
+    @AppStorage("studio") private var studio = Platform.studioDefault
     @State private var drag: CGSize = .zero
     @State private var before = false
 
@@ -38,9 +38,8 @@ struct SimpleReviewView: View {
                         .font(.system(size: 13).monospacedDigit()).foregroundStyle(ProTheme.muted)
                 }
                 Spacer()
-                if width == .regular {
-                    Button("Studio") { studio = true }.font(.system(size: 15, weight: .medium)).foregroundStyle(ProTheme.muted)
-                }
+                // the detailed tools: side by side on an iPad or Mac, one at a time on a phone
+                Button("Studio") { studio = true }.font(.system(size: 15, weight: .medium)).foregroundStyle(ProTheme.muted)
             }
             TraySlots(statuses: model.statuses, size: model.box?.size, current: model.selection < tray.groups.count ? model.selection : nil)
         }

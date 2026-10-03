@@ -17,6 +17,7 @@ const PAGES = [
   { slug: "suggestions", file: "docs/suggestions.md" },
   { slug: "people-and-places", file: "docs/people-and-places.md" },
   { slug: "browser", file: "docs/browser.md" },
+  { slug: "apple-apps", file: "docs/apple-apps.md" },
   { slug: "self-hosting", file: "docs/self-hosting.md" },
   { slug: "tips", file: "docs/tips.md" },
 ];

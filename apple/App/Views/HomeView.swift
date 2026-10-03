@@ -1,31 +1,49 @@
 import ProUI
+import SlideAlbums
 import SlideKit
 import SwiftUI
 
-/// One big "Import from scanner", and the trays done so far.
+/// The albums in Immich to look at, one big "Import from scanner", and the trays done so far.
+/// Someone who only looks at slides shared with them sees the albums first; someone who scans
+/// sees the scanner and trays first.
 struct HomeView: View {
     @Environment(AppModel.self) private var model
+    @Environment(AlbumLibrary.self) private var albums
     @State private var picking = false
     @State private var naming = false
     @State private var settings = false
 
+    /// Scanning here: a scanner was set up or there are trays.
+    private var scans: Bool { model.cardPicked || !model.trays.isEmpty }
+
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 28) {
-                HStack {
-                    Text("Slide Station").font(.system(size: 30, weight: .bold))
-                    Spacer()
-                    Button { settings = true } label: { Image(systemName: "gearshape").font(.system(size: 20)) }
-                        .foregroundStyle(ProTheme.muted).accessibilityLabel("Settings")
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 28) {
+                    HStack {
+                        Text("Slide Station").font(.system(size: 30, weight: .bold))
+                        Spacer()
+                        Button { settings = true } label: { Image(systemName: "gearshape").font(.system(size: 20)) }
+                            .buttonStyle(.plain).foregroundStyle(ProTheme.muted).accessibilityLabel("Settings")
+                    }
+                    if scans {
+                        scanner
+                        if !model.trays.isEmpty { trays }
+                        if albums.isConnected { AlbumsSection() }
+                    } else {
+                        if albums.isConnected { AlbumsSection() } else { ConnectCard() }
+                        scanner
+                    }
                 }
-                scanner
-                if !model.trays.isEmpty { trays }
+                .padding(20)
+                .frame(maxWidth: 720)
+                .frame(maxWidth: .infinity)
             }
-            .padding(20)
-            .frame(maxWidth: 720)
-            .frame(maxWidth: .infinity)
+            .background(ProTheme.background)
+            .toolbar(.hidden)
+            .navigationDestination(for: ImmichAlbum.self) { AlbumScreen(album: $0) }
         }
-        .refreshable { await model.refresh(); await model.checkCard() }
+        .refreshable { await model.refresh(); await model.checkCard(); await albums.refresh() }
         .fileImporter(isPresented: $picking, allowedContentTypes: [.folder]) { result in
             if case .success(let url) = result { Task { await model.pickCard(url) } }
         }

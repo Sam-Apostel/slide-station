@@ -1,6 +1,10 @@
 import ProUI
+import SlideAlbums
 import SlideKit
 import SwiftUI
+#if os(iOS)
+import WidgetKit
+#endif
 
 @main
 struct SlideStationApp: App {
@@ -11,37 +15,67 @@ struct SlideStationApp: App {
         WindowGroup {
             RootView()
                 .environment(model)
+                .environment(model.albums)
                 .preferredColorScheme(.dark)
                 .tint(ProTheme.accent)
                 .task {
+                    #if os(iOS)
+                    // the widget shows the followed albums: tell it when they change
+                    model.albums.onChange = { WidgetCenter.shared.reloadAllTimelines() }
+                    #endif
                     await model.refresh(); await model.checkCard()
+                    await model.albums.refresh()
                     #if DEBUG
                     await DebugLaunch.run(model)
                     #endif
                 }
                 .onChange(of: phase) { _, now in
                     // the Mac may have changed a shared library meanwhile
-                    if now == .active { Task { await model.refresh(); await model.checkCard() } }
+                    if now == .active { Task { await model.refresh(); await model.checkCard(); await model.albums.refresh() } }
                 }
+                #if os(macOS)
+                .frame(minWidth: 980, minHeight: 640)
+                #endif
         }
+        #if os(macOS)
+        .defaultSize(width: 1440, height: 900)
+        .commands { SlideCommands(model: model) }
+        #endif
     }
 }
 
 struct RootView: View {
     @Environment(AppModel.self) private var model
-    @AppStorage("studio") private var studio = false
+    @AppStorage("studio") private var studio = Platform.studioDefault
     @Environment(\.horizontalSizeClass) private var width
+    @Environment(\.verticalSizeClass) private var height
+    /// A photo the widget was showing when it was tapped.
+    @State private var opened: AlbumSlideshow?
 
     var body: some View {
         @Bindable var model = model
         ZStack(alignment: .bottom) {
             ProTheme.background.ignoresSafeArea()
             if model.tray != nil {
-                if studio && width == .regular { StudioView() } else { SimpleReviewView() }
+                if !studio {
+                    SimpleReviewView()
+                } else if height == .compact {
+                    CompactStudioView(landscape: true)    // a phone on its side
+                } else if width == .compact {
+                    CompactStudioView(landscape: false)   // a phone upright, a narrow iPad window
+                } else {
+                    StudioView()
+                }
             } else {
                 HomeView()
             }
-            JobBanner()
+            if !(studio && model.tray != nil && (width == .compact || height == .compact)) { JobBanner() }
+        }
+        .onOpenURL { url in opened = AlbumSlideshow(url: url, library: model.albums) }
+        .fullScreenCover(item: $opened) { show in
+            SlideshowView(photos: show.photos, start: show.start, shuffle: false, autoplay: false, title: show.title,
+                          client: model.albums.client) { opened = nil }
+                .idleTimerDisabled()
         }
         .animation(.snappy, value: model.job == nil)
         .alert("Something went wrong", isPresented: Binding(get: { model.error != nil }, set: { if !$0 { model.error = nil } })) {

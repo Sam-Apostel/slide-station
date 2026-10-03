@@ -1,0 +1,91 @@
+name: Apple apps
+
+# The native apps (apple/): iPhone and iPad with the widget, the Mac, Apple TV. Every push to main
+# that changes them is built, tested and uploaded to TestFlight; "Run workflow" does the same on
+# demand (untick TestFlight for a check only).
+#
+# It runs on the self-hosted Mac runner registered for this repo, which signs and uploads with the
+# Apple account signed in to Xcode there (or an App Store Connect API key, when the ASC_KEY_ID,
+# ASC_ISSUER_ID and ASC_KEY_P8 secrets exist). This repository is public: never add a
+# pull_request trigger, the runner must only build main.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "apple/**"
+      - ".github/workflows/apple.yml"
+  workflow_dispatch:
+    inputs:
+      testflight:
+        description: Upload to TestFlight
+        type: boolean
+        default: true
+      platforms:
+        description: Platforms to upload (ios, mac, tv)
+        type: string
+        default: ios mac tv
+
+# one at a time, in order: two uploads never race for the same build number
+concurrency:
+  group: apple
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: [self-hosted, macOS, slide-station]
+    timeout-minutes: 45
+    env:
+      DEVELOPER_DIR: /Applications/Xcode.app/Contents/Developer
+    defaults:
+      run:
+        working-directory: apple
+    steps:
+      - uses: actions/checkout@v4
+      - name: XcodeGen
+        run: |
+          brew list xcodegen >/dev/null 2>&1 || brew install xcodegen
+          xcodegen generate --quiet
+      - name: SlideKit and SlideAlbums tests
+        working-directory: apple/SlideKit
+        run: swift test
+      # unsigned compile checks for all three platforms; signing happens in the upload job
+      - name: iPhone and iPad (with the widget)
+        run: xcodebuild -project SlideStation.xcodeproj -scheme SlideStation -destination 'generic/platform=iOS Simulator' -derivedDataPath build/ci -quiet CODE_SIGNING_ALLOWED=NO build
+      - name: Mac
+        run: xcodebuild -project SlideStation.xcodeproj -scheme SlideStationMac -destination 'generic/platform=macOS' -derivedDataPath build/ci -quiet CODE_SIGNING_ALLOWED=NO build
+      - name: Apple TV
+        run: xcodebuild -project SlideStation.xcodeproj -scheme SlideStationTV -destination 'generic/platform=tvOS Simulator' -derivedDataPath build/ci -quiet CODE_SIGNING_ALLOWED=NO build
+
+  testflight:
+    needs: check
+    if: github.event_name == 'push' || inputs.testflight
+    runs-on: [self-hosted, macOS, slide-station]
+    timeout-minutes: 90
+    env:
+      DEVELOPER_DIR: /Applications/Xcode.app/Contents/Developer
+      PLATFORMS: ${{ inputs.platforms || 'ios mac tv' }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: App Store Connect key (when the secrets exist)
+        env:
+          ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
+        run: |
+          if [ -n "$ASC_KEY_P8" ]; then
+            umask 077
+            printf '%s\n' "$ASC_KEY_P8" > "$RUNNER_TEMP/AuthKey.p8"
+            echo "ASC_KEY_PATH=$RUNNER_TEMP/AuthKey.p8" >> "$GITHUB_ENV"
+          fi
+      - name: Archive and upload
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+        run: |
+          [ -n "${ASC_KEY_PATH:-}" ] || unset ASC_KEY_ID ASC_ISSUER_ID
+          apple/scripts/testflight.sh
+      - name: Remove key
+        if: always()
+        run: rm -f "$RUNNER_TEMP/AuthKey.p8"
