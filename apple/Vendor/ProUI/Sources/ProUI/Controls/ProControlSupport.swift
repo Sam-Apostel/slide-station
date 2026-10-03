@@ -88,3 +88,14 @@ private struct ProGroupedKey: EnvironmentKey { static let defaultValue = false }
 extension EnvironmentValues {
     var proGrouped: Bool { get { self[ProGroupedKey.self] } set { self[ProGroupedKey.self] = newValue } }
 }
+
+extension View {
+    /// `onHover`, where there is a pointer: tvOS has none (focus does the job there).
+    @ViewBuilder func proHover(_ action: @escaping (Bool) -> Void) -> some View {
+        #if os(tvOS)
+        self
+        #else
+        onHover(perform: action)
+        #endif
+    }
+}

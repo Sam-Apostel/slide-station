@@ -286,12 +286,11 @@ extension SlideStatus {
 
 extension Color {
     func mix(with other: Color, by amount: Double) -> Color {
-        let a = UIColor(self), b = UIColor(other)
-        var (r1, g1, b1, a1): (CGFloat, CGFloat, CGFloat, CGFloat) = (0, 0, 0, 0)
-        var (r2, g2, b2, a2): (CGFloat, CGFloat, CGFloat, CGFloat) = (0, 0, 0, 0)
-        a.getRed(&r1, green: &g1, blue: &b1, alpha: &a1); b.getRed(&r2, green: &g2, blue: &b2, alpha: &a2)
-        let t = CGFloat(amount)
-        return Color(red: r1 + (r2 - r1) * t, green: g1 + (g2 - g1) * t, blue: b1 + (b2 - b1) * t)
+        // mixed in gamma-encoded sRGB, as the web app does (Resolved holds linear light)
+        func srgb(_ v: Float) -> Double { let x = Double(max(0, v)); return x <= 0.0031308 ? 12.92 * x : 1.055 * pow(x, 1 / 2.4) - 0.055 }
+        let a = resolve(in: EnvironmentValues()), b = other.resolve(in: EnvironmentValues())
+        let mix = { (x: Float, y: Float) in srgb(x) + (srgb(y) - srgb(x)) * amount }
+        return Color(red: mix(a.red, b.red), green: mix(a.green, b.green), blue: mix(a.blue, b.blue))
     }
 }
 

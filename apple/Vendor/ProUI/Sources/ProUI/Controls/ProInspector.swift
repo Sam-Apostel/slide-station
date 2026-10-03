@@ -68,7 +68,7 @@ private struct ProInspectorActionButtonPaint: View {
         configuration.label.frame(width: 22, height: 22)
             .background(configuration.isPressed ? Color.white.opacity(0.08) : hovering ? Color.white.opacity(0.06) : .clear, in: RoundedRectangle(cornerRadius: 3, style: .continuous))
             .foregroundStyle(hovering ? Color.white.opacity(0.85) : Color.white.opacity(0.5))
-            .contentShape(Rectangle()).onHover { hovering = $0 }
+            .contentShape(Rectangle()).proHover { hovering = $0 }
             .proDisabledCursor(!enabled)
     }
 }

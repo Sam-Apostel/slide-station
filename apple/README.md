@@ -1,15 +1,36 @@
-# Slide Station for iPad and iPhone
+# Slide Station for iPhone, iPad, Mac and Apple TV
 
-The native app from ROADMAP.md §3: plug the Slide N Scan into an iPad, import a tray, keep / skip /
-turn, send it to Immich — no Mac needed. One universal SwiftUI app (iOS 17+).
+The native apps from ROADMAP.md §3. Plug the Slide N Scan into an iPad, import a tray, keep / skip /
+turn, send it to Immich, no Mac needed; the same app runs natively on the Mac and on an iPhone
+(the web app's phone layouts). And for everyone an album is shared with: Immich albums as a
+slideshow, a Home Screen widget and an Apple TV app (`docs/apple-apps.md` is the user guide).
 
 ```
 apple/
-  project.yml        XcodeGen spec (the .xcodeproj is generated, not committed)
-  App/               the app: AppModel (all state + actions), Simple and Studio views
-  SlideKit/          Swift package, no UI: the whole pipeline, parity-tested against the Python app
+  project.yml        XcodeGen spec (the .xcodeproj and Support/Info-*.plist are generated)
+  App/               iPhone, iPad and Mac: AppModel (all state + actions), Simple, Studio, the
+                     phone layouts (Views/Compact), Albums (Views/Albums); Platform.swift for the Mac
+  Widget/            the Home Screen widget: a slide from the followed albums, round all of them
+  TV/                Apple TV: the albums and the slideshow
+  SlideKit/          Swift package. SlideKit: the whole pipeline, no UI, parity-tested against the
+                     Python app. SlideAlbums: Immich albums, the keychain, the image cache, the
+                     slideshow (shared by the apps, the widget and the TV)
   Vendor/ProUI/      ProUI SwiftUI source, trimmed to what the app uses (see NOTICE.md)
+  Support/           entitlements
+  Tools/             make_icons.py: every platform's icons from Tools/icon-art.png
+  scripts/           testflight.sh: archive and upload
 ```
+
+| Target | Platform | Bundle id |
+| --- | --- | --- |
+| SlideStation (+ SlideStationWidget) | iPhone, iPad | `land.sams.slide-station` (`.widget`) |
+| SlideStationMac | macOS 14+, sandboxed | `land.sams.slide-station` |
+| SlideStationTV | tvOS 17+ | `land.sams.slide-station` |
+
+One bundle id everywhere (universal purchase). The Immich server and key are one keychain item in
+the access group `$(AppIdentifierPrefix)land.sams.slide-station`, synced with iCloud Keychain, so
+the widget reads it and a TV picks it up from the phone. The widget shares the followed albums and
+its cache with the app through the App Group `group.land.sams.slide-station`.
 
 ## Build and run
 
@@ -21,11 +42,17 @@ brew install xcodegen
 cd apple && xcodegen && open SlideStation.xcodeproj
 ```
 
-For a device, `export DEVELOPMENT_TEAM=<team id>` before `xcodegen`. SlideKit's tests run on the Mac:
+Schemes: `SlideStation` (iPhone and iPad, with the widget), `SlideStationMac`, `SlideStationTV`.
+SlideKit's and SlideAlbums' tests run on the Mac:
 
 ```bash
 cd apple/SlideKit && swift test
 ```
+
+TestFlight: `apple/scripts/testflight.sh` archives all three and uploads them, signed with the
+Apple account in Xcode (or an App Store Connect API key in `ASC_KEY_ID` / `ASC_ISSUER_ID` /
+`ASC_KEY_PATH`); the build number is the UTC time. `.github/workflows/apple.yml` runs it for every
+push to main that touches `apple/`.
 
 The golden fixtures in `SlideKit/Tests/SlideKitTests/Golden` are synthetic slides run through
 `slidestation/imaging.py`; regenerate them with
@@ -62,26 +89,50 @@ reads) before a tray opens. Check a real library with
 
 Not ported yet: a locked slide shows the local render rather than fetching Immich's own preview.
 
+## Albums, the widget and the TV (`SlideAlbums`)
+
+- `AlbumClient` reads Immich v1.118 through v3: own albums plus `?shared=true`, an album's photos
+  from `GET /albums/{id}` (v1/v2) or `POST /search/metadata` paged by `nextPage` / `nextCursor`
+  (v3), images as thumbnail / preview / fullsize with the original as the fallback. Needs
+  `album.read`, `asset.read`, `asset.view`, `asset.download`.
+- `AlbumLibrary` (observable): the connection, all albums, the followed ones and their photos.
+  Albums shared by another account are followed by themselves until the user chooses.
+- Photos sort oldest first, which is tray order (`Uploader.photoDate`: noon plus a minute per slide).
+  `ImmichDate.text` reads that back: noon on the 1st is "August 1978", on 1 January "1978".
+- `Rotation`: the widget's way round every photo once, in a seeded shuffle kept in the App Group,
+  six entries 45 minutes apart per timeline. Images are written at the widget's size (its memory is
+  ~30 MB).
+- `SlideshowView`: cross-fade and a slight drift over a blurred copy of the photo; touch, keys and
+  the Siri Remote. iPhone and iPad use `preview`, the Mac and TV `fullsize` (3200 / 3840 px).
+
 ## Simple and Studio
 
-- **Simple** (default everywhere): full-screen slides, swipe left or Keep, Skip, Turn, Back; hold
+- **Simple** (default on iPhone and iPad): full-screen slides, swipe left or Keep, Skip, Turn, Back; hold
   to see the scan before restoring; a finish line with "Send N to Immich".
-- **Studio** (iPad, regular width; toggle in the header or Settings): the web app's layout and
+- **Studio** (default on the Mac; toggle in the header or Settings): at regular width the web app's layout and
   skin — slide mounts that gild when developed, the tray gauge, Frame (rotate, crop & straighten),
   Tone curve (per channel, Fit to data), Adjust (painted rails, white-balance pad, eyedropper),
   Details, Tray, undo / redo, Before and aligned Split, Develop / Upload / Clean card. Hardware keys
   match the desktop app (← → Space R X B Y K W F ⌘Z 1–9). Views in `App/Views/Studio/`.
+- **Studio on a phone** (compact width, `App/Views/Compact/`): the web app's phone layouts
+  (`frontend/src/components/compact.tsx`). Upright: the photo (swipe, double-tap to zoom,
+  long-press menu), the row of slides or the open tool's panel, the tool row, ‹ Skip Turn Develop.
+  On its side (compact height): the photo, the panel beside it, the tools in a rail. The tools are
+  the inspector's sections (`FrameSection`, `CurveSection`, `AdjustPanel`, `MetaFields`, `TrayFields`,
+  `UploadControls`) one at a time, plus Slides (the filmstrip) and Scans. Crop takes the screen.
 
 ## Testing in the simulator without tapping
 
 DEBUG builds read a few launch variables (`App/DebugLaunch.swift`), e.g.
 
 ```bash
-SIMCTL_CHILD_SS_CARD_PATH=/path/to/card SIMCTL_CHILD_SS_AUTOIMPORT="Test tray" SIMCTL_CHILD_SS_OPEN=1 xcrun simctl launch booted dev.slidestation.ios
+SIMCTL_CHILD_SS_CARD_PATH=/path/to/card SIMCTL_CHILD_SS_AUTOIMPORT="Test tray" SIMCTL_CHILD_SS_OPEN=1 xcrun simctl launch booted land.sams.slide-station
 ```
 
 `tests/fake_immich.py` works as the Immich server (`SS_IMMICH_URL=http://127.0.0.1:2283`,
-`SS_IMMICH_KEY=testkey`, `SS_UPLOAD=1`).
+`SS_IMMICH_KEY=testkey`, `SS_UPLOAD=1`; the TV app reads the first two too, and `SS_PLAY=1` starts
+its slideshow). `xcrun simctl openurl booted slidestation://photo/<album>/<photo>` is what the
+widget opens.
 
 ## Known limits
 

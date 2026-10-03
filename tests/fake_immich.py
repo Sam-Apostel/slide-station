@@ -105,7 +105,7 @@ def asset_dto(aid: str) -> dict:
     a = DB["assets"][aid]
     st = a.get("stack")
     return {
-        "id": aid, "createdAt": a.get("created_at", "2020-01-01T00:00:00.000Z"), "width": 1000, "height": 750, "type": a.get("type", "IMAGE"), "originalFileName": a["name"], "originalMimeType": a.get("mime"),
+        "id": aid, "ownerId": a.get("owner", USERS[KEY]["id"]), "createdAt": a.get("created_at", "2020-01-01T00:00:00.000Z"), "width": 1000, "height": 750, "type": a.get("type", "IMAGE"), "originalFileName": a["name"], "originalMimeType": a.get("mime"),
         "checksum": base64.b64encode(bytes.fromhex(a["sha1"])).decode(), "isFavorite": a.get("favorite", False),
         "isTrashed": a.get("trashed", False), "localDateTime": a.get("local", ""),
         "fileCreatedAt": a["fields"].get("fileCreatedAt", a.get("local", "")),
@@ -601,6 +601,43 @@ def delete_face(fid: str, x_api_key: str = Header(None)):
     auth(x_api_key)
     if DB.setdefault("faces", {}).pop(fid, None) is None:
         raise HTTPException(400, "Not found or no face.delete access")
+    return Response(status_code=204)
+
+
+# ---------------------------------------------------------------- activities (likes on album photos)
+
+
+@app.get("/api/activities")
+def activities(albumId: str, assetId: str | None = None, type: str | None = None, userId: str | None = None,
+               x_api_key: str = Header(None)):
+    auth(x_api_key)
+    return [a for a in DB.setdefault("activities", {}).values()
+            if a["albumId"] == albumId and (assetId is None or a["assetId"] == assetId)
+            and (type is None or a["type"] == type) and (userId is None or a["user"]["id"] == userId)]
+
+
+@app.post("/api/activities")
+async def add_activity(req: Request, x_api_key: str = Header(None)):
+    """A like is one per user and photo (Immich answers the existing one again)."""
+    auth(x_api_key)
+    body = await req.json()
+    if body.get("albumId") not in DB["albums"]:
+        raise HTTPException(400, "album not found")
+    me = USERS[x_api_key]
+    for a in DB.setdefault("activities", {}).values():
+        if (a["albumId"], a["assetId"], a["type"], a["user"]["id"]) == (body["albumId"], body.get("assetId"), body["type"], me["id"]):
+            return a
+    aid = str(uuid.uuid4())
+    DB["activities"][aid] = {"id": aid, "albumId": body["albumId"], "assetId": body.get("assetId"), "type": body["type"],
+                             "user": {"id": me["id"], "name": me["name"]}, "createdAt": "2026-01-01T00:00:00.000Z"}
+    return JSONResponse(DB["activities"][aid], status_code=201)
+
+
+@app.delete("/api/activities/{aid}")
+def delete_activity(aid: str, x_api_key: str = Header(None)):
+    auth(x_api_key)
+    if DB.setdefault("activities", {}).pop(aid, None) is None:
+        raise HTTPException(404, "activity not found")
     return Response(status_code=204)
 
 

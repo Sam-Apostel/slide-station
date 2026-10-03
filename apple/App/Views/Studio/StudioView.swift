@@ -8,7 +8,7 @@ import SwiftUI
 /// F / ⇧F fit curves, ⌘Z / ⇧⌘Z undo, 1–9 toggle bracket scans.
 struct StudioView: View {
     @Environment(AppModel.self) private var model
-    @AppStorage("studio") private var studio = false
+    @AppStorage("studio") private var studio = Platform.studioDefault
     @AppStorage("showFilmstrip") private var showFilmstrip = true
     @AppStorage("showInspector") private var showInspector = true
     @State private var before = false
@@ -88,7 +88,7 @@ struct StudioView: View {
             }
             Spacer()
             if let slide = model.slide {
-                let st = model.statuses[model.selection]
+                let st = tray.statuses().indices.contains(model.selection) ? tray.statuses()[model.selection] : .new
                 HStack(spacing: 6) {
                     Circle().fill(st.dotFill).frame(width: 7, height: 7).overlay { Circle().strokeBorder(st == .skipped ? Color(proHex: 0x666666) : .clear, lineWidth: 1) }
                     Text(st == .new ? "to develop" : st.label.lowercased())
@@ -205,8 +205,8 @@ struct StagePhoto: View {
     @Binding var picking: Bool
     @Binding var cropRect: CropMath.Rect
     let cropRatio: Double?
-    @State private var main: UIImage?
-    @State private var original: UIImage?
+    @State private var main: PlatformImage?
+    @State private var original: PlatformImage?
     @State private var divider = 0.5
 
     var body: some View {
@@ -236,11 +236,11 @@ struct StagePhoto: View {
         }
     }
 
-    private var shownMain: UIImage? { model.previews.cached(slide, edge: 2000, crop: !cropping) ?? main }
-    private var shownBefore: UIImage? { model.previews.cached(slide, edge: 2000, before: true, crop: !cropping) ?? original }
+    private var shownMain: PlatformImage? { model.previews.cached(slide, edge: 2000, crop: !cropping) ?? main }
+    private var shownBefore: PlatformImage? { model.previews.cached(slide, edge: 2000, before: true, crop: !cropping) ?? original }
 
     /// Before on the left of a draggable divider, after on the right; they line up pixel for pixel.
-    private func splitLayer(_ o: UIImage) -> some View {
+    private func splitLayer(_ o: PlatformImage) -> some View {
         GeometryReader { g in
             let x = g.size.width * divider
             Image(uiImage: o).resizable().aspectRatio(contentMode: .fit)
@@ -306,17 +306,17 @@ struct ScanStrip: View {
 struct AsyncThumb: View {
     let url: URL
     var rotation = 0
-    @State private var image: UIImage?
+    @State private var image: PlatformImage?
     var body: some View {
         ZStack { if let image { Image(uiImage: image).resizable().scaledToFill().rotationEffect(.degrees(Double(rotation))) } else { SS.sunken } }
-            .task(id: url) { image = await Task.detached { UIImage(contentsOfFile: url.path) }.value }
+            .task(id: url) { image = await Task.detached { PlatformImage(contentsOfFile: url.path) }.value }
     }
 }
 
 /// The web app's top bar: app mark, tray switcher, the scanner pill, panel toggles.
 struct StudioTopBar: View {
     @Environment(AppModel.self) private var model
-    @AppStorage("studio") private var studio = false
+    @AppStorage("studio") private var studio = Platform.studioDefault
     let tray: Tray
     @Binding var showFilmstrip: Bool
     @Binding var showInspector: Bool

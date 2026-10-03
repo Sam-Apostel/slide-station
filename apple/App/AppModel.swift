@@ -1,4 +1,5 @@
 import Observation
+import SlideAlbums
 import SlideKit
 import SwiftUI
 
@@ -39,8 +40,13 @@ final class AppModel {
         return bookmark.resolve()
     }
 
+    /// Immich albums to look at (the Albums screens, the widget); also holds the server and key
+    /// uploads go to, kept in the keychain and synced to this Apple ID's other devices.
+    let albums = AlbumLibrary()
+
     var immich: ImmichSettings {
-        didSet { UserDefaults.standard.set(immich.url, forKey: "immichURL"); Keychain.set(immich.key, for: "immichKey") }
+        get { ImmichSettings(url: albums.connection.url, key: albums.connection.key) }
+        set { albums.use(ImmichConnection(url: newValue.url, key: newValue.key)) }
     }
 
     init() {
@@ -58,7 +64,6 @@ final class AppModel {
         previews = PreviewCache(renderer: r)
         RendererSizes.shared.library = lib
         learning = Learning.Model(url: lib.root.appendingPathComponent("learning.json"))
-        immich = ImmichSettings(url: UserDefaults.standard.string(forKey: "immichURL") ?? "", key: Keychain.get("immichKey") ?? "")
         learningEnabled = UserDefaults.standard.object(forKey: "learningEnabled") as? Bool ?? true
         keepOriginals = UserDefaults.standard.object(forKey: "keepOriginals") as? Bool ?? true
     }
@@ -260,6 +265,22 @@ final class AppModel {
             var s = "\(r.uploaded) slides uploaded to “\(r.album)”"
             if r.lost > 0 { s += "; \(r.lost) kept their Immich copy (originals deleted)" }
             return s
+        }
+    }
+
+    /// Save photos from an Immich album into the Photos library, as they were uploaded (the
+    /// originals, full size), with the job banner counting them.
+    func saveToPhotos(_ photos: [AlbumPhoto]) {
+        guard !photos.isEmpty, let client = albums.client else { return }
+        let total = photos.count
+        run(total == 1 ? "Saving to Photos" : "Saving \(total) slides to Photos") { progress in
+            try await PhotoSaver.authorize()
+            for (i, p) in photos.enumerated() {
+                try Task.checkCancellation()
+                progress(JobProgress("Saving to Photos", done: i, total: total))
+                try await PhotoSaver.save(try await client.original(p.id), filename: p.filename)
+            }
+            return total == 1 ? "Saved to Photos" : "Saved \(total) slides to Photos"
         }
     }
 
@@ -570,7 +591,7 @@ final class AppModel {
 @MainActor
 final class PreviewCache {
     let renderer: Renderer
-    private var images: [String: UIImage] = [:]
+    private var images: [String: PlatformImage] = [:]
     private var order: [String] = []
 
     init(renderer: Renderer) { self.renderer = renderer }
@@ -583,9 +604,9 @@ final class PreviewCache {
         return "\(slide.id)|\(s.renderKey)|\(edge)|\(before)|\(crop)"
     }
 
-    func cached(_ slide: Slide, edge: Int, before: Bool = false, crop: Bool = true) -> UIImage? { images[Self.key(slide, edge: edge, before: before, crop: crop)] }
+    func cached(_ slide: Slide, edge: Int, before: Bool = false, crop: Bool = true) -> PlatformImage? { images[Self.key(slide, edge: edge, before: before, crop: crop)] }
 
-    func image(_ tray: Tray, _ slide: Slide, edge: Int, before: Bool = false, crop: Bool = true) async -> UIImage? {
+    func image(_ tray: Tray, _ slide: Slide, edge: Int, before: Bool = false, crop: Bool = true) async -> PlatformImage? {
         let key = Self.key(slide, edge: edge, before: before, crop: crop)
         if let hit = images[key] { return hit }
         let renderer = renderer
@@ -594,7 +615,7 @@ final class PreviewCache {
             return ImageFile.cgImage(img)
         }.value
         guard let cg else { return nil }
-        let ui = UIImage(cgImage: cg)
+        let ui = PlatformImage(cgImage: cg)
         images[key] = ui
         order.append(key)
         while order.count > 160 { images[order.removeFirst()] = nil }

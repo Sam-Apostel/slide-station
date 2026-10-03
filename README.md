@@ -9,7 +9,8 @@ with a few keys, and they go to [Immich](https://immich.app) with dates, places 
 - **[Download for Mac](https://slide-station.sams.land/download/mac)** (Apple silicon). It
   updates itself.
 - **[Try it in your browser](https://slide-station.sams.land/app/)**. Nothing to install.
-- **iPad and iPhone**: in beta, [join the TestFlight waitlist](https://slide-station.sams.land/#testflight).
+- **iPhone, iPad, Mac and Apple TV**: native apps in beta, with a slideshow of your Immich albums,
+  a Home Screen widget and the TV. [Join the TestFlight waitlist](https://slide-station.sams.land/#testflight).
 - **[Run it on your server](docs/self-hosting.md)** next to Immich, for the whole household.
 
 ## What it does
@@ -29,6 +30,7 @@ The docs are in [`docs/`](docs/) and on [the website](https://slide-station.sams
 [getting started](docs/getting-started.md), [working through a tray](docs/workflow.md),
 [Immich](docs/immich.md), [suggestions](docs/suggestions.md),
 [people and places](docs/people-and-places.md), [the browser version](docs/browser.md),
+[iPhone, iPad, Mac and Apple TV](docs/apple-apps.md),
 [self-hosting](docs/self-hosting.md) and [tips](docs/tips.md).
 
 Found a problem? [Open an issue](https://github.com/Sam-Apostel/slide-station/issues).
@@ -36,7 +38,8 @@ Found a problem? [Open an issue](https://github.com/Sam-Apostel/slide-station/is
 ## Development
 
 A Python backend (`slidestation/`) and a React UI (`frontend/`), wrapped in Electron for the Mac
-(`desktop/`). There's also a browser-only build of the same UI and a native iPad app (`apple/`).
+(`desktop/`). There's also a browser-only build of the same UI and native apps for iPhone, iPad,
+Mac and Apple TV (`apple/`).
 [`ARCHITECTURE.md`](ARCHITECTURE.md) explains how it all fits together, and
 [`ROADMAP.md`](ROADMAP.md) what's next.
 

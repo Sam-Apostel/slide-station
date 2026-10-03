@@ -11,7 +11,7 @@ struct SlideImage: View {
     var edge = 1600
     var before = false
     var contentMode: ContentMode = .fit
-    @State private var image: UIImage?
+    @State private var image: PlatformImage?
 
     var body: some View {
         let key = PreviewCache.key(slide, edge: edge, before: before)

@@ -1,5 +1,8 @@
 #if DEBUG
 import Foundation
+#if os(iOS)
+import UIKit
+#endif
 
 /// Launch-environment hooks for driving the app headlessly in the simulator (screenshots, CI).
 /// DEBUG builds only. Pass with `SIMCTL_CHILD_<NAME>=… xcrun simctl launch …`:
@@ -11,6 +14,9 @@ import Foundation
 ///   SS_STUDIO      1 = Studio mode, 0 = Simple mode
 ///   SS_IMMICH_URL / SS_IMMICH_KEY   Immich settings
 ///   SS_UPLOAD      after opening, upload the developed slides
+///   SS_PLAY        play the followed albums' slideshow
+///   SS_TOOL        open this tool of the phone layout (slides, frame, adjust, curve, scans, details, tray)
+///   SS_ORIENTATION landscape: turn the interface on its side (the simulator can't be rotated from a script)
 enum DebugLaunch {
     static let env = ProcessInfo.processInfo.environment
     static var cardPath: URL? { env["SS_CARD_PATH"].map { URL(fileURLWithPath: $0, isDirectory: true) } }
@@ -18,6 +24,12 @@ enum DebugLaunch {
 
     @MainActor
     static func run(_ model: AppModel) async {
+        #if os(iOS)
+        if env["SS_ORIENTATION"] == "landscape",
+           let scene = UIApplication.shared.connectedScenes.first as? UIWindowScene {
+            scene.requestGeometryUpdate(.iOS(interfaceOrientations: .landscapeRight)) { _ in }
+        }
+        #endif
         if let s = env["SS_STUDIO"] { UserDefaults.standard.set(s == "1", forKey: "studio") }
         if let url = env["SS_IMMICH_URL"], let key = env["SS_IMMICH_KEY"] { model.immich = .init(url: url, key: key) }
         if let name = env["SS_AUTOIMPORT"], model.trays.isEmpty {

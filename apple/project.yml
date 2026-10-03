@@ -1,10 +1,21 @@
-# XcodeGen spec for the native app. Generate the project with:  cd apple && xcodegen
-# (SlideStation.xcodeproj is generated, not committed.)
+# XcodeGen spec for the native apps. Generate the project with:  cd apple && xcodegen
+# (SlideStation.xcodeproj and the Info.plists in Support/ are generated, not committed.)
+#
+#   SlideStation        iPhone and iPad (Simple, Studio, and the phone layouts), with the widget
+#   SlideStationMac     the same app, native on the Mac
+#   SlideStationTV      Apple TV: the slides in Immich albums as a slideshow
+#   SlideStationWidget  the Home Screen widget: a slide from the followed albums, now and then
+#
+# One bundle id for iPhone, iPad, Mac and Apple TV (universal purchase); the widget is
+# land.sams.slide-station.widget. The App Group lets the widget read the app's album choice and
+# cache; the keychain group holds the Immich server and key for all of them.
 name: SlideStation
 options:
-  bundleIdPrefix: dev.slidestation
+  bundleIdPrefix: land.sams
   deploymentTarget:
     iOS: "17.0"
+    macOS: "14.0"
+    tvOS: "17.0"
   createIntermediateGroups: true
 packages:
   ProUI:
@@ -14,26 +25,40 @@ packages:
 settings:
   base:
     SWIFT_VERSION: "5.0"
-    # For a device build: export DEVELOPMENT_TEAM=<your team id> before running xcodegen.
-    DEVELOPMENT_TEAM: ${DEVELOPMENT_TEAM}
+    DEVELOPMENT_TEAM: Y3734CNKQ8
     CODE_SIGN_STYLE: Automatic
+    MARKETING_VERSION: "0.2.0"
+    # CI and the TestFlight script pass a fresh one (a timestamp); local builds stay at 1
+    CURRENT_PROJECT_VERSION: "1"
+    ENABLE_PREVIEWS: YES
+    # never let XcodeGen adopt a stray Info.plist (e.g. one in build/)
+    GENERATE_INFOPLIST_FILE: YES
+  configs:
+    Debug:
+      SWIFT_OPTIMIZATION_LEVEL: -Onone
+
 targets:
   SlideStation:
     type: application
     platform: iOS
     sources:
       - path: App
+        excludes: [MacCommands.swift]
     dependencies:
       - package: ProUI
       - package: SlideKit
+        product: SlideKit
+      - package: SlideKit
+        product: SlideAlbums
+      - target: SlideStationWidget
+        embed: true
+        codeSign: true
     settings:
       base:
         PRODUCT_NAME: Slide Station
-        PRODUCT_BUNDLE_IDENTIFIER: dev.slidestation.ios
+        PRODUCT_BUNDLE_IDENTIFIER: land.sams.slide-station
+        CODE_SIGN_ENTITLEMENTS: Support/SlideStation.entitlements
         TARGETED_DEVICE_FAMILY: "1,2"
-        MARKETING_VERSION: "0.1.0"
-        CURRENT_PROJECT_VERSION: "1"
-        GENERATE_INFOPLIST_FILE: YES
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         INFOPLIST_KEY_CFBundleDisplayName: Slide Station
         INFOPLIST_KEY_UILaunchScreen_Generation: YES
@@ -43,24 +68,130 @@ targets:
         INFOPLIST_KEY_UIStatusBarStyle: UIStatusBarStyleLightContent
         INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.photography
         # the Immich server is usually on the LAN or a tailnet, often plain http
-        INFOPLIST_KEY_NSLocalNetworkUsageDescription: Slide Station uploads your slides to your Immich server.
-        ENABLE_PREVIEWS: YES
-      configs:
-        Debug:
-          SWIFT_OPTIMIZATION_LEVEL: -Onone
+        INFOPLIST_KEY_NSLocalNetworkUsageDescription: Slide Station talks to your Immich server.
+        INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription: Slide Station saves the slides you choose to your photo library.
     info:
-      path: App/Info.plist
-      properties:
+      path: Support/Info-iOS.plist
+      properties: &appInfo
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         NSAppTransportSecurity:
           NSAllowsArbitraryLoads: true
         UIFileSharingEnabled: false
         ITSAppUsesNonExemptEncryption: false
+        SSKeychainGroup: $(AppIdentifierPrefix)land.sams.slide-station
+        CFBundleURLTypes:
+          - CFBundleURLName: land.sams.slide-station
+            CFBundleURLSchemes: [slidestation]
+
+  SlideStationWidget:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: Widget
+    dependencies:
+      - package: SlideKit
+        product: SlideAlbums
+      - sdk: WidgetKit.framework
+      - sdk: SwiftUI.framework
+    settings:
+      base:
+        PRODUCT_NAME: SlideStationWidget
+        PRODUCT_BUNDLE_IDENTIFIER: land.sams.slide-station.widget
+        CODE_SIGN_ENTITLEMENTS: Support/SlideStationWidget.entitlements
+        TARGETED_DEVICE_FAMILY: "1,2"
+        INFOPLIST_KEY_CFBundleDisplayName: Slide Station
+        SKIP_INSTALL: YES
+    info:
+      path: Support/Info-Widget.plist
+      properties:
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        SSKeychainGroup: $(AppIdentifierPrefix)land.sams.slide-station
+        NSAppTransportSecurity:
+          NSAllowsArbitraryLoads: true
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.widgetkit-extension
+
+  SlideStationMac:
+    type: application
+    platform: macOS
+    sources:
+      - path: App
+    dependencies:
+      - package: ProUI
+      - package: SlideKit
+        product: SlideKit
+      - package: SlideKit
+        product: SlideAlbums
+    settings:
+      base:
+        PRODUCT_NAME: Slide Station
+        PRODUCT_BUNDLE_IDENTIFIER: land.sams.slide-station
+        CODE_SIGN_ENTITLEMENTS: Support/SlideStationMac.entitlements
+        ENABLE_HARDENED_RUNTIME: YES
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        INFOPLIST_KEY_CFBundleDisplayName: Slide Station
+        INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.photography
+        INFOPLIST_KEY_NSHumanReadableCopyright: ""
+        INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription: Slide Station saves the slides you choose to your photo library.
+        COMBINE_HIDPI_IMAGES: YES
+    info:
+      path: Support/Info-Mac.plist
+      properties: *appInfo
+
+  SlideStationTV:
+    type: application
+    platform: tvOS
+    sources:
+      - path: TV
+    dependencies:
+      - package: ProUI
+      - package: SlideKit
+        product: SlideAlbums
+    settings:
+      base:
+        PRODUCT_NAME: Slide Station
+        PRODUCT_BUNDLE_IDENTIFIER: land.sams.slide-station
+        CODE_SIGN_ENTITLEMENTS: Support/SlideStationTV.entitlements
+        ASSETCATALOG_COMPILER_APPICON_NAME: App Icon & Top Shelf Image
+        INFOPLIST_KEY_CFBundleDisplayName: Slide Station
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.photography
+        INFOPLIST_KEY_UIUserInterfaceStyle: Dark
+    info:
+      path: Support/Info-TV.plist
+      properties:
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        NSAppTransportSecurity:
+          NSAllowsArbitraryLoads: true
+        ITSAppUsesNonExemptEncryption: false
+        SSKeychainGroup: $(AppIdentifierPrefix)land.sams.slide-station
+
 schemes:
   SlideStation:
     build:
       targets:
         SlideStation: all
+        SlideStationWidget: all
     run:
       config: Debug
-    test:
+    archive:
+      config: Release
+  SlideStationMac:
+    build:
+      targets:
+        SlideStationMac: all
+    run:
       config: Debug
+    archive:
+      config: Release
+  SlideStationTV:
+    build:
+      targets:
+        SlideStationTV: all
+    run:
+      config: Debug
+    archive:
+      config: Release

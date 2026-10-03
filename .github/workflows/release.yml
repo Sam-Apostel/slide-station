@@ -10,7 +10,8 @@ on:
     paths-ignore:
       - "**.md"
       - "tests/**"
-      - "apple/**" # the native app ships separately (TestFlight), not in the desktop release
+      - "apple/**" # the native apps ship separately (TestFlight), not in the desktop release
+      - ".github/workflows/apple.yml"
       - "site/**" # the website deploys on Railway by itself
       - ".github/ISSUE_TEMPLATE/**"
   workflow_dispatch:

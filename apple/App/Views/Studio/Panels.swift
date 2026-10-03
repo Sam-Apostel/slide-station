@@ -20,7 +20,8 @@ struct FilmstripPanel: View {
     }
 
     var body: some View {
-        let statuses = model.statuses
+        // from the tray drawn here: model.statuses is already empty while this goes away (closing the tray)
+        let statuses = tray.statuses()
         let dates = SlideDates.estimate(tray)
         VStack(alignment: .leading, spacing: 0) {
             VStack(alignment: .leading, spacing: 2) {
@@ -91,7 +92,6 @@ struct InspectorPanel: View {
     @Binding var picking: Bool
     let cropping: Bool
     let onCrop: () -> Void
-    @State private var histogram: [String: [Int]] = [:]
     @AppStorage("inspector.frame") private var frameOpen = true
     @AppStorage("inspector.curve") private var curveOpen = true
     @AppStorage("inspector.adjust") private var adjustOpen = true
@@ -103,17 +103,16 @@ struct InspectorPanel: View {
             ScrollView {
                 VStack(spacing: 0) {
                     if let g = model.slide {
-                        if g.locked != nil { lockedBanner }
+                        if g.locked != nil { LockedBanner() }
                         Group {
-                            ProDisclosureGroup(title: "Frame", expanded: $frameOpen, summary: frameNote(g)) { frameSection(g) }
+                            ProDisclosureGroup(title: "Frame", expanded: $frameOpen, summary: FrameSection.note(g)) {
+                                FrameSection(slide: g, cropping: cropping, onCrop: onCrop)
+                            }
                             ProDisclosureGroup(title: "Tone curve", expanded: $curveOpen, summary: ToneCurveView.note(g.params.curves)) {
-                                ToneCurveView(slide: g, histogram: histogram).padding(.horizontal, 12).padding(.vertical, 10)
+                                CurveSection(tray: tray, slide: g)
                             }
                             ProDisclosureGroup(title: "Adjust", expanded: $adjustOpen, summary: AdjustPanel.summary(g, defaults: tray.defaults)) {
-                                if model.learningEnabled && model.learning.ready && g.feat != nil {
-                                    Button(action: model.useLearned) { Image(systemName: "sparkles") }.accessibilityLabel("Use learned settings")
-                                }
-                                Button { model.resetParams() } label: { Image(systemName: "arrow.uturn.backward") }.accessibilityLabel("Reset all adjustments")
+                                AdjustActions(slide: g)
                             } content: {
                                 AdjustPanel(tray: tray, slide: g, picking: $picking)
                             }
@@ -127,16 +126,66 @@ struct InspectorPanel: View {
                     ProDisclosureGroup(title: "Tray", expanded: $trayOpen, summary: tray.name, showsBottomSeparator: false) { TrayFields(tray: tray) }
                 }
             }
-            .task(id: histogramKey) { await loadHistogram() }
             footer
         }
         .font(.system(size: 12))
         .foregroundStyle(ProTheme.ink)
     }
 
-    // MARK: sections
+    private func detailsNote(_ g: Slide) -> String {
+        let d = SlideDates.estimate(tray)[model.selection]
+        let date = d.value.isEmpty ? "no date" : d.source == .own ? d.value : "≈ \(d.value)"
+        return g.caption.map { "\(date) · \($0)" } ?? date
+    }
 
-    private func frameSection(_ g: Slide) -> some View {
+    // MARK: footer: develop and upload
+
+    private var footer: some View {
+        VStack(spacing: 8) {
+            if let g = model.slide {
+                HStack(spacing: 6) {
+                    DevelopButton(done: g.developed) { g.developed ? model.next() : model.keep() }
+                    ProButton(size: .lg, active: g.skip, activeTint: ProTheme.destructive.opacity(0.55), action: { model.skip(advance: false) }) {
+                        Image(systemName: "xmark")
+                    }.accessibilityLabel(g.skip ? "Don't skip" : "Skip")
+                    ProButton(size: .lg, action: model.nextUndeveloped) { Image(systemName: "forward.end") }.accessibilityLabel("Next slide to develop")
+                }
+            }
+            UploadControls(tray: tray)
+        }
+        .padding(12)
+        .background(ProTheme.panel)
+        .overlay(alignment: .top) { Rectangle().fill(ProTheme.seam).frame(height: 1) }
+    }
+}
+
+/// A locked slide: its scans are gone, Immich has the final version.
+struct LockedBanner: View {
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: "lock.fill").foregroundStyle(ProTheme.warn)
+            VStack(alignment: .leading, spacing: 3) {
+                Text("Locked — Immich has the final version").font(.system(size: 12, weight: .semibold))
+                Text("The original scans were deleted after upload, so this slide can't be edited. Import its scans again to edit it.")
+                    .font(.system(size: 11)).foregroundStyle(ProTheme.muted).fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(ProTheme.warn.opacity(0.08))
+        .overlay(alignment: .bottom) { Rectangle().fill(ProTheme.warn.opacity(0.3)).frame(height: 1) }
+    }
+}
+
+/// Frame: turn, crop, and straighten to the mount when it sits crooked in it.
+struct FrameSection: View {
+    @Environment(AppModel.self) private var model
+    let slide: Slide
+    let cropping: Bool
+    let onCrop: () -> Void
+
+    var body: some View {
+        let g = slide
         VStack(spacing: 0) {
             HStack(spacing: 6) {
                 ProButtonGroup {
@@ -175,7 +224,7 @@ struct InspectorPanel: View {
         }
     }
 
-    private func frameNote(_ g: Slide) -> String {
+    static func note(_ g: Slide) -> String {
         var parts: [String] = []
         switch (g.rotation, g.rotReason) {
         case (0, _): parts.append("upright")
@@ -186,59 +235,56 @@ struct InspectorPanel: View {
         if g.params.angle != 0 { parts.append("straightened") }
         return parts.joined(separator: " · ")
     }
+}
 
-    private func detailsNote(_ g: Slide) -> String {
-        let d = SlideDates.estimate(tray)[model.selection]
-        let date = d.value.isEmpty ? "no date" : d.source == .own ? d.value : "≈ \(d.value)"
-        return g.caption.map { "\(date) · \($0)" } ?? date
+/// The tone curve with the histogram of its input (the developed slide before the curve).
+struct CurveSection: View {
+    @Environment(AppModel.self) private var model
+    let tray: Tray
+    let slide: Slide
+    @State private var histogram: [String: [Int]] = [:]
+
+    var body: some View {
+        ToneCurveView(slide: slide, histogram: histogram).padding(.horizontal, 12).padding(.vertical, 10)
+            .task(id: histogramKey) { await loadHistogram() }
     }
-
-    private var lockedBanner: some View {
-        HStack(alignment: .top, spacing: 10) {
-            Image(systemName: "lock.fill").foregroundStyle(ProTheme.warn)
-            VStack(alignment: .leading, spacing: 3) {
-                Text("Locked — Immich has the final version").font(.system(size: 12, weight: .semibold))
-                Text("The original scans were deleted after upload, so this slide can't be edited. Import its scans again to edit it.")
-                    .font(.system(size: 11)).foregroundStyle(ProTheme.muted).fixedSize(horizontal: false, vertical: true)
-            }
-        }
-        .padding(12)
-        .background(ProTheme.warn.opacity(0.08))
-        .overlay(alignment: .bottom) { Rectangle().fill(ProTheme.warn.opacity(0.3)).frame(height: 1) }
-    }
-
-    // MARK: histogram of the curve's input
 
     private var histogramKey: String {
-        guard let g = model.slide else { return "" }
-        let p = g.params
+        let g = slide, p = g.params
         return "\(g.id)|\(g.activeScans)|\(g.rotation)|\(p.strength)|\(p.trim)|\(p.dust)|\(p.mould)|\(p.newton)|\(p.angle)|\(p.crop ?? [])"
     }
 
     private func loadHistogram() async {
-        guard let g = model.slide else { return }
         try? await Task.sleep(for: .milliseconds(120))
         guard !Task.isCancelled else { return }
-        let renderer = model.renderer, t = tray
+        let renderer = model.renderer, t = tray, g = slide
         let h = await Task.detached { (try? renderer.histogram(t, g)) ?? [:] }.value
         if !Task.isCancelled { histogram = h }
     }
+}
 
-    // MARK: footer: develop and upload
+/// Adjust's header buttons: the learned suggestion back, everything back to the tray's defaults.
+struct AdjustActions: View {
+    @Environment(AppModel.self) private var model
+    let slide: Slide
 
-    private var footer: some View {
+    var body: some View {
+        if model.learningEnabled && model.learning.ready && slide.feat != nil {
+            Button(action: model.useLearned) { Image(systemName: "sparkles") }.accessibilityLabel("Use learned settings")
+        }
+        Button { model.resetParams() } label: { Image(systemName: "arrow.uturn.backward") }.accessibilityLabel("Reset all adjustments")
+    }
+}
+
+/// Upload the developed slides (or all of them), and clean the scanner's card once that's safe.
+struct UploadControls: View {
+    @Environment(AppModel.self) private var model
+    let tray: Tray
+
+    var body: some View {
         let s = tray.summary()
         let all = tray.groups.filter { !$0.skip }.count - s.uploaded
-        return VStack(spacing: 8) {
-            if let g = model.slide {
-                HStack(spacing: 6) {
-                    DevelopButton(done: g.developed) { g.developed ? model.next() : model.keep() }
-                    ProButton(size: .lg, active: g.skip, activeTint: ProTheme.destructive.opacity(0.55), action: { model.skip(advance: false) }) {
-                        Image(systemName: "xmark")
-                    }.accessibilityLabel(g.skip ? "Don't skip" : "Skip")
-                    ProButton(size: .lg, action: model.nextUndeveloped) { Image(systemName: "forward.end") }.accessibilityLabel("Next slide to develop")
-                }
-            }
+        VStack(spacing: 8) {
             HStack(spacing: 6) {
                 ProButton(size: .lg, active: s.readyUpload > 0, fullWidth: true, action: { model.upload(onlyReady: true) }) {
                     Label("Upload \(s.readyUpload) developed", systemImage: "square.and.arrow.up")
@@ -253,9 +299,6 @@ struct InspectorPanel: View {
                 if let b = blockers.first { Text(b).font(.system(size: 10)).foregroundStyle(ProTheme.dim).lineLimit(1).truncationMode(.tail) }
             }
         }
-        .padding(12)
-        .background(ProTheme.panel)
-        .overlay(alignment: .top) { Rectangle().fill(ProTheme.seam).frame(height: 1) }
     }
 }
 
@@ -263,19 +306,15 @@ struct InspectorPanel: View {
 /// an amber gradient with a highlight and dimples; once developed it steps back.
 struct DevelopButton: View {
     let done: Bool
+    /// A phone's bar: thumb-sized, no keyboard hint.
+    var compact = false
+    /// The landscape rail: icon over the word, square-ish.
+    var square = false
     let action: () -> Void
     var body: some View {
         Button(action: action) {
-            HStack(spacing: 8) {
-                Image(systemName: done ? "checkmark" : "camera.aperture").font(.system(size: 14, weight: .semibold))
-                Text(done ? "Developed" : "Develop").font(.system(size: 13, weight: .semibold)).tracking(0.3)
-                if !done { Image(systemName: "arrow.right").font(.system(size: 12, weight: .bold)) }
-                Text("Space").font(.system(size: 10, weight: .medium))
-                    .padding(.horizontal, 5).padding(.vertical, 1)
-                    .background(done ? .white.opacity(0.08) : .black.opacity(0.14), in: RoundedRectangle(cornerRadius: 3))
-                    .foregroundStyle(done ? ProTheme.muted : ProTheme.accentInk.opacity(0.7))
-            }
-            .frame(maxWidth: .infinity).frame(height: 38)
+            label
+            .frame(maxWidth: .infinity).frame(height: square ? 54 : compact ? 44 : 38)
             .foregroundStyle(done ? ProTheme.accent : ProTheme.accentInk)
             .background {
                 if done {
@@ -286,13 +325,34 @@ struct DevelopButton: View {
                         .overlay { Dimples().fill(.black.opacity(0.07)) }
                 }
             }
-            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .clipShape(RoundedRectangle(cornerRadius: compact ? 10 : 8, style: .continuous))
             .overlay(alignment: .top) { RoundedRectangle(cornerRadius: 8).fill(.white.opacity(done ? 0.05 : 0.45)).frame(height: 1).padding(.horizontal, 6) }
-            .overlay { RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(done ? ProTheme.accent.opacity(0.3) : .black.opacity(0.4), lineWidth: 1) }
+            .overlay { RoundedRectangle(cornerRadius: compact ? 10 : 8, style: .continuous).strokeBorder(done ? ProTheme.accent.opacity(0.3) : .black.opacity(0.4), lineWidth: 1) }
             .shadow(color: done ? .clear : ProTheme.accent.opacity(0.35), radius: 9, y: 6)
         }
         .buttonStyle(PressStyle())
         .accessibilityLabel(done ? "Developed — next slide" : "Develop and go to the next slide")
+    }
+
+    @ViewBuilder private var label: some View {
+        if square {
+            VStack(spacing: 3) {
+                Image(systemName: done ? "checkmark" : "camera.aperture").font(.system(size: 18, weight: .semibold))
+                Text(done ? "Done" : "Develop").font(.system(size: 11, weight: .semibold))
+            }
+        } else {
+            HStack(spacing: 8) {
+                Image(systemName: done ? "checkmark" : "camera.aperture").font(.system(size: compact ? 16 : 14, weight: .semibold))
+                Text(done ? "Developed" : "Develop").font(.system(size: compact ? 15 : 13, weight: .semibold)).tracking(0.3)
+                if !done { Image(systemName: "arrow.right").font(.system(size: 12, weight: .bold)) }
+                if !compact {
+                    Text("Space").font(.system(size: 10, weight: .medium))
+                        .padding(.horizontal, 5).padding(.vertical, 1)
+                        .background(done ? .white.opacity(0.08) : .black.opacity(0.14), in: RoundedRectangle(cornerRadius: 3))
+                        .foregroundStyle(done ? ProTheme.muted : ProTheme.accentInk.opacity(0.7))
+                }
+            }
+        }
     }
 }
 
@@ -360,18 +420,23 @@ struct MetaFields: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             field("Date") {
-                TextField(estimated.value.isEmpty ? "1978-08" : estimated.value, text: $date).keyboardType(.numbersAndPunctuation)
+                // the same kind of field as the two below, one line: all three the same height
+                TextField(estimated.value.isEmpty ? "1978-08" : estimated.value, text: $date, axis: .vertical).lineLimit(1).keyboardType(.numbersAndPunctuation)
                     .onChange(of: date) { _, v in if v != (slide.date ?? "") { model.setDate(v) } }
             }
             if slide.date == nil, !estimated.value.isEmpty {
                 Text(estimated.source == .between ? "Estimated between the dated slides around it" : estimated.source == .near ? "From the nearest dated slide" : "The tray's date")
                     .font(.system(size: 10)).foregroundStyle(ProTheme.dim)
             }
-            Button("Date a range…") {
+            Button {
                 rangeFrom = model.selection + 1; rangeTo = model.rangeEnd(from: model.selection) + 1
                 rangeDate = slide.date ?? ""; ranging = true
+            } label: {
+                Label("Date a range…", systemImage: "calendar.badge.plus").font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(ProTheme.accent).padding(.vertical, 2).contentShape(Rectangle())
             }
-            .font(.system(size: 11))
+            .buttonStyle(.plain)
+            .padding(.bottom, 4)
             .popover(isPresented: $ranging) { rangeForm }
             field("Written on the mount") {
                 TextField("As it says — few slides have any", text: $writing, axis: .vertical).lineLimit(1...3)
@@ -389,7 +454,9 @@ struct MetaFields: View {
     private func field<C: View>(_ label: String, @ViewBuilder _ c: () -> C) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             Text(label).font(.system(size: 11)).foregroundStyle(ProTheme.muted)
+            // one height for every field, single line or growing
             c().textFieldStyle(.plain).font(.system(size: 12))
+                .frame(minHeight: 18, alignment: .leading)
                 .padding(.horizontal, 8).padding(.vertical, 6)
                 .background(SS.field, in: RoundedRectangle(cornerRadius: 5))
                 .overlay { RoundedRectangle(cornerRadius: 5).strokeBorder(ProTheme.line, lineWidth: 1) }
