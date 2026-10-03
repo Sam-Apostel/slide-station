@@ -105,6 +105,12 @@ public enum SharedStore {
         set { defaults.set(newValue, forKey: "followedAlbums") }
     }
 
+    /// The Immich account the key belongs to (its user id): whose photos are one's own to favorite.
+    public static var userID: String? {
+        get { defaults.string(forKey: "immichUserID") }
+        set { defaults.set(newValue, forKey: "immichUserID") }
+    }
+
     /// Whether albums were ever chosen (an empty choice is a choice: don't follow shared albums again).
     public static var choseAlbums: Bool {
         get { defaults.bool(forKey: "choseAlbums") }

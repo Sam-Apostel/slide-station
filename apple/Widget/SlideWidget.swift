@@ -1,3 +1,4 @@
+import AppIntents
 import SlideAlbums
 import SwiftUI
 import WidgetKit
@@ -48,9 +49,18 @@ struct Provider: TimelineProvider {
     func getTimeline(in context: Context, completion: @escaping (Timeline<SlideEntry>) -> Void) {
         Task {
             let entries = await entries(count: Self.perTimeline, size: context.displaySize, scale: 3, advance: true)
-            let reload = entries.count > 1 ? .atEnd : TimelineReloadPolicy.after(Date().addingTimeInterval(entries.first?.photo == nil ? 30 * 60 : Self.every))
-            completion(Timeline(entries: entries, policy: reload))
+            let end = entries.last.map { $0.date.addingTimeInterval(Self.every) } ?? Date().addingTimeInterval(30 * 60)
+            completion(Timeline(entries: entries, policy: .after(entries.first?.photo == nil ? Date().addingTimeInterval(30 * 60) : end)))
         }
+    }
+
+    /// The slides this timeline shows and when it started. Kept in the App Group, so a reload in the
+    /// middle of it (tapping the star reloads the widget) shows the same slide, not the next one.
+    private struct Plan: Codable { var start: Date; var ids: [String] }
+
+    private static var plan: Plan? {
+        get { SharedStore.defaults.data(forKey: "widgetPlan").flatMap { try? JSONDecoder().decode(Plan.self, from: $0) } }
+        set { SharedStore.defaults.set(newValue.flatMap { try? JSONEncoder().encode($0) }, forKey: "widgetPlan") }
     }
 
     /// The next `count` slides, each written out at the widget's size, one every `every`.
@@ -65,16 +75,29 @@ struct Provider: TimelineProvider {
         }
         let photos = await AlbumCache.followedPhotos(maxAge: 6 * 3600, client: client)
         guard !photos.isEmpty else { return [SlideEntry(date: Date(), note: "No slides in your albums yet")] }
-        var rotation = Rotation()
-        let picks: [AlbumPhoto]
-        if advance { picks = rotation.next(count, of: photos) } else {
+        let byID = Dictionary(photos.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+        var picks: [AlbumPhoto]
+        var start = Date()
+        if let plan = Self.plan, Date() < plan.start.addingTimeInterval(Double(plan.ids.count) * Self.every),
+           plan.ids.allSatisfy({ byID[$0] != nil }) {
+            // still in the middle of the last plan: the same slides, starred as they are now
+            picks = plan.ids.compactMap { byID[$0] }
+            start = plan.start
+            if !advance {
+                let i = min(picks.count - 1, max(0, Int(Date().timeIntervalSince(start) / Self.every)))
+                picks = [picks[i]]; start = Date()
+            }
+        } else if advance {
+            var rotation = Rotation()
+            picks = rotation.next(count, of: photos)
+            Self.plan = Plan(start: start, ids: picks.map(\.id))
+        } else {
             var peek = Rotation(defaults: UserDefaults())   // a snapshot doesn't move the real place
             picks = peek.next(1, of: photos)
         }
         let px = Int(max(size.width, size.height) * scale)
         let albums = Dictionary((AlbumCache.albums() ?? []).map { ($0.id, $0.name) }, uniquingKeysWith: { a, _ in a })
         var out: [SlideEntry] = []
-        let start = Date()
         for (i, p) in picks.enumerated() {
             let file = await Self.image(p, maxPixel: max(300, px), client: client)
             out.append(SlideEntry(date: start.addingTimeInterval(Double(i) * Self.every), file: file, photo: p, album: albums[p.albumID]))
@@ -112,6 +135,7 @@ struct SlideEntryView: View {
             if let file = entry.file, let img = UIImage(contentsOfFile: file.path) {
                 Image(uiImage: img).resizable().aspectRatio(contentMode: .fill)
                 if family != .systemSmall, let p = entry.photo { caption(p) }
+                if let p = entry.photo { star(p) }
             } else {
                 VStack(alignment: .leading, spacing: 6) {
                     Image(systemName: "photo.stack").font(.system(size: 24)).foregroundStyle(Color(red: 0.95, green: 0.70, blue: 0.29))
@@ -123,6 +147,22 @@ struct SlideEntryView: View {
         }
         .containerBackground(for: .widget) { Color(red: 0.055, green: 0.055, blue: 0.063) }
         .widgetURL(entry.photo.map { URL(string: "slidestation://photo/\($0.albumID)/\($0.id)")! })
+    }
+
+    /// Tap to star (favorite in Immich, or like it on someone else's album); runs in the widget.
+    private func star(_ p: AlbumPhoto) -> some View {
+        Button(intent: StarSlide(photoID: p.id, albumID: p.albumID, on: !p.starred)) {
+            Image(systemName: p.starred ? "star.fill" : "star")
+                .font(.system(size: family == .systemSmall ? 13 : 15, weight: .semibold))
+                .foregroundStyle(p.starred ? Color(red: 0.95, green: 0.70, blue: 0.29) : .white)
+                .frame(width: family == .systemSmall ? 28 : 32, height: family == .systemSmall ? 28 : 32)
+                .background(.black.opacity(0.45), in: Circle())
+                .overlay { Circle().strokeBorder(.white.opacity(0.18), lineWidth: 0.5) }
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(p.starred ? "Unstar" : "Star")
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+        .padding(family == .systemSmall ? 8 : 10)
     }
 
     private func caption(_ p: AlbumPhoto) -> some View {
@@ -137,5 +177,32 @@ struct SlideEntryView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background { LinearGradient(colors: [.clear, .black.opacity(0.55)], startPoint: .top, endPoint: .bottom) }
         .opacity(p.caption == nil && meta.isEmpty ? 0 : 1)
+    }
+}
+
+/// The widget's star: favorite the slide in Immich (one's own photo) or like it on the album
+/// (someone else's). The widget shows the change at once; WidgetKit reloads it afterwards.
+struct StarSlide: AppIntent {
+    static let title: LocalizedStringResource = "Star a slide"
+    static let isDiscoverable = false
+
+    @Parameter(title: "Photo") var photoID: String
+    @Parameter(title: "Album") var albumID: String
+    @Parameter(title: "Starred") var on: Bool
+
+    init() {}
+    init(photoID: String, albumID: String, on: Bool) {
+        self.photoID = photoID; self.albumID = albumID; self.on = on
+    }
+
+    func perform() async throws -> some IntentResult {
+        let photo = AlbumCache.photos(albumID)?.photos.first { $0.id == photoID } ?? AlbumPhoto(id: photoID, albumID: albumID)
+        AlbumCache.setStarred(photoID, albumID: albumID, on)
+        guard let c = ImmichKeychain.load(), let client = try? AlbumClient(c) else { return .result() }
+        do { try await client.star(photo, on, me: SharedStore.userID) } catch {
+            AlbumCache.setStarred(photoID, albumID: albumID, !on)   // Immich said no: as it was
+            throw error
+        }
+        return .result()
     }
 }

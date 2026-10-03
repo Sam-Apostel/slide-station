@@ -72,11 +72,15 @@ struct RootView: View {
             if !(studio && model.tray != nil && (width == .compact || height == .compact)) { JobBanner() }
         }
         .onOpenURL { url in opened = AlbumSlideshow(url: url, library: model.albums) }
-        .fullScreenCover(item: $opened) { show in
-            SlideshowView(photos: show.photos, start: show.start, shuffle: false, autoplay: false, title: show.title,
-                          client: model.albums.client) { opened = nil }
-                .idleTimerDisabled()
+        #if DEBUG
+        .task(id: model.albums.followedPhotos.count) {   // SS_PLAY=1: the followed albums' slideshow
+            try? await Task.sleep(for: .seconds(2))   // after SS_ORIENTATION has turned the screen
+            if DebugLaunch.env["SS_PLAY"] != nil, opened == nil, !model.albums.followedPhotos.isEmpty {
+                opened = AlbumSlideshow(photos: model.albums.followedPhotos, title: model.albums.followedAlbums.first?.name, shuffle: false)
+            }
         }
+        #endif
+        .fullScreenCover(item: $opened) { show in AppSlideshow(show: show) { opened = nil } }
         .animation(.snappy, value: model.job == nil)
         .alert("Something went wrong", isPresented: Binding(get: { model.error != nil }, set: { if !$0 { model.error = nil } })) {
             Button("OK") { model.error = nil }

@@ -9,6 +9,8 @@ struct AlbumSlideshow: Identifiable {
     var start = 0
     var title: String?
     var shuffle = SlideshowSettings.shuffle
+    /// Play at once; off when it opens on one photo to look at (the widget, a tapped thumbnail).
+    var autoplay = true
 
     /// `slidestation://photo/<album>/<photo>` (the widget): that album, starting at that photo.
     @MainActor init?(url: URL, library: AlbumLibrary) {
@@ -16,11 +18,32 @@ struct AlbumSlideshow: Identifiable {
         guard url.scheme == "slidestation", url.host() == "photo", parts.count == 2 else { return nil }
         let photos = library.photos[parts[0]] ?? AlbumCache.photos(parts[0])?.photos ?? []
         guard let i = photos.firstIndex(where: { $0.id == parts[1] }) else { return nil }
-        self.init(photos: photos, start: i, title: library.album(parts[0])?.name, shuffle: false)
+        self.init(photos: photos, start: i, title: library.album(parts[0])?.name, shuffle: false, autoplay: false)
     }
 
-    init(photos: [AlbumPhoto], start: Int = 0, title: String?, shuffle: Bool = SlideshowSettings.shuffle) {
-        self.photos = photos; self.start = start; self.title = title; self.shuffle = shuffle
+    init(photos: [AlbumPhoto], start: Int = 0, title: String?, shuffle: Bool = SlideshowSettings.shuffle, autoplay: Bool = true) {
+        self.photos = photos; self.start = start; self.title = title; self.shuffle = shuffle; self.autoplay = autoplay
+    }
+}
+
+/// The slideshow as the app shows it: with star and Save to Photos, the save's progress, and the
+/// screen kept on.
+struct AppSlideshow: View {
+    @Environment(AppModel.self) private var model
+    @Environment(AlbumLibrary.self) private var albums
+    let show: AlbumSlideshow
+    let close: () -> Void
+
+    var body: some View {
+        SlideshowView(photos: show.photos, start: show.start, shuffle: show.shuffle, autoplay: show.autoplay, title: show.title,
+                      client: albums.client,
+                      starred: { albums.current($0).starred },
+                      onStar: { p, on in Task { await albums.star([p], on) } },
+                      onSave: { model.saveToPhotos([$0]) },
+                      onClose: close)
+            .overlay(alignment: .top) { JobBanner().padding(.top, 52) }
+            .animation(.snappy, value: model.job == nil)
+            .idleTimerDisabled()
     }
 }
 
@@ -69,10 +92,7 @@ struct AlbumsSection: View {
             }
         }
         .sheet(isPresented: $choosing) { ChooseAlbumsView() }
-        .fullScreenCover(item: $playing) { show in
-            SlideshowView(photos: show.photos, start: show.start, shuffle: show.shuffle, title: show.title, client: albums.client) { playing = nil }
-                .idleTimerDisabled()
-        }
+        .fullScreenCover(item: $playing) { show in AppSlideshow(show: show) { playing = nil } }
     }
 }
 
@@ -110,67 +130,218 @@ struct AlbumCard: View {
 }
 
 /// One album: every photo in a grid, oldest first (tray order). Tap one to look from there; Play.
+/// Select works as in Photos: Select, tap photos (or swipe across them) to pick, then save them to
+/// the device or star them.
 struct AlbumScreen: View {
+    @Environment(AppModel.self) private var model
     @Environment(AlbumLibrary.self) private var albums
     let album: ImmichAlbum
     @State private var playing: AlbumSlideshow?
+    @State private var selecting = false
+    @State private var selected: Set<String> = []
+    @State private var width: CGFloat = 0
+    /// A swipe across the grid that picks photos: where it started, and what was picked before it.
+    @State private var sweep: (start: Int, adding: Bool, before: Set<String>)?
+
+    private let gap: CGFloat = 2
+    private var columns: Int { max(3, Int((width + gap) / ((Platform.isMac ? 150 : 110) + gap))) }
+    private var cell: CGFloat { max(1, (width - CGFloat(columns - 1) * gap) / CGFloat(columns)) }
 
     var body: some View {
         let photos = albums.photos[album.id] ?? []
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
-                HStack(alignment: .bottom) {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(album.name).font(.system(size: 28, weight: .bold))
-                        Text([["\(photos.isEmpty ? album.count : photos.count) slides"], [ImmichDate.span(photos)], [album.sharedBy.map { "shared by \($0)" }]]
-                                .flatMap { $0 }.compactMap { $0 }.joined(separator: " · "))
-                            .foregroundStyle(ProTheme.muted)
-                    }
-                    Spacer()
-                    Toggle("Follow", isOn: Binding(get: { albums.isFollowed(album.id) }, set: { albums.setFollowing(album.id, $0) }))
-                        .toggleStyle(.button).tint(ProTheme.accent)
-                        .help("Followed albums play in the slideshow, the widget and on Apple TV")
-                }
-                if photos.count > 0 {
-                    HStack(spacing: 10) {
-                        Button { playing = AlbumSlideshow(photos: photos, title: album.name, shuffle: false) } label: { Label("Play", systemImage: "play.fill") }
-                            .buttonStyle(BigButtonStyle(prominent: true))
-                        Button { playing = AlbumSlideshow(photos: photos, start: Int.random(in: 0..<photos.count), title: album.name, shuffle: true) } label: { Label("Shuffle", systemImage: "shuffle") }
-                            .buttonStyle(BigButtonStyle())
-                    }
-                    .frame(maxWidth: 420)
-                }
-                LazyVGrid(columns: [GridItem(.adaptive(minimum: Platform.isMac ? 150 : 104), spacing: 4)], spacing: 4) {
-                    ForEach(Array(photos.enumerated()), id: \.element.id) { i, p in
-                        Button { playing = AlbumSlideshow(photos: photos, start: i, title: album.name, shuffle: false) } label: {
-                            Color.clear.aspectRatio(1, contentMode: .fit)
-                                .overlay { RemotePhoto(p.id, size: .thumbnail, maxPixel: 360, client: albums.client) }
-                                .clipShape(RoundedRectangle(cornerRadius: 3))
-                                .contentShape(Rectangle())
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityLabel(p.caption ?? p.dateText ?? "Slide \(i + 1)")
-                    }
-                }
+                header(photos)
+                grid(photos)
                 if photos.isEmpty {
-                    Text(albums.loading ? "Loading…" : "Nothing in this album yet.").foregroundStyle(ProTheme.muted).padding(.top, 20)
+                    Text(albums.loading ? "Loading…" : "Nothing in this album yet.").foregroundStyle(ProTheme.muted).padding(.horizontal, 20).padding(.top, 20)
                 }
             }
-            .padding(20)
+            .padding(.vertical, 20)
             .frame(maxWidth: 1200)
             .frame(maxWidth: .infinity)
         }
+        .scrollDisabled(sweep != nil)
         .background(ProTheme.background)
         .foregroundStyle(ProTheme.ink)
         .refreshable { await albums.loadPhotos(album.id) }
         .task { await albums.loadPhotos(album.id) }
         .navigationTitle(album.name)
         .navigationBarTitleDisplayMode(.inline)
-        .fullScreenCover(item: $playing) { show in
-            SlideshowView(photos: show.photos, start: show.start, shuffle: show.shuffle, autoplay: show.start == 0 || show.shuffle,
-                          title: show.title, client: albums.client) { playing = nil }
-                .idleTimerDisabled()
+        .navigationBarBackButtonHidden(selecting)
+        .toolbar { toolbar(photos) }
+        .safeAreaInset(edge: .bottom) { if selecting { selectionBar(photos) } }
+        .animation(.snappy(duration: 0.2), value: selecting)
+        .fullScreenCover(item: $playing) { show in AppSlideshow(show: show) { playing = nil } }
+    }
+
+    private var selectionTitle: String {
+        selected.isEmpty ? "Select Items" : selected.count == 1 ? "1 Photo Selected" : "\(selected.count) Photos Selected"
+    }
+
+    private func header(_ photos: [AlbumPhoto]) -> some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .bottom, spacing: 12) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(album.name).font(.system(size: 28, weight: .bold)).lineLimit(2)
+                    Text([["\(photos.isEmpty ? album.count : photos.count) slides"], [ImmichDate.span(photos)], [album.sharedBy.map { "shared by \($0)" }]]
+                            .flatMap { $0 }.compactMap { $0 }.joined(separator: " · "))
+                        .foregroundStyle(ProTheme.muted)
+                }
+                Spacer(minLength: 0)
+                // says what it is: followed or not (a tinted toggle reads the same either way)
+                let following = albums.isFollowed(album.id)
+                Button { albums.setFollowing(album.id, !following) } label: {
+                    Label(following ? "Following" : "Follow", systemImage: following ? "checkmark" : "plus")
+                        .font(.system(size: 14, weight: .semibold))
+                        .padding(.horizontal, 14).frame(height: 34)
+                        .foregroundStyle(following ? ProTheme.ink : ProTheme.accentInk)
+                        .background(following ? AnyShapeStyle(Color.white.opacity(0.1)) : AnyShapeStyle(ProTheme.accent), in: Capsule())
+                }
+                .buttonStyle(.plain).fixedSize()
+                .help("Followed albums play in the slideshow, the widget and on Apple TV")
+            }
+            if photos.count > 0 && !selecting {
+                HStack(spacing: 10) {
+                    Button { playing = AlbumSlideshow(photos: photos, title: album.name, shuffle: false) } label: { Label("Play", systemImage: "play.fill") }
+                        .buttonStyle(BigButtonStyle(prominent: true))
+                    Button { playing = AlbumSlideshow(photos: photos, start: Int.random(in: 0..<photos.count), title: album.name, shuffle: true) } label: { Label("Shuffle", systemImage: "shuffle") }
+                        .buttonStyle(BigButtonStyle())
+                }
+                .frame(maxWidth: 420)
+            }
         }
+        .padding(.horizontal, 20)
+    }
+
+    // MARK: the grid
+
+    private func grid(_ photos: [AlbumPhoto]) -> some View {
+        LazyVGrid(columns: Array(repeating: GridItem(.fixed(cell), spacing: gap), count: columns), spacing: gap) {
+            ForEach(Array(photos.enumerated()), id: \.element.id) { i, p in
+                thumb(p, at: i, in: photos)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width = $0 }
+        .coordinateSpace(name: "grid")
+        // swiping sideways across photos picks every one between, as in Photos; up and down scrolls
+        .simultaneousGesture(selecting ? sweepGesture(photos) : nil)
+    }
+
+    private func thumb(_ p: AlbumPhoto, at i: Int, in photos: [AlbumPhoto]) -> some View {
+        let on = selected.contains(p.id)
+        return Button {
+            if selecting { toggle(p.id) } else { playing = AlbumSlideshow(photos: photos, start: i, title: album.name, shuffle: false, autoplay: false) }
+        } label: {
+            RemotePhoto(p.id, size: .thumbnail, maxPixel: 360, client: albums.client)
+                .frame(width: cell, height: cell)
+                .clipped()
+                .overlay { if on { Color.black.opacity(0.18) } }
+                .overlay(alignment: .bottomLeading) {
+                    if p.starred {
+                        Image(systemName: "star.fill").font(.system(size: 11, weight: .bold)).foregroundStyle(.white)
+                            .shadow(color: .black.opacity(0.6), radius: 2).padding(6)
+                    }
+                }
+                .overlay(alignment: .bottomTrailing) {
+                    if selecting && on {
+                        Image(systemName: "checkmark.circle.fill")
+                            .font(.system(size: 22))
+                            .symbolRenderingMode(.palette).foregroundStyle(.white, Color(red: 0.04, green: 0.52, blue: 1))   // Photos' blue
+                            .background(Circle().fill(.white).padding(2))
+                            .shadow(color: .black.opacity(0.35), radius: 2)
+                            .padding(5)
+                            .transition(.scale.combined(with: .opacity))
+                    }
+                }
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .animation(.snappy(duration: 0.15), value: on)
+        .accessibilityLabel(p.caption ?? p.dateText ?? "Slide \(i + 1)")
+        .accessibilityAddTraits(selecting && on ? .isSelected : [])
+        .contextMenu {
+            if !selecting {
+                Button("Save to Photos", systemImage: "square.and.arrow.down") { model.saveToPhotos([p]) }
+                Button(p.starred ? "Unstar" : "Star", systemImage: p.starred ? "star.slash" : "star") { Task { await albums.star([p], !p.starred) } }
+                Button("Play from Here", systemImage: "play") { playing = AlbumSlideshow(photos: photos, start: i, title: album.name, shuffle: false) }
+                Button("Select", systemImage: "checkmark.circle") { selecting = true; selected = [p.id] }
+            }
+        }
+    }
+
+    private func toggle(_ id: String) {
+        if selected.contains(id) { selected.remove(id) } else { selected.insert(id) }
+    }
+
+    /// The photo under a point of the grid (nil between rows or past the end).
+    private func index(at pt: CGPoint, count: Int) -> Int? {
+        guard cell > 0, pt.x >= 0, pt.y >= 0 else { return nil }
+        let col = min(columns - 1, Int(pt.x / (cell + gap))), row = Int(pt.y / (cell + gap))
+        let i = row * columns + col
+        return i < count ? i : nil
+    }
+
+    private func sweepGesture(_ photos: [AlbumPhoto]) -> some Gesture {
+        DragGesture(minimumDistance: 10, coordinateSpace: .named("grid"))
+            .onChanged { v in
+                if sweep == nil {
+                    // only a sideways start picks; a vertical one is the scroll view's
+                    guard abs(v.translation.width) > abs(v.translation.height),
+                          let start = index(at: v.startLocation, count: photos.count) else { return }
+                    sweep = (start, !selected.contains(photos[start].id), selected)
+                }
+                guard let s = sweep, let now = index(at: v.location, count: photos.count) else { return }
+                let run = Set(photos[min(s.start, now)...max(s.start, now)].map(\.id))
+                selected = s.adding ? s.before.union(run) : s.before.subtracting(run)
+            }
+            .onEnded { _ in sweep = nil }
+    }
+
+    // MARK: bars
+
+    @ToolbarContentBuilder private func toolbar(_ photos: [AlbumPhoto]) -> some ToolbarContent {
+        if selecting {
+            ToolbarItem(placement: .cancellationAction) {
+                Button(selected.count == photos.count ? "Deselect All" : "Select All") {
+                    selected = selected.count == photos.count ? [] : Set(photos.map(\.id))
+                }
+            }
+            ToolbarItem(placement: .confirmationAction) {
+                Button("Cancel") { selecting = false; selected = [] }
+            }
+        } else if !photos.isEmpty {
+            ToolbarItem(placement: .primaryAction) {
+                Button("Select") { selecting = true }
+            }
+        }
+    }
+
+    /// Save and Star for the selected photos, along the bottom like Photos' toolbar.
+    private func selectionBar(_ photos: [AlbumPhoto]) -> some View {
+        let picked = photos.filter { selected.contains($0.id) }
+        let allStarred = !picked.isEmpty && picked.allSatisfy(\.starred)
+        return HStack {
+            Button { Task { await albums.star(picked, !allStarred) } } label: {
+                Label(allStarred ? "Unstar" : "Star", systemImage: allStarred ? "star.slash" : "star")
+            }
+            Spacer()
+            Text(selectionTitle).font(.system(size: 13, weight: .medium)).foregroundStyle(ProTheme.muted)
+            Spacer()
+            Button {
+                model.saveToPhotos(picked)
+                selecting = false; selected = []
+            } label: { Label("Save", systemImage: "square.and.arrow.down") }
+        }
+        .labelStyle(.iconOnly)
+        .font(.system(size: 20))
+        .disabled(picked.isEmpty || model.busy)
+        .foregroundStyle(picked.isEmpty ? ProTheme.dim : ProTheme.accent)
+        .padding(.horizontal, 24).padding(.vertical, 12)
+        .background(.bar)
+        .overlay(alignment: .top) { Rectangle().fill(ProTheme.line).frame(height: 0.5) }
+        .transition(.move(edge: .bottom).combined(with: .opacity))
     }
 }
 
@@ -252,7 +423,7 @@ struct ImmichForm: View {
             .disabled(url.trimmingCharacters(in: .whitespaces).isEmpty || key.trimmingCharacters(in: .whitespaces).isEmpty || testing)
             if let result { Text(result).font(.footnote).foregroundStyle(result.hasPrefix("Connected") ? ProTheme.green : ProTheme.destructive) }
         } header: { Text("Immich") } footer: {
-            Text("In Immich: your account (top right) → Account Settings → API Keys → New API Key. To look at albums it needs album.read, asset.read, asset.view and asset.download; to upload slides also asset.upload, asset.delete, album.create and albumAsset.create. The server and key are kept in your keychain and reach your other Apple devices through iCloud Keychain, Apple TV included.")
+            Text("In Immich: your account (top right) → Account Settings → API Keys → New API Key. To look at albums and save them it needs album.read, asset.read, asset.view and asset.download; to star them asset.update, activity.read, activity.create and activity.delete; to upload slides also asset.upload, asset.delete, album.create and albumAsset.create. The server and key are kept in your keychain and reach your other Apple devices through iCloud Keychain, Apple TV included.")
         }
     }
 }

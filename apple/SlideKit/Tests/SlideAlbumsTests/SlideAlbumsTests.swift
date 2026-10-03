@@ -177,6 +177,34 @@ final class ClientTests: XCTestCase {
         }
     }
 
+    /// One's own photo: Immich's favorite. Someone else's: a like on the album, and unstarring
+    /// deletes that like (only the owner may change an asset).
+    func testStarIsAFavoriteOnOwnPhotosAndALikeOnOthers() async throws {
+        Stub.seen = []
+        Stub.answer = { r in
+            if r.httpMethod == "GET" { return (200, [["id": "act1", "assetId": "theirs", "type": "like", "user": ["id": "me"]]]) }
+            return (200, [:])
+        }
+        let c = try client()
+        try await c.star(AlbumPhoto(id: "mine", albumID: "al", owner: "me"), true, me: "me")
+        try await c.star(AlbumPhoto(id: "theirs", albumID: "al", owner: "dad"), true, me: "me")
+        try await c.star(AlbumPhoto(id: "theirs", albumID: "al", owner: "dad"), false, me: "me")
+        XCTAssertEqual(Stub.seen, ["PUT /api/assets/mine", "POST /api/activities",
+                                   "GET /api/activities?albumId=al&type=like&userId=me", "DELETE /api/activities/act1"])
+    }
+
+    func testLikedPhotosOfOthersReadAsStarred() async throws {
+        Stub.answer = { r in
+            if r.url!.path.hasSuffix("/activities") { return (200, [["id": "a", "assetId": "2", "type": "like", "user": ["id": "me"]]]) }
+            return (200, ["id": "al", "assetCount": 3, "assets": [
+                ["id": "1", "ownerId": "dad", "isFavorite": true], ["id": "2", "ownerId": "dad"], ["id": "3", "ownerId": "me", "isFavorite": true],
+            ]])
+        }
+        let photos = try await client().photos(in: "al", me: "me")
+        // dad's own favorite doesn't count for me; my like does; my own favorite does
+        XCTAssertEqual(photos.map(\.starred), [false, true, true])
+    }
+
     func testImageFallsBackToPreviewThenOriginal() async throws {
         Stub.seen = []
         Stub.answer = { r in r.url!.path.hasSuffix("/original") ? (200, ["fake": "jpeg"]) : (404, [:]) }

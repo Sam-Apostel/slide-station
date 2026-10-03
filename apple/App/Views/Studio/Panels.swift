@@ -20,7 +20,8 @@ struct FilmstripPanel: View {
     }
 
     var body: some View {
-        let statuses = model.statuses
+        // from the tray drawn here: model.statuses is already empty while this goes away (closing the tray)
+        let statuses = tray.statuses()
         let dates = SlideDates.estimate(tray)
         VStack(alignment: .leading, spacing: 0) {
             VStack(alignment: .leading, spacing: 2) {
@@ -419,18 +420,23 @@ struct MetaFields: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             field("Date") {
-                TextField(estimated.value.isEmpty ? "1978-08" : estimated.value, text: $date).keyboardType(.numbersAndPunctuation)
+                // the same kind of field as the two below, one line: all three the same height
+                TextField(estimated.value.isEmpty ? "1978-08" : estimated.value, text: $date, axis: .vertical).lineLimit(1).keyboardType(.numbersAndPunctuation)
                     .onChange(of: date) { _, v in if v != (slide.date ?? "") { model.setDate(v) } }
             }
             if slide.date == nil, !estimated.value.isEmpty {
                 Text(estimated.source == .between ? "Estimated between the dated slides around it" : estimated.source == .near ? "From the nearest dated slide" : "The tray's date")
                     .font(.system(size: 10)).foregroundStyle(ProTheme.dim)
             }
-            Button("Date a range…") {
+            Button {
                 rangeFrom = model.selection + 1; rangeTo = model.rangeEnd(from: model.selection) + 1
                 rangeDate = slide.date ?? ""; ranging = true
+            } label: {
+                Label("Date a range…", systemImage: "calendar.badge.plus").font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(ProTheme.accent).padding(.vertical, 2).contentShape(Rectangle())
             }
-            .font(.system(size: 11))
+            .buttonStyle(.plain)
+            .padding(.bottom, 4)
             .popover(isPresented: $ranging) { rangeForm }
             field("Written on the mount") {
                 TextField("As it says — few slides have any", text: $writing, axis: .vertical).lineLimit(1...3)
@@ -448,7 +454,9 @@ struct MetaFields: View {
     private func field<C: View>(_ label: String, @ViewBuilder _ c: () -> C) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             Text(label).font(.system(size: 11)).foregroundStyle(ProTheme.muted)
+            // one height for every field, single line or growing
             c().textFieldStyle(.plain).font(.system(size: 12))
+                .frame(minHeight: 18, alignment: .leading)
                 .padding(.horizontal, 8).padding(.vertical, 6)
                 .background(SS.field, in: RoundedRectangle(cornerRadius: 5))
                 .overlay { RoundedRectangle(cornerRadius: 5).strokeBorder(ProTheme.line, lineWidth: 1) }

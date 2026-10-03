@@ -44,6 +44,11 @@ public struct SlideshowView: View {
     let client: AlbumClient?
     let title: String?
     let onClose: (() -> Void)?
+    /// Whether a photo is starred now (read from the app's live state), and starring it.
+    var starred: ((AlbumPhoto) -> Bool)?
+    var onStar: ((AlbumPhoto, Bool) -> Void)?
+    /// Save this photo to the device (the Photos library).
+    var onSave: ((AlbumPhoto) -> Void)?
     @State private var order: [AlbumPhoto]
     @State private var index: Int
     @State private var playing: Bool
@@ -60,7 +65,8 @@ public struct SlideshowView: View {
     /// `start`: the photo to begin with (an index into `photos`). With `shuffle`, the rest follow in
     /// a random order.
     public init(photos: [AlbumPhoto], start: Int = 0, shuffle: Bool = SlideshowSettings.shuffle, autoplay: Bool = true,
-                title: String? = nil, client: AlbumClient?, onClose: (() -> Void)? = nil) {
+                title: String? = nil, client: AlbumClient?, starred: ((AlbumPhoto) -> Bool)? = nil,
+                onStar: ((AlbumPhoto, Bool) -> Void)? = nil, onSave: ((AlbumPhoto) -> Void)? = nil, onClose: (() -> Void)? = nil) {
         var o = photos
         var i = photos.indices.contains(start) ? start : 0
         if shuffle, !photos.isEmpty {
@@ -72,6 +78,7 @@ public struct SlideshowView: View {
         _index = State(initialValue: i)
         _playing = State(initialValue: autoplay)
         self.title = title; self.client = client; self.onClose = onClose
+        self.starred = starred; self.onStar = onStar; self.onSave = onSave
     }
 
     #if os(tvOS)
@@ -97,11 +104,17 @@ public struct SlideshowView: View {
                 } else {
                     ProgressView().tint(.white)
                 }
-                if captions { caption(photo).allowsHitTesting(false) }
             } else {
                 Text("No photos in this album yet").foregroundStyle(.white.opacity(0.6))
             }
-            if chrome { controls.transition(.opacity) }
+            GeometryReader { geo in
+                let narrow = geo.size.width < 560
+                ZStack {
+                    shades(photo, narrow: narrow).allowsHitTesting(false)
+                    if captions, let photo { caption(photo, raised: chrome && narrow).allowsHitTesting(false) }
+                    if chrome { controls(narrow: narrow).transition(.opacity) }
+                }
+            }
         }
         .animation(.easeInOut(duration: 1.1), value: photo?.id)
         .animation(.easeInOut(duration: 0.25), value: chrome)
@@ -192,21 +205,39 @@ public struct SlideshowView: View {
     private let captionFont = Font.system(size: 20, weight: .semibold), metaFont = Font.system(size: 14)
     #endif
 
-    private func caption(_ p: AlbumPhoto) -> some View {
-        let meta = [p.dateText, p.place].compactMap { $0 }.joined(separator: " · ")
-        return VStack(alignment: .leading, spacing: 6) {
+    /// What the caption says under the photo, nil when there's nothing.
+    private func meta(_ p: AlbumPhoto) -> String? {
+        let m = [p.dateText, p.place].compactMap { $0 }.joined(separator: " · ")
+        return m.isEmpty ? nil : m
+    }
+
+    /// The dark shades behind the controls (top) and the caption (bottom), right to the screen's
+    /// edges: drawn as their own layer, so the safe area can't cut them short.
+    private func shades(_ p: AlbumPhoto?, narrow: Bool) -> some View {
+        let bottom = (captions && p.map { $0.caption != nil || meta($0) != nil } ?? false) || (chrome && narrow)
+        return VStack(spacing: 0) {
+            LinearGradient(colors: [.black.opacity(0.6), .clear], startPoint: .top, endPoint: .bottom)
+                .frame(height: edge * 4).opacity(chrome ? 1 : 0)
+            Spacer(minLength: 0)
+            LinearGradient(colors: [.clear, .black.opacity(0.6)], startPoint: .top, endPoint: .bottom)
+                .frame(height: edge * (chrome && narrow ? 8 : 5)).opacity(bottom ? 1 : 0)
+        }
+        .ignoresSafeArea()
+        .animation(.easeInOut(duration: 0.25), value: chrome)
+    }
+
+    /// `raised`: the playback buttons sit under it (a narrow screen with the controls showing).
+    private func caption(_ p: AlbumPhoto, raised: Bool) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
             if let c = p.caption { Text(c).font(captionFont).lineLimit(2) }
-            if !meta.isEmpty { Text(meta).font(metaFont).opacity(0.75) }
+            if let m = meta(p) { Text(m).font(metaFont).opacity(0.8) }
         }
         .foregroundStyle(.white)
         .shadow(color: .black.opacity(0.8), radius: 6)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
-        .padding(.horizontal, edge).padding(.bottom, edge * 0.8)
-        .background(alignment: .bottom) {
-            LinearGradient(colors: [.clear, .black.opacity(0.55)], startPoint: .top, endPoint: .bottom).frame(height: edge * 5)
-                .ignoresSafeArea()   // down to the screen's edge, not the safe area's
-        }
-        .opacity(p.caption == nil && meta.isEmpty ? 0 : 1)
+        .padding(.horizontal, edge > 40 ? edge : 20)
+        .padding(.bottom, raised ? 84 : edge > 40 ? edge * 0.8 : 16)
+        .animation(.easeInOut(duration: 0.25), value: raised)
         .id("caption-" + p.id)
         .transition(.opacity)
     }
@@ -217,9 +248,11 @@ public struct SlideshowView: View {
     private let edge: CGFloat = 28
     #endif
 
-    private var controls: some View {
-        VStack {
-            HStack(spacing: 14) {
+    /// Wide: one row along the top. Narrow (a phone upright): close, the title and the timer on
+    /// top, previous / play / next centred at the bottom, under the thumb.
+    private func controls(narrow: Bool) -> some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 12) {
                 #if !os(tvOS)
                 if let onClose {
                     Button(action: onClose) { Image(systemName: "xmark") }
@@ -227,35 +260,64 @@ public struct SlideshowView: View {
                 }
                 #endif
                 VStack(alignment: .leading, spacing: 2) {
-                    if let title { Text(title).font(.system(size: edge > 40 ? 30 : 15, weight: .semibold)).lineLimit(1) }
+                    if let title { Text(title).font(.system(size: edge > 40 ? 30 : 15, weight: .semibold)).lineLimit(1).truncationMode(.middle) }
                     if !order.isEmpty { Text("\(index + 1) of \(order.count)").font(.system(size: edge > 40 ? 24 : 12).monospacedDigit()).opacity(0.7) }
                 }
                 .foregroundStyle(.white).shadow(color: .black.opacity(0.6), radius: 4)
-                Spacer()
+                .frame(maxWidth: .infinity, alignment: .leading)
                 #if os(tvOS)
                 Label(playing ? "Playing" : "Paused", systemImage: playing ? "play.fill" : "pause.fill")
                     .font(.system(size: 24, weight: .medium)).foregroundStyle(.white.opacity(0.8))
                 #else
-                Menu {
-                    Picker("Each photo", selection: $interval) {
-                        ForEach(SlideshowSettings.intervals, id: \.self) { s in Text(s < 60 ? "\(Int(s)) seconds" : "1 minute").tag(s) }
-                    }
-                    Toggle("Captions", isOn: $captions)
-                } label: { Image(systemName: "timer") }
-                    .menuStyle(.button).buttonStyle(RoundGlass()).accessibilityLabel("Slideshow settings")
-                Button { step(-1) } label: { Image(systemName: "backward.fill") }.buttonStyle(RoundGlass()).accessibilityLabel("Previous")
-                Button { playing.toggle(); show() } label: { Image(systemName: playing ? "pause.fill" : "play.fill") }
-                    .buttonStyle(RoundGlass(prominent: true)).accessibilityLabel(playing ? "Pause" : "Play")
-                Button { step(1) } label: { Image(systemName: "forward.fill") }.buttonStyle(RoundGlass()).accessibilityLabel("Next")
+                photoActions
+                if !narrow { settingsMenu; playback }
                 #endif
             }
             .padding(.horizontal, edge > 40 ? edge : 16).padding(.top, edge > 40 ? edge * 0.7 : 8)
-            .background(alignment: .top) {
-                LinearGradient(colors: [.black.opacity(0.55), .clear], startPoint: .top, endPoint: .bottom).frame(height: edge * 4).ignoresSafeArea()
+            Spacer(minLength: 0)
+            #if !os(tvOS)
+            if narrow {
+                HStack(spacing: 14) { settingsMenu; playback }.padding(.bottom, 16)
             }
-            Spacer()
+            #endif
         }
     }
+
+    #if !os(tvOS)
+    /// Star and save, for the photo on screen (when the app offers them).
+    @ViewBuilder private var photoActions: some View {
+        if let photo {
+            if let onStar {
+                let on = starred?(photo) ?? photo.starred
+                Button { onStar(photo, !on); show() } label: { Image(systemName: on ? "star.fill" : "star") }
+                    .buttonStyle(RoundGlass(lit: on)).accessibilityLabel(on ? "Unstar" : "Star")
+            }
+            if let onSave {
+                Button { onSave(photo); show() } label: { Image(systemName: "square.and.arrow.down") }
+                    .buttonStyle(RoundGlass()).accessibilityLabel("Save to Photos")
+            }
+        }
+    }
+
+    private var settingsMenu: some View {
+        Menu {
+            Picker("Each photo", selection: $interval) {
+                ForEach(SlideshowSettings.intervals, id: \.self) { s in Text(s < 60 ? "\(Int(s)) seconds" : "1 minute").tag(s) }
+            }
+            Toggle("Captions", isOn: $captions)
+        } label: { Image(systemName: "timer") }
+            .menuStyle(.button).buttonStyle(RoundGlass()).accessibilityLabel("Slideshow settings")
+    }
+
+    private var playback: some View {
+        HStack(spacing: 14) {
+            Button { step(-1) } label: { Image(systemName: "backward.fill") }.buttonStyle(RoundGlass()).accessibilityLabel("Previous")
+            Button { playing.toggle(); show() } label: { Image(systemName: playing ? "pause.fill" : "play.fill") }
+                .buttonStyle(RoundGlass(prominent: true)).accessibilityLabel(playing ? "Pause" : "Play")
+            Button { step(1) } label: { Image(systemName: "forward.fill") }.buttonStyle(RoundGlass()).accessibilityLabel("Next")
+        }
+    }
+    #endif
 }
 
 /// One photo: fitted over a blurred, darkened copy of itself (the letterbox in the photo's own
@@ -289,10 +351,12 @@ struct PhotoLayer: View {
 /// Round, glassy buttons over a photo.
 struct RoundGlass: ButtonStyle {
     var prominent = false
+    /// An amber glyph: on (a starred photo).
+    var lit = false
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .font(.system(size: 15, weight: .semibold))
-            .foregroundStyle(prominent ? ProTheme.accentInk : .white)
+            .foregroundStyle(prominent ? ProTheme.accentInk : lit ? ProTheme.accent : .white)
             .frame(width: 42, height: 42)
             .background(prominent ? AnyShapeStyle(ProTheme.accent) : AnyShapeStyle(.ultraThinMaterial), in: Circle())
             .overlay { Circle().strokeBorder(.white.opacity(0.15), lineWidth: 0.5) }

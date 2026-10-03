@@ -11,7 +11,7 @@ public enum AlbumError: LocalizedError, Equatable {
         switch self {
         case .notSet: "Add the Immich server and an API key first."
         case .badKey: "Immich didn't accept the API key. Check it in Immich under Account Settings → API Keys."
-        case .permission(let path): "The API key isn't allowed to read \(path). Give it album.read, asset.read, asset.view and asset.download."
+        case .permission(let path): "The API key isn't allowed to use \(path). Give it album.read, asset.read, asset.view and asset.download; to star slides also asset.update, activity.read, activity.create and activity.delete."
         case .server(let s): s
         case .unreachable(let s): "Couldn't reach the Immich server: \(s)"
         }
@@ -20,7 +20,8 @@ public enum AlbumError: LocalizedError, Equatable {
 
 /// Reading albums from Immich (v1.118 through v3), for looking at slides: the albums this key can
 /// see, the photos in one, and their images. The permissions it needs: `album.read`, `asset.read`,
-/// `asset.view` (thumbnails and previews) and `asset.download` (full size on the TV).
+/// `asset.view` (thumbnails and previews), `asset.download` (full size, saving); to star,
+/// `asset.update` (one's own photos) and `activity.read` / `activity.create` / `activity.delete`.
 public struct AlbumClient: Sendable {
     public let base: URL
     let key: String
@@ -113,7 +114,7 @@ public struct AlbumClient: Sendable {
     /// The photos in an album, oldest first: that's tray order, since Slide Station dates each
     /// slide a minute after the one before it. v1/v2 list them in `GET /albums/{id}`; v3 doesn't,
     /// so the album is searched (`albumIds`, paged by `nextPage` before 3.2 and `nextCursor` since).
-    public func photos(in albumID: String) async throws -> [AlbumPhoto] {
+    public func photos(in albumID: String, me: String? = nil) async throws -> [AlbumPhoto] {
         let album = try await json("GET", "albums/\(albumID)") as? [String: Any] ?? [:]
         var raw = album["assets"] as? [[String: Any]] ?? []
         if raw.isEmpty, (album["assetCount"] as? Int ?? 1) > 0 {
@@ -129,7 +130,12 @@ public struct AlbumClient: Sendable {
                 } else { break }
             }
         }
-        return Self.ordered(raw.compactMap { AlbumPhoto(json: $0, albumID: albumID) })
+        var photos = Self.ordered(raw.compactMap { AlbumPhoto(json: $0, albumID: albumID) })
+        // someone else's photos: starred means this account liked them on the album
+        if let me, photos.contains(where: { $0.owner != nil && $0.owner != me }), let liked = try? await likes(albumID: albumID, me: me) {
+            for i in photos.indices where photos[i].owner != me { photos[i].favorite = liked[photos[i].id] != nil }
+        }
+        return photos
     }
 
     /// Oldest first; undated photos at the end, in the order Immich gave them.
@@ -144,7 +150,49 @@ public struct AlbumClient: Sendable {
         }.map(\.element)
     }
 
+    // MARK: starring
+
+    /// Star or unstar a photo: Immich's favorite on one's own photo (`PUT /assets/{id}`, needs
+    /// asset.update), a like on the album for someone else's (`/activities`, activity.create /
+    /// activity.delete), since only an asset's owner may change it. An owner we don't know: try
+    /// the favorite, then the like.
+    public func star(_ photo: AlbumPhoto, _ on: Bool, me: String?) async throws {
+        let mine = photo.owner == nil || me == nil || photo.owner == me
+        if mine {
+            let (data, code) = try await send(try request("PUT", "assets/\(photo.id)", json: ["isFavorite": on]))
+            if code < 400 { return }
+            guard photo.owner == nil || me == nil else {
+                throw AlbumError.server("Immich couldn't change the favorite: \(code) \(String(decoding: data.prefix(200), as: UTF8.self))")
+            }
+        }
+        if on {
+            _ = try await json("POST", "activities", body: ["albumId": photo.albumID, "assetId": photo.id, "type": "like"])
+        } else if let me, let id = try await likes(albumID: photo.albumID, me: me)[photo.id] {
+            let (data, code) = try await send(try request("DELETE", "activities/\(id)"))
+            if code >= 400 { throw AlbumError.server("Immich couldn't remove the like: \(code) \(String(decoding: data.prefix(200), as: UTF8.self))") }
+        }
+    }
+
+    /// This account's likes in an album: asset id → activity id.
+    func likes(albumID: String, me: String) async throws -> [String: String] {
+        let list = try await json("GET", "activities", query: ["albumId": albumID, "type": "like", "userId": me]) as? [[String: Any]] ?? []
+        var out: [String: String] = [:]
+        for a in list {
+            let user = (a["user"] as? [String: Any])?["id"] as? String
+            guard user == nil || user == me, let asset = a["assetId"] as? String, let id = a["id"] as? String else { continue }
+            out[asset] = id
+        }
+        return out
+    }
+
     // MARK: images
+
+    /// The photo exactly as it was uploaded (asset.download): what "Save to Photos" keeps.
+    public func original(_ id: String) async throws -> Data {
+        let (data, code) = try await send(try request("GET", "assets/\(id)/original"))
+        guard code < 400, !data.isEmpty else { throw AlbumError.server("Immich couldn't give the original of this photo (\(code)).") }
+        return data
+    }
 
     public enum Size: String, Sendable, CaseIterable {
         /// ~250 px: grids.

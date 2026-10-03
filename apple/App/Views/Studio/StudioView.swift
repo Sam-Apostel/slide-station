@@ -88,7 +88,7 @@ struct StudioView: View {
             }
             Spacer()
             if let slide = model.slide {
-                let st = model.statuses[model.selection]
+                let st = tray.statuses().indices.contains(model.selection) ? tray.statuses()[model.selection] : .new
                 HStack(spacing: 6) {
                     Circle().fill(st.dotFill).frame(width: 7, height: 7).overlay { Circle().strokeBorder(st == .skipped ? Color(proHex: 0x666666) : .clear, lineWidth: 1) }
                     Text(st == .new ? "to develop" : st.label.lowercased())

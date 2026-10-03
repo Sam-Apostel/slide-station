@@ -65,6 +65,9 @@ struct CompactStudioView: View {
             .onChange(of: tool) { _, t in if t != .adjust { picking = false } }
             .animation(.snappy(duration: 0.25), value: tool)
             .animation(.snappy(duration: 0.25), value: crop.on)
+            #if DEBUG
+            .onAppear { if let t = DebugLaunch.env["SS_TOOL"].flatMap(CompactTool.init(rawValue:)) { tool = t } }
+            #endif
         }
     }
 
@@ -77,7 +80,7 @@ struct CompactStudioView: View {
                 .frame(minHeight: 180)
                 .layoutPriority(1)
             if crop.on, let s = model.slide {
-                cropBar(tray, s)
+                cropBar(tray, s).background(SS.bar.ignoresSafeArea(edges: .bottom))
             } else {
                 if let tool { panel(tool, tray).frame(height: tall ? 470 : 300) } else { SlideRow(tray: tray).frame(height: 92) }
                 toolRow
@@ -105,18 +108,17 @@ struct CompactStudioView: View {
         }
         .padding(.leading, 4).padding(.trailing, 4)
         .frame(height: 48)
-        .background(SS.bar)
+        .background(SS.bar.ignoresSafeArea(edges: .top))
         .overlay(alignment: .bottom) { Rectangle().fill(ProTheme.line).frame(height: 1) }
         .foregroundStyle(ProTheme.ink)
     }
 
+    /// Every tool in view, an equal share of the width each (no row scrolled out of sight).
     private var toolRow: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 2) {
-                ForEach(CompactTool.allCases) { t in ToolButton(tool: t, active: tool == t) { toggle(t) } }
-            }
-            .padding(.horizontal, 6).padding(.vertical, 4)
+        HStack(spacing: 2) {
+            ForEach(CompactTool.allCases) { t in ToolButton(tool: t, active: tool == t, fill: true) { toggle(t) } }
         }
+        .padding(.horizontal, 4).padding(.vertical, 4)
         .background(SS.bar)
         .overlay(alignment: .top) { Rectangle().fill(ProTheme.line).frame(height: 1) }
     }
@@ -129,29 +131,44 @@ struct CompactStudioView: View {
             DevelopButton(done: g.developed, compact: true) { g.developed ? model.nextUndeveloped() : model.keep() }
         }
         .padding(.horizontal, 12).padding(.top, 8).padding(.bottom, 4)
-        .background(ProTheme.panel)
+        .background(ProTheme.panel.ignoresSafeArea(edges: .bottom))
         .overlay(alignment: .top) { Rectangle().fill(ProTheme.line).frame(height: 1) }
     }
 
     // MARK: on its side
 
     private func sideways(_ tray: Tray) -> some View {
-        HStack(spacing: 0) {
-            VStack(spacing: 0) {
-                stage(tray)
-                if crop.on, let s = model.slide { cropBar(tray, s) }
-            }
-            if !crop.on {
-                if let tool {
-                    Rectangle().fill(ProTheme.line).frame(width: 1)
-                    panel(tool, tray).frame(width: 340)
+        // each column's colour runs to the screen's edges: the layout takes the whole width and
+        // pads the content by the insets itself (the Dynamic Island side, the other side)
+        GeometryReader { geo in
+            let inset = geo.safeAreaInsets
+            HStack(spacing: 0) {
+                VStack(spacing: 0) {
+                    stage(tray)
+                    if crop.on, let s = model.slide { cropBar(tray, s) }
                 }
-                Rectangle().fill(ProTheme.line).frame(width: 1)
-                rail(tray)
+                .padding(.leading, inset.leading)
+                .padding(.trailing, crop.on ? inset.trailing : 0)
+                .background(SS.sunken.ignoresSafeArea(edges: .vertical))
+                if !crop.on {
+                    if let tool {
+                        seam
+                        panel(tool, tray).frame(width: 340)
+                    }
+                    seam
+                    rail(tray)
+                        .padding(.trailing, inset.trailing)
+                        .background(SS.bar.ignoresSafeArea(edges: .vertical))
+                }
             }
+            .ignoresSafeArea(edges: .horizontal)
         }
     }
 
+    private var seam: some View { Rectangle().fill(ProTheme.line).frame(width: 1).ignoresSafeArea(edges: .vertical) }
+
+    /// Back and Settings, the tools two by two (all seven fit a phone's height), Skip and Turn,
+    /// and Develop where the thumb rests.
     private func rail(_ tray: Tray) -> some View {
         VStack(spacing: 0) {
             HStack(spacing: 0) {
@@ -163,22 +180,22 @@ struct CompactStudioView: View {
             .padding(.vertical, 2)
             Rectangle().fill(ProTheme.line).frame(height: 1)
             ScrollView(showsIndicators: false) {
-                VStack(spacing: 2) {
-                    ForEach(CompactTool.allCases) { t in ToolButton(tool: t, active: tool == t) { toggle(t) } }
+                LazyVGrid(columns: [GridItem(.fixed(48), spacing: 2), GridItem(.fixed(48), spacing: 2)], spacing: 2) {
+                    ForEach(CompactTool.allCases) { t in ToolButton(tool: t, active: tool == t, narrow: true) { toggle(t) } }
                 }
-                .padding(.vertical, 4)
+                .padding(.vertical, 6)
             }
+            .scrollBounceBehavior(.basedOnSize)
             if let g = model.slide {
                 Rectangle().fill(ProTheme.line).frame(height: 1)
                 VStack(spacing: 6) {
-                    HStack(spacing: 4) { skipButton(g); turnButton(g) }
+                    HStack(spacing: 6) { skipButton(g); turnButton(g) }
                     DevelopButton(done: g.developed, compact: true, square: true) { g.developed ? model.nextUndeveloped() : model.keep() }
                 }
-                .padding(6)
+                .padding(.horizontal, 6).padding(.vertical, 8)
             }
         }
-        .frame(width: 84)
-        .background(SS.bar)
+        .frame(width: 106)
     }
 
     // MARK: shared pieces
@@ -231,8 +248,8 @@ struct CompactStudioView: View {
             toolBody(t, tray)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         }
-        .background(ProTheme.panel)
-        .overlay(alignment: .top) { Rectangle().fill(ProTheme.line).frame(height: 1) }
+        .background(ProTheme.panel.ignoresSafeArea(edges: landscape ? [.top, .bottom] : []))
+        .overlay(alignment: .top) { if !landscape { Rectangle().fill(ProTheme.line).frame(height: 1) } }
         .font(.system(size: 14))
     }
 
@@ -293,7 +310,8 @@ struct CompactStage: View {
                 GeometryReader { geo in
                     StagePhoto(tray: tray, slide: slide, before: before, split: false, cropping: crop.on,
                                picking: $picking, cropRect: $crop.rect, cropRatio: crop.ratio)
-                        .padding(crop.on ? 20 : 10)
+                        // the top band holds the pills, so they never sit on the photo
+                        .padding(.top, crop.on ? 20 : 48).padding([.horizontal, .bottom], crop.on ? 20 : 10)
                         .scaleEffect(zoom, anchor: anchor)
                         .offset(x: swipe + pan.width, y: pan.height)
                         .frame(width: geo.size.width, height: geo.size.height)
@@ -350,7 +368,7 @@ struct CompactStage: View {
 
     /// Where you are and what you can take back: "12 / 36", the status, undo / redo, Before.
     private func overlay(_ slide: Slide) -> some View {
-        let st = model.statuses[model.selection]
+        let st = tray.statuses().indices.contains(model.selection) ? tray.statuses()[model.selection] : .new
         return VStack {
             HStack(spacing: 6) {
                 HStack(spacing: 6) {
@@ -390,7 +408,8 @@ struct SlideRow: View {
     let tray: Tray
 
     var body: some View {
-        let statuses = model.statuses
+        // from the tray drawn here: model.statuses is already empty while this goes away (closing the tray)
+        let statuses = tray.statuses()
         let dates = SlideDates.estimate(tray)
         ScrollViewReader { proxy in
             ScrollView(.horizontal, showsIndicators: false) {
@@ -500,14 +519,19 @@ struct TrayTool: View {
 private struct ToolButton: View {
     let tool: CompactTool
     let active: Bool
+    /// Two to a row in the landscape rail.
+    var narrow = false
+    /// An equal share of the upright tool row.
+    var fill = false
     let action: () -> Void
     var body: some View {
         Button(action: action) {
-            VStack(spacing: 3) {
-                Image(systemName: tool.icon).font(.system(size: 17)).frame(height: 22)
-                Text(tool.label).font(.system(size: 10, weight: .medium))
+            VStack(spacing: narrow ? 2 : 3) {
+                Image(systemName: tool.icon).font(.system(size: narrow ? 15 : 17)).frame(height: narrow ? 19 : 22)
+                Text(tool.label).font(.system(size: narrow ? 9 : 10, weight: .medium)).lineLimit(1).minimumScaleFactor(0.8)
             }
-            .frame(width: 62, height: 48)
+            .frame(width: fill ? nil : narrow ? 48 : 62, height: narrow ? 44 : 48)
+            .frame(maxWidth: fill ? .infinity : nil)
             .foregroundStyle(active ? ProTheme.accent : ProTheme.muted)
             .background(active ? SS.panel2 : .clear, in: RoundedRectangle(cornerRadius: 8))
             .contentShape(Rectangle())

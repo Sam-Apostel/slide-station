@@ -69,6 +69,7 @@ targets:
         INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.photography
         # the Immich server is usually on the LAN or a tailnet, often plain http
         INFOPLIST_KEY_NSLocalNetworkUsageDescription: Slide Station talks to your Immich server.
+        INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription: Slide Station saves the slides you choose to your photo library.
     info:
       path: Support/Info-iOS.plist
       properties: &appInfo
@@ -133,6 +134,7 @@ targets:
         INFOPLIST_KEY_CFBundleDisplayName: Slide Station
         INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.photography
         INFOPLIST_KEY_NSHumanReadableCopyright: ""
+        INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription: Slide Station saves the slides you choose to your photo library.
         COMBINE_HIDPI_IMAGES: YES
     info:
       path: Support/Info-Mac.plist

@@ -26,13 +26,23 @@ public enum AlbumCache {
     public static func save(albums: [ImmichAlbum]) { write("albums", albums) }
     public static func save(_ photos: [AlbumPhoto], of albumID: String) { write("album-" + albumID, photos) }
 
+    /// Star or unstar one cached photo (the widget's star; the app's), keeping when it was fetched.
+    public static func setStarred(_ photoID: String, albumID: String, _ on: Bool) {
+        guard let (list, fetched) = read("album-" + albumID, as: [AlbumPhoto].self) else { return }
+        let changed = list.map { p -> AlbumPhoto in var p = p; if p.id == photoID { p.favorite = on }; return p }
+        try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        if let d = try? JSONEncoder().encode(Stored(fetched: fetched, value: changed)) {
+            try? d.write(to: folder.appendingPathComponent("album-" + albumID + ".json"), options: .atomic)
+        }
+    }
+
     /// The followed albums' photos, fetched again when older than `maxAge` (the widget: hours).
     public static func followedPhotos(maxAge: TimeInterval, client: AlbumClient?) async -> [AlbumPhoto] {
         var out: [AlbumPhoto] = []
         for id in SharedStore.followed {
             let cached = photos(id)
             if let client, cached.map({ -$0.fetched.timeIntervalSinceNow > maxAge }) ?? true,
-               let fresh = try? await client.photos(in: id) {
+               let fresh = try? await client.photos(in: id, me: SharedStore.userID) {
                 save(fresh, of: id)
                 out += fresh
             } else {
@@ -103,6 +113,7 @@ public final class AlbumLibrary {
     public func connect(_ c: ImmichConnection) async -> String? {
         do {
             let s = try await AlbumClient(c).server()
+            SharedStore.userID = s.userID
             if c != connection {
                 // another server or account: its albums aren't these
                 albums = []; photos = [:]; followed = []
@@ -159,6 +170,7 @@ public final class AlbumLibrary {
         defer { loading = false }
         do {
             if server == nil { server = try await client.server() }
+            SharedStore.userID = server?.userID
             let all = try await client.albums(me: server?.userID)
             albums = all.sorted { ($0.updated ?? .distantPast) > ($1.updated ?? .distantPast) }
             AlbumCache.save(albums: albums)
@@ -187,13 +199,39 @@ public final class AlbumLibrary {
 
     private func loadPhotos(_ albumID: String, client: AlbumClient) async {
         do {
-            let p = try await client.photos(in: albumID)
+            let p = try await client.photos(in: albumID, me: server?.userID ?? SharedStore.userID)
             photos[albumID] = p
             AlbumCache.save(p, of: albumID)
         } catch {
             problem = error.localizedDescription
         }
     }
+
+    // MARK: starring
+
+    /// Star or unstar photos (Immich's favorite on one's own, a like on someone else's), shown at
+    /// once and put back if Immich says no.
+    public func star(_ list: [AlbumPhoto], _ on: Bool) async {
+        guard let client else { return }
+        let me = server?.userID ?? SharedStore.userID
+        for p in list { setStarredLocally(p, on) }
+        onChange?()
+        for p in list {
+            do { try await client.star(p, on, me: me) } catch {
+                setStarredLocally(p, !on)
+                problem = error.localizedDescription
+            }
+        }
+        onChange?()
+    }
+
+    private func setStarredLocally(_ p: AlbumPhoto, _ on: Bool) {
+        if let i = photos[p.albumID]?.firstIndex(where: { $0.id == p.id }) { photos[p.albumID]?[i].favorite = on }
+        AlbumCache.setStarred(p.id, albumID: p.albumID, on)
+    }
+
+    /// The photo as it is now (starred or not), for views holding an older copy.
+    public func current(_ p: AlbumPhoto) -> AlbumPhoto { photos[p.albumID]?.first { $0.id == p.id } ?? p }
 
     // MARK: following
 

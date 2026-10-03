@@ -268,6 +268,22 @@ final class AppModel {
         }
     }
 
+    /// Save photos from an Immich album into the Photos library, as they were uploaded (the
+    /// originals, full size), with the job banner counting them.
+    func saveToPhotos(_ photos: [AlbumPhoto]) {
+        guard !photos.isEmpty, let client = albums.client else { return }
+        let total = photos.count
+        run(total == 1 ? "Saving to Photos" : "Saving \(total) slides to Photos") { progress in
+            try await PhotoSaver.authorize()
+            for (i, p) in photos.enumerated() {
+                try Task.checkCancellation()
+                progress(JobProgress("Saving to Photos", done: i, total: total))
+                try await PhotoSaver.save(try await client.original(p.id), filename: p.filename)
+            }
+            return total == 1 ? "Saved to Photos" : "Saved \(total) slides to Photos"
+        }
+    }
+
     func testImmich() async -> String {
         do {
             let c = try ImmichClient(url: immich.url, key: immich.key)

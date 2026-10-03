@@ -16,7 +16,9 @@ You need an account on their Immich server, and the album shared with that accou
 
 1. **Make an API key.** In Immich (in a browser), open your account menu, top right, then
    *Account Settings → API Keys → New API Key*. Give it these permissions:
-   `album.read`, `asset.read`, `asset.view` and `asset.download`. Copy the key: Immich shows it once.
+   `album.read`, `asset.read`, `asset.view` and `asset.download` to look and save, plus
+   `asset.update`, `activity.read`, `activity.create` and `activity.delete` to star slides. Copy
+   the key: Immich shows it once.
 2. **Connect.** Open Slide Station, tap *Connect to Immich*, and enter the server's address (the
    same one you use in the browser, e.g. `https://photos.example.com`) and the key.
 3. That's it. Albums shared with you are followed by themselves: they appear on the first screen,
@@ -37,13 +39,25 @@ with its caption, date and place. *Shuffle* mixes them up.
 | Close | swipe down, or tap then × | Esc | Back |
 
 The time each slide stays (5 seconds to a minute) and the captions are under the timer button,
-or in *Settings → Slideshow*.
+or in *Settings → Slideshow*. The ☆ stars the slide on screen, and ⤓ saves it to your photo library.
+
+## Starring and saving
+
+**Star** a slide you like. On your own photos that's Immich's favorite; on an album someone
+shared with you it's a like on the album, which they see in the album's activity (Immich only
+lets a photo's owner change its favorite). Starred slides have a small ★ in the album.
+
+**Save to your photo library** (iPhone, iPad, Mac): ⤓ in the slideshow, or in an album tap
+*Select*, pick slides, and tap ⤓. Picking works as in Photos: tap slides one by one, or swipe
+sideways across them to pick a whole run; *Select All* picks the album. The saved copies are the
+full-size slides as they were uploaded. Touch and hold a slide for Save, Star and Play from here.
 
 ## The widget
 
 Add the *Slides* widget to your Home Screen (touch and hold the Home Screen, then *Edit → Add
 Widget → Slide Station*). It shows a slide from the albums you follow, a different one every 45
-minutes or so, and works its way round all of them before it repeats. Tap it to open that slide.
+minutes or so, and works its way round all of them before it repeats. Tap ☆ in its corner to
+star the slide without opening the app; tap anywhere else to open that slide.
 
 ## Apple TV
 
@@ -65,4 +79,5 @@ on. Tap *Find the scanner* and pick its card: it appears under *Locations*. You 
 
 Uploading needs a key with more permissions: see [Immich](immich.md). To work on the same trays
 as the desktop app, put its library folder in iCloud Drive and pick that folder under *Settings →
-Library*.
+Library*. People (naming the faces on your slides) is in the desktop app and the browser version,
+not in these apps yet.

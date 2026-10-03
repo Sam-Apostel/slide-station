@@ -42,10 +42,20 @@ public struct AlbumPhoto: Codable, Hashable, Identifiable, Sendable {
     public var place: String?
     public var width: Int?
     public var height: Int?
+    /// The file name it was uploaded with ("slide-12.jpg"), for saving a copy.
+    public var filename: String?
+    /// The account that owns it: only the owner can make it a favorite (others like it instead).
+    public var owner: String?
+    /// Starred: Immich's favorite on one's own photos, a like on the album for someone else's.
+    public var favorite: Bool?
 
-    public init(id: String, albumID: String, taken: Date? = nil, caption: String? = nil, place: String? = nil, width: Int? = nil, height: Int? = nil) {
+    public init(id: String, albumID: String, taken: Date? = nil, caption: String? = nil, place: String? = nil, width: Int? = nil, height: Int? = nil,
+                filename: String? = nil, owner: String? = nil, favorite: Bool? = nil) {
         self.id = id; self.albumID = albumID; self.taken = taken; self.caption = caption; self.place = place; self.width = width; self.height = height
+        self.filename = filename; self.owner = owner; self.favorite = favorite
     }
+
+    public var starred: Bool { favorite ?? false }
 
     /// From an asset in `GET /albums/{id}` (v1/v2) or `POST /search/metadata` (v3). Nil for videos
     /// and trashed assets: a slideshow of slides has no use for them.
@@ -66,6 +76,9 @@ public struct AlbumPhoto: Codable, Hashable, Identifiable, Sendable {
         var h = (o["height"] as? Int) ?? (exif["exifImageHeight"] as? Int)
         if o["width"] == nil, let orientation = (exif["orientation"] as? String).flatMap(Int.init) ?? (exif["orientation"] as? Int), orientation >= 5 { swap(&w, &h) }
         width = w; height = h
+        filename = (o["originalFileName"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+        owner = o["ownerId"] as? String
+        favorite = o["isFavorite"] as? Bool
     }
 
     /// Width over height, when Immich said.
