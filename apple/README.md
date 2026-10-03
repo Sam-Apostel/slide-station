@@ -14,7 +14,8 @@ apple/
   TV/                Apple TV: the albums and the slideshow
   SlideKit/          Swift package. SlideKit: the whole pipeline, no UI, parity-tested against the
                      Python app. SlideAlbums: Immich albums, the keychain, the image cache, the
-                     slideshow (shared by the apps, the widget and the TV)
+                     slideshow (shared by the apps, the widget and the TV). SlideFaces: People
+                     (people.py): YuNet + SFace through ONNX Runtime, faces.json / people.json
   Vendor/ProUI/      ProUI SwiftUI source, trimmed to what the app uses (see NOTICE.md)
   Support/           entitlements
   Tools/             make_icons.py: every platform's icons from Tools/icon-art.png
@@ -104,6 +105,25 @@ Not ported yet: a locked slide shows the local render rather than fetching Immic
   ~30 MB).
 - `SlideshowView`: cross-fade and a slight drift over a blurred copy of the photo; touch, keys and
   the Siri Remote. iPhone and iPad use `preview`, the Mac and TV `fullsize` (3200 / 3840 px).
+
+## People (`SlideFaces`)
+
+`people.py` ported: the desktop's YuNet (bundled) and SFace (downloaded into the library's
+`models/`, SHA-256 checked) through ONNX Runtime; FaceDetectorYN's decoding and NMS and the free-size
+model rewrite as `standalone/yunet.ts` does them; SFace's alignment (Umeyama, OpenCV's warpAffine);
+the clothes histogram (Lab as cv2); faces.json per tray and people.json written as Python writes
+them (float16 base64, ids kept when a slide is found again, unknown fields such as ages kept);
+average-linkage clustering, rename / merge / take out / assign / ignore / birthday, `spread` and
+`likely`. A library shared with the desktop app is one library, people included.
+
+- Parity: `Tests/make_faces_fixtures.py` runs people.py on made-up inputs (face keys, packing,
+  clustering, clothes, turned boxes) → `SlideFacesTests/ParityTests`. YuNet + SFace against cv2 on
+  real photos: `SLIDEFACES_REAL=<dir> swift test --filter RealFacesTests` (photos not committed;
+  measured: identical scores and boxes, feature cosine 0.99998).
+- App: `PeopleModel` (finding faces as a job, after imports, per slide when the People tool opens),
+  `Views/People/` (the slide's People, the People screen).
+- Not yet: the Immich People sync (`immich_people.py`) and ages (MiVOLO); the desktop app does both
+  on a shared library.
 
 ## Simple and Studio
 
