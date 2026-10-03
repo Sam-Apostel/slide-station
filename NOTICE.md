@@ -30,13 +30,19 @@ included. Not licensed for reuse — get your own ProUI licence.
 
 From OpenCV Zoo (<https://github.com/opencv/opencv_zoo>), MIT licence. Used to work out which way
 up a slide is, and to find the faces for recognising people. The browser version serves the same
-file and runs it with onnxruntime-web (MIT, `frontend/package.json`).
+file and runs it with onnxruntime-web (MIT, `frontend/package.json`). The native apps bundle a copy
+(`apple/SlideKit/Sources/SlideFaces/Resources/`) and run it with ONNX Runtime.
+
+## ONNX Runtime — the native apps (`onnxruntime-swift-package-manager`)
+
+Microsoft's ONNX Runtime (<https://github.com/microsoft/onnxruntime>), MIT licence, linked into the
+iPhone, iPad and Mac apps through its Swift package to run YuNet and SFace for People.
 
 ## SFace face recognition model — not in the repository
 
 `face_recognition_sface_2021dec.onnx` from OpenCV Zoo, Apache 2.0 licence, is downloaded on first
-use (Settings → recognise people) from OpenCV's Hugging Face mirror into the library's `models/`
-folder. It is never bundled.
+use (Settings → recognise people, in the desktop app, the browser version or the native apps) from
+OpenCV's Hugging Face mirror into the library's `models/` folder. It is never bundled.
 
 ## Age estimation model (dates from people) — downloaded, not in the repo
 

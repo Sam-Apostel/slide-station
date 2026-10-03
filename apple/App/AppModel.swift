@@ -1,5 +1,6 @@
 import Observation
 import SlideAlbums
+import SlideFaces
 import SlideKit
 import SwiftUI
 
@@ -43,6 +44,8 @@ final class AppModel {
     /// Immich albums to look at (the Albums screens, the widget); also holds the server and key
     /// uploads go to, kept in the keychain and synced to this Apple ID's other devices.
     let albums = AlbumLibrary()
+    /// People on the slides: faces found with the desktop app's models, named once.
+    let people: PeopleModel
 
     var immich: ImmichSettings {
         get { ImmichSettings(url: albums.connection.url, key: albums.connection.key) }
@@ -64,6 +67,7 @@ final class AppModel {
         previews = PreviewCache(renderer: r)
         RendererSizes.shared.library = lib
         learning = Learning.Model(url: lib.root.appendingPathComponent("learning.json"))
+        people = PeopleModel(library: lib, renderer: r)
         learningEnabled = UserDefaults.standard.object(forKey: "learningEnabled") as? Bool ?? true
         keepOriginals = UserDefaults.standard.object(forKey: "keepOriginals") as? Bool ?? true
     }
@@ -113,6 +117,7 @@ final class AppModel {
         RendererSizes.shared.library = lib
         learning = Learning.Model(url: lib.root.appendingPathComponent("learning.json"))
         libraryFolder = folder
+        people.use(library: lib, renderer: renderer)
     }
 
     func open(_ id: String) async {
@@ -225,6 +230,7 @@ final class AppModel {
             }
             job = nil; jobTask = nil
             await refresh()
+            if people.enabled { await people.reload() }
             if let id = pendingOpen { pendingOpen = nil; await open(id) }
             await checkCard()
         }
@@ -232,12 +238,25 @@ final class AppModel {
 
     func cancelJob() { jobTask?.cancel() }
 
+    /// Find the faces on every slide that needs it: the open tray, or every tray. Downloads the face
+    /// model first if it isn't in the library yet.
+    func findFaces(everyTray: Bool) {
+        let library = library, renderer = renderer, people = people, finder = people.finder, file = people.people
+        let open = tray
+        run(people.modelReady ? "Finding faces" : "Downloading the face model") { progress in
+            var trays: [Tray] = []
+            if everyTray { trays = await library.trays() } else if let open { trays = [open] }
+            return try await people.find(trays: trays, finder: finder, people: file, renderer: renderer, progress: progress)
+        }
+    }
+
     /// Import everything new from the card into a new tray (or `into` an existing one), then open it.
     /// In a box: `box`/`side`; a box that's new gets `boxSize` and `boxWriting`.
     func importFromCard(name: String, date: String, into existing: String? = nil,
                         box: Int? = nil, side: Tray.Side? = nil, boxSize: Int? = nil, boxWriting: String? = nil) {
         guard let url = cardURL() else { error = "The scanner isn't connected. Plug it in and open Files once."; return }
         let library = library, renderer = renderer, learning = learningEnabled ? learning : nil
+        let people = people, findFaces = people.enabled && people.modelReady, finder = people.finder, peopleFile = people.people
         run("Starting import") { progress in
             var trayID = existing ?? ""
             if existing == nil {
@@ -249,6 +268,10 @@ final class AppModel {
             let scoped = url.startAccessingSecurityScopedResource()
             defer { if scoped { url.stopAccessingSecurityScopedResource() } }
             let r = try await Importer(library: library, renderer: renderer, learning: learning).importScans(into: trayID, from: url, progress: progress)
+            // people on: the new slides' faces, right away (the model is downloaded when people are turned on)
+            if findFaces, let tray = try? await library.load(trayID) {
+                _ = try? await people.find(trays: [tray], finder: finder, people: peopleFile, renderer: renderer, progress: progress)
+            }
             return r.summary
         }
     }

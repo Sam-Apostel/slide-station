@@ -117,8 +117,9 @@ public struct AlbumClient: Sendable {
     public func photos(in albumID: String, me: String? = nil) async throws -> [AlbumPhoto] {
         let album = try await json("GET", "albums/\(albumID)") as? [String: Any] ?? [:]
         var raw = album["assets"] as? [[String: Any]] ?? []
+        let listed = !raw.isEmpty   // v1/v2: the album lists its assets (without their people)
         if raw.isEmpty, (album["assetCount"] as? Int ?? 1) > 0 {
-            var body: [String: Any] = ["albumIds": [albumID], "size": 1000, "withExif": true]
+            var body: [String: Any] = ["albumIds": [albumID], "size": 1000, "withExif": true, "withPeople": true]
             for _ in 0..<1000 {
                 let o = try await json("POST", "search/metadata", body: body) as? [String: Any] ?? [:]
                 let page = o["assets"] as? [String: Any] ?? [:]
@@ -131,6 +132,10 @@ public struct AlbumClient: Sendable {
             }
         }
         var photos = Self.ordered(raw.compactMap { AlbumPhoto(json: $0, albumID: albumID) })
+        // v1/v2 list the assets without their people: ask the search for them (fine if it can't)
+        if listed, raw.allSatisfy({ $0["people"] == nil }), let people = try? await people(in: albumID) {
+            for i in photos.indices { photos[i].people = people[photos[i].id] ?? [] }
+        }
         // someone else's photos: starred means this account liked them on the album
         if let me, photos.contains(where: { $0.owner != nil && $0.owner != me }), let liked = try? await likes(albumID: albumID, me: me) {
             for i in photos.indices where photos[i].owner != me { photos[i].favorite = liked[photos[i].id] != nil }
@@ -148,6 +153,23 @@ public struct AlbumClient: Sendable {
             case (nil, nil): a.offset < b.offset
             }
         }.map(\.element)
+    }
+
+    /// Who is in each photo of an album (asset id → people), from the search with `withPeople`.
+    func people(in albumID: String) async throws -> [String: [PhotoPerson]] {
+        var out: [String: [PhotoPerson]] = [:]
+        var body: [String: Any] = ["albumIds": [albumID], "size": 1000, "withPeople": true]
+        for _ in 0..<1000 {
+            let o = try await json("POST", "search/metadata", body: body) as? [String: Any] ?? [:]
+            let page = o["assets"] as? [String: Any] ?? [:]
+            for a in page["items"] as? [[String: Any]] ?? [] {
+                if let id = a["id"] as? String { out[id] = PhotoPerson.list(a["people"]) }
+            }
+            if let cursor = page["nextCursor"] as? String, !cursor.isEmpty { body["page"] = nil; body["cursor"] = cursor }
+            else if let next = page["nextPage"] as? String, let n = Int(next) { body["page"] = n }
+            else { break }
+        }
+        return out
     }
 
     // MARK: starring

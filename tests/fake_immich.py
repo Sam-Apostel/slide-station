@@ -112,9 +112,26 @@ def asset_dto(aid: str) -> dict:
         "exifInfo": {"description": a.get("description", ""), "dateTimeOriginal": a.get("local", ""),
                      "latitude": a.get("lat"), "longitude": a.get("lon"), "city": a.get("city"),
                      "state": None, "country": a.get("country")},
+        "people": _people_of(aid),
         "stack": {"id": st, "primaryAssetId": DB["stacks"][st]["primary"],
                   "assetCount": len(DB["stacks"][st]["assets"])} if st in DB["stacks"] else None,
     }
+
+
+def _people_of(aid: str) -> list[dict]:
+    """The asset's people with their faces, as Immich's `people` (PersonWithFacesResponseDto):
+    boxes in pixels of a 1000 x 750 image."""
+    out: dict[str, dict] = {}
+    for f in DB.get("faces", {}).values():
+        if f["assetId"] != aid or not f.get("personId") or f["personId"] not in DB.get("people", {}):
+            continue
+        p = DB["people"][f["personId"]]
+        x1, y1, x2, y2 = f["box"]
+        face = {"id": f["id"], "imageWidth": 1000, "imageHeight": 750, "boundingBoxX1": round(x1 * 1000),
+                "boundingBoxY1": round(y1 * 750), "boundingBoxX2": round(x2 * 1000), "boundingBoxY2": round(y2 * 750),
+                "sourceType": f.get("sourceType", "machine-learning")}
+        out.setdefault(p["id"], {**p, "thumbnailPath": "", "faces": []})["faces"].append(face)
+    return list(out.values())
 
 
 def _asset(aid: str) -> dict:

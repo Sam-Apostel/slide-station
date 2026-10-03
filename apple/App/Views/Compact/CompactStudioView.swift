@@ -5,7 +5,7 @@ import SwiftUI
 /// A phone's tools (`components/compact.tsx`): the inspector's sections one at a time, plus the
 /// slides (the filmstrip with its filters) and the scans stacked into the slide.
 enum CompactTool: String, CaseIterable, Identifiable {
-    case slides, frame, adjust, curve, scans, details, tray
+    case slides, frame, adjust, curve, scans, details, people, tray
     var id: String { rawValue }
     var label: String {
         switch self {
@@ -15,6 +15,7 @@ enum CompactTool: String, CaseIterable, Identifiable {
         case .curve: "Curve"
         case .scans: "Scans"
         case .details: "Details"
+        case .people: "People"
         case .tray: "Tray"
         }
     }
@@ -26,6 +27,7 @@ enum CompactTool: String, CaseIterable, Identifiable {
         case .curve: "chart.line.uptrend.xyaxis"
         case .scans: "square.3.layers.3d"
         case .details: "calendar"
+        case .people: "person.2"
         case .tray: "tray"
         }
     }
@@ -52,6 +54,9 @@ struct CompactStudioView: View {
     @State private var before = false
     @State private var crop = CropDraft()
     @State private var settings = false
+    /// The keyboard is up (typing a name, a date): the tool row and the bar step aside so the
+    /// panel with the field keeps its room, and nothing is pushed under the status bar.
+    @State private var typing = false
 
     var body: some View {
         if let tray = model.tray {
@@ -65,6 +70,10 @@ struct CompactStudioView: View {
             .onChange(of: tool) { _, t in if t != .adjust { picking = false } }
             .animation(.snappy(duration: 0.25), value: tool)
             .animation(.snappy(duration: 0.25), value: crop.on)
+            #if os(iOS)
+            .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in typing = true }
+            .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in typing = false }
+            #endif
             #if DEBUG
             .onAppear { if let t = DebugLaunch.env["SS_TOOL"].flatMap(CompactTool.init(rawValue:)) { tool = t } }
             #endif
@@ -77,14 +86,20 @@ struct CompactStudioView: View {
         VStack(spacing: 0) {
             if !crop.on { header(tray) }
             stage(tray)
-                .frame(minHeight: 180)
+                .frame(minHeight: typing ? 90 : 180)
                 .layoutPriority(1)
             if crop.on, let s = model.slide {
                 cropBar(tray, s).background(SS.bar.ignoresSafeArea(edges: .bottom))
             } else {
-                if let tool { panel(tool, tray).frame(height: tall ? 470 : 300) } else { SlideRow(tray: tray).frame(height: 92) }
-                toolRow
-                if let g = model.slide { bottomBar(g) }
+                // the same panel while typing (rebuilding it would lose what's picked in it), just taller
+                if let tool {
+                    panel(tool, tray)
+                        .frame(minHeight: typing ? 200 : (tall ? 470 : 300), maxHeight: typing ? 320 : (tall ? 470 : 300))
+                } else { SlideRow(tray: tray).frame(height: 92) }
+                if !typing {
+                    toolRow
+                    if let g = model.slide { bottomBar(g) }
+                }
             }
         }
     }
@@ -257,6 +272,9 @@ struct CompactStudioView: View {
         switch t {
         case .slides:
             FilmstripPanel(tray: tray)
+        case .people:
+            if let g = model.slide { ScrollView { SlidePeopleView(tray: tray, slide: g) } }
+            else { Text("Pick a slide to see who's on it.").foregroundStyle(ProTheme.muted).padding(20) }
         case .tray:
             ScrollView { TrayTool(tray: tray, onStudioOff: { studio = false }) }
         default:
@@ -478,6 +496,7 @@ struct TrayTool: View {
     @Environment(AppModel.self) private var model
     let tray: Tray
     let onStudioOff: () -> Void
+    @State private var showingPeople = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -506,11 +525,16 @@ struct TrayTool: View {
                 .buttonStyle(BigButtonStyle()).disabled(model.busy)
             }
             UploadControls(tray: tray)
+            if model.people.enabled {
+                Button { showingPeople = true } label: { Label("People…", systemImage: "person.2") }
+                    .buttonStyle(BigButtonStyle())
+            }
             TrayFields(tray: tray).padding(-12)
             Button("Simple mode: keep, skip, turn") { onStudioOff() }
                 .font(.system(size: 13)).foregroundStyle(ProTheme.muted)
         }
         .padding(14)
+        .sheet(isPresented: $showingPeople) { PeopleScreen() }
     }
 }
 

@@ -31,6 +31,30 @@ public struct ImmichAlbum: Codable, Hashable, Identifiable, Sendable {
     }
 }
 
+/// Someone Immich recognised in a photo, and where: the face as fractions of the photo
+/// (x1, y1, x2, y2), so an avatar can be cut from any size of it.
+public struct PhotoPerson: Codable, Hashable, Sendable {
+    public var id: String
+    public var name: String
+    public var box: [Double]
+    public init(id: String, name: String, box: [Double]) { self.id = id; self.name = name; self.box = box }
+
+    /// From an asset's `people` (PersonWithFacesResponseDto): one entry per face.
+    static func list(_ raw: Any?) -> [PhotoPerson] {
+        (raw as? [[String: Any]] ?? []).flatMap { p -> [PhotoPerson] in
+            guard let id = p["id"] as? String else { return [] }
+            let name = (p["name"] as? String ?? "").trimmingCharacters(in: .whitespaces)
+            if p["isHidden"] as? Bool == true { return [] }
+            return (p["faces"] as? [[String: Any]] ?? []).compactMap { f in
+                func n(_ k: String) -> Double? { (f[k] as? NSNumber)?.doubleValue }
+                guard let w = n("imageWidth"), let h = n("imageHeight"), w > 0, h > 0,
+                      let x1 = n("boundingBoxX1"), let y1 = n("boundingBoxY1"), let x2 = n("boundingBoxX2"), let y2 = n("boundingBoxY2") else { return nil }
+                return PhotoPerson(id: id, name: name, box: [x1 / w, y1 / h, x2 / w, y2 / h])
+            }
+        }
+    }
+}
+
 /// A photo in an album, with what Slide Station wrote into it: the caption (Immich's description),
 /// the date and the place.
 public struct AlbumPhoto: Codable, Hashable, Identifiable, Sendable {
@@ -48,11 +72,13 @@ public struct AlbumPhoto: Codable, Hashable, Identifiable, Sendable {
     public var owner: String?
     /// Starred: Immich's favorite on one's own photos, a like on the album for someone else's.
     public var favorite: Bool?
+    /// Who Immich recognised in it (only those its key may see).
+    public var people: [PhotoPerson]?
 
     public init(id: String, albumID: String, taken: Date? = nil, caption: String? = nil, place: String? = nil, width: Int? = nil, height: Int? = nil,
-                filename: String? = nil, owner: String? = nil, favorite: Bool? = nil) {
+                filename: String? = nil, owner: String? = nil, favorite: Bool? = nil, people: [PhotoPerson]? = nil) {
         self.id = id; self.albumID = albumID; self.taken = taken; self.caption = caption; self.place = place; self.width = width; self.height = height
-        self.filename = filename; self.owner = owner; self.favorite = favorite
+        self.filename = filename; self.owner = owner; self.favorite = favorite; self.people = people
     }
 
     public var starred: Bool { favorite ?? false }
@@ -79,6 +105,7 @@ public struct AlbumPhoto: Codable, Hashable, Identifiable, Sendable {
         filename = (o["originalFileName"] as? String).flatMap { $0.isEmpty ? nil : $0 }
         owner = o["ownerId"] as? String
         favorite = o["isFavorite"] as? Bool
+        if o["people"] != nil { people = PhotoPerson.list(o["people"]) }
     }
 
     /// Width over height, when Immich said.
@@ -146,4 +173,31 @@ public enum ImmichDate {
         guard let lo = years.min(), let hi = years.max() else { return nil }
         return lo == hi ? "\(lo)" : "\(lo) – \(hi)"
     }
+}
+
+/// One person across an album: their name, how many slides, and the clearest face to show.
+public struct AlbumPerson: Identifiable, Hashable, Sendable {
+    public var id: String
+    public var name: String
+    public var count: Int
+    /// The photo with this person's biggest face, and that face.
+    public var photoID: String
+    public var box: [Double]
+
+    /// The named people in these photos, most slides first.
+    public static func of(_ photos: [AlbumPhoto]) -> [AlbumPerson] {
+        var out: [String: AlbumPerson] = [:]
+        var area: [String: Double] = [:]
+        for p in photos {
+            // a person counts once per photo, by their biggest face in it
+            for (id, faces) in Dictionary(grouping: p.people ?? [], by: \.id) {
+                guard let f = faces.max(by: { size($0) < size($1) }), !f.name.isEmpty else { continue }
+                out[id, default: AlbumPerson(id: id, name: f.name, count: 0, photoID: p.id, box: f.box)].count += 1
+                if size(f) > area[id, default: 0] { area[id] = size(f); out[id]?.photoID = p.id; out[id]?.box = f.box }
+            }
+        }
+        return out.values.sorted { $0.count != $1.count ? $0.count > $1.count : $0.name < $1.name }
+    }
+
+    private static func size(_ f: PhotoPerson) -> Double { f.box.count == 4 ? (f.box[2] - f.box[0]) * (f.box[3] - f.box[1]) : 0 }
 }

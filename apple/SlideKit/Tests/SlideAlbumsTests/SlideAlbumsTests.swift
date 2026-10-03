@@ -25,6 +25,30 @@ final class ModelTests: XCTestCase {
         XCTAssertNil(AlbumPhoto(json: ["id": "t", "type": "IMAGE", "isTrashed": true], albumID: "a"))
     }
 
+    func testPeopleFromImmichFacesAsFractions() throws {
+        let p = try XCTUnwrap(AlbumPhoto(json: ["id": "x", "people": [
+            ["id": "mum", "name": "Mum", "faces": [["imageWidth": 1000, "imageHeight": 500, "boundingBoxX1": 100, "boundingBoxY1": 50, "boundingBoxX2": 300, "boundingBoxY2": 250]]],
+            ["id": "hidden", "name": "X", "isHidden": true, "faces": [["imageWidth": 10, "imageHeight": 10, "boundingBoxX1": 0, "boundingBoxY1": 0, "boundingBoxX2": 1, "boundingBoxY2": 1]]],
+        ]], albumID: "a"))
+        XCTAssertEqual(p.people?.map(\.id), ["mum"])
+        XCTAssertEqual(p.people?.first?.box, [0.1, 0.1, 0.3, 0.5])
+        XCTAssertNil(AlbumPhoto(json: ["id": "y"], albumID: "a")?.people, "no people key: unknown, not nobody")
+    }
+
+    func testAlbumPeopleCountPhotosAndPickTheBiggestFace() {
+        let small = PhotoPerson(id: "mum", name: "Mum", box: [0, 0, 0.1, 0.1])
+        let big = PhotoPerson(id: "mum", name: "Mum", box: [0, 0, 0.5, 0.5])
+        let photos = [
+            AlbumPhoto(id: "1", albumID: "a", people: [small, small]),          // twice in one photo: counts once
+            AlbumPhoto(id: "2", albumID: "a", people: [big, PhotoPerson(id: "dad", name: "Dad", box: [0, 0, 0.2, 0.2])]),
+            AlbumPhoto(id: "3", albumID: "a", people: [PhotoPerson(id: "anon", name: "", box: [0, 0, 1, 1])]),   // unnamed: left out
+        ]
+        let people = AlbumPerson.of(photos)
+        XCTAssertEqual(people.map(\.name), ["Mum", "Dad"])
+        XCTAssertEqual(people.first?.count, 2)
+        XCTAssertEqual(people.first?.photoID, "2")
+    }
+
     func testEXIFDimensionsTurnWithOrientation() {
         let p = AlbumPhoto(json: ["id": "x", "exifInfo": ["exifImageWidth": 3000, "exifImageHeight": 2000, "orientation": "6"]], albumID: "a")
         XCTAssertEqual(p?.width, 2000)
@@ -155,7 +179,8 @@ final class ClientTests: XCTestCase {
         Stub.answer = { _ in (200, ["id": "al", "assetCount": 1, "assets": [["id": "only", "type": "IMAGE"]]]) }
         let photos = try await client().photos(in: "al")
         XCTAssertEqual(photos.map(\.id), ["only"])
-        XCTAssertFalse(Stub.seen.contains { $0.contains("search") })
+        // the listing has no people: one search for them, not a second listing
+        XCTAssertEqual(Stub.seen.filter { $0.contains("search") }.count, 1)
     }
 
     func testOwnAndSharedAlbums() async throws {

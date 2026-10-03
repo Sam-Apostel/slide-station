@@ -148,19 +148,22 @@ struct TVAlbum: View {
     @Environment(AlbumLibrary.self) private var albums
     let album: ImmichAlbum
     @Binding var show: TVShow?
+    /// Only the slides with this person.
+    @State private var person: AlbumPerson?
 
     var body: some View {
-        let photos = albums.photos[album.id] ?? []
+        let all = albums.photos[album.id] ?? []
+        let photos = person.map { who in all.filter { ($0.people ?? []).contains { $0.id == who.id } } } ?? all
         ScrollView {
             VStack(alignment: .leading, spacing: 40) {
                 VStack(alignment: .leading, spacing: 8) {
                     Text(album.name).font(.system(size: 56, weight: .bold))
-                    Text(["\(photos.isEmpty ? album.count : photos.count) slides", ImmichDate.span(photos), album.sharedBy.map { "shared by \($0)" }]
+                    Text(["\(photos.isEmpty && person == nil ? album.count : photos.count) slides", person.map { "with \($0.name)" }, ImmichDate.span(photos), album.sharedBy.map { "shared by \($0)" }]
                             .compactMap { $0 }.joined(separator: " · "))
                         .font(.title3).foregroundStyle(.secondary)
                 }
                 HStack(spacing: 30) {
-                    Button { show = TVShow(photos: photos, title: album.name, shuffle: false) } label: { Label("Play", systemImage: "play.fill").padding(.horizontal, 20) }
+                    Button { show = TVShow(photos: photos, title: person.map { "\(album.name) · \($0.name)" } ?? album.name, shuffle: false) } label: { Label("Play", systemImage: "play.fill").padding(.horizontal, 20) }
                         .disabled(photos.isEmpty)
                     Button { show = TVShow(photos: photos, start: Int.random(in: 0..<max(1, photos.count)), title: album.name, shuffle: true) } label: { Label("Shuffle", systemImage: "shuffle").padding(.horizontal, 20) }
                         .disabled(photos.isEmpty)
@@ -168,6 +171,27 @@ struct TVAlbum: View {
                         Label(albums.isFollowed(album.id) ? "In your slideshow" : "Add to your slideshow", systemImage: albums.isFollowed(album.id) ? "checkmark" : "plus")
                             .padding(.horizontal, 20)
                     }
+                }
+                let people = AlbumPerson.of(all)
+                if !people.isEmpty {
+                    ScrollView(.horizontal) {
+                        HStack(spacing: 40) {
+                            ForEach(people) { p in
+                                let on = person?.id == p.id
+                                Button { person = on ? nil : p } label: {
+                                    VStack(spacing: 12) {
+                                        FaceAvatar(photoID: p.photoID, box: p.box, client: albums.client, size: 150)
+                                            .overlay { Circle().strokeBorder(on ? ProTheme.accent : .clear, lineWidth: 6) }
+                                        Text(p.name).font(.system(size: 26, weight: on ? .semibold : .regular))
+                                        Text("\(p.count) slides").font(.system(size: 20)).foregroundStyle(.secondary)
+                                    }
+                                }
+                                .buttonStyle(.borderless)
+                            }
+                        }
+                        .padding(.vertical, 20)
+                    }
+                    .scrollClipDisabled()
                 }
                 LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 40), count: 5), spacing: 40) {
                     ForEach(Array(photos.enumerated()), id: \.element.id) { i, p in

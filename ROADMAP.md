@@ -115,6 +115,11 @@ iCloud Keychain. TestFlight builds go up from `apple/scripts/testflight.sh` / th
 workflow. Checked in the simulators against `tests/fake_immich.py`; not yet: a real Immich, the
 widget on a Home Screen, the iPhone on its side, the TV with a remote.
 
+**Status (2026-10-03, later):** People in the native apps: the desktop's face models through ONNX
+Runtime and the same faces.json / people.json (`SlideFaces`, parity-tested against people.py and,
+on real photos, cv2), with the slide's People tool and the People screen; and albums show the people
+Immich recognised. Left from the desktop's People: the Immich People sync and ages.
+
 **Phases left** (SlideKit, Simple mode and Studio mode are done, see the status above)
 
 1. *On the device (days):* the scanner on the iPad in Files — the app picks the card, bookmarks

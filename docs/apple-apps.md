@@ -79,5 +79,27 @@ on. Tap *Find the scanner* and pick its card: it appears under *Locations*. You 
 
 Uploading needs a key with more permissions: see [Immich](immich.md). To work on the same trays
 as the desktop app, put its library folder in iCloud Drive and pick that folder under *Settings →
-Library*. People (naming the faces on your slides) is in the desktop app and the browser version,
-not in these apps yet.
+Library*.
+
+## People on your slides
+
+Turn on *Settings → Recognise people* (or tap *Recognise people* in a slide's People tool). The
+first time, the face model is downloaded into your library (39 MB); everything else happens on the
+device. Faces are then found as you import, grouped into people across all your trays, and shown
+in each slide's **People** (a tool on an iPhone, a section beside the photo on an iPad or Mac):
+
+- Tap a face to say who it is: the likeliest names come first, or type a new one. Naming one face
+  of a group names the rest that look like it, and a name goes to the slides around it where the
+  same person, or someone like them in the same clothes, is.
+- *Not \<name\>* takes a face away from someone; *Ignore* hides a stranger (and their look-alikes).
+- *Mark someone it missed*, then tap the photo where they are.
+- *All people…* lists everyone: rename, add a birthday, take out a face, say two people are the
+  same, or ignore someone.
+
+A library shared with the desktop app shares its people too: both use the same face model and the
+same files.
+
+## People in albums
+
+An album shows the people Immich recognised in it; tap a face for only their slides (and *Play*
+plays just those). This works for albums shared with you too.

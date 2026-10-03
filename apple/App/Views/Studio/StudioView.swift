@@ -219,6 +219,7 @@ struct StagePhoto: View {
                     .overlay {
                         if cropping { CropOverlay(rect: $cropRect, ratio: cropRatio, frame: Double(img.size.width / img.size.height)) }
                         else if picking { pickLayer }
+                        else if !before || split { FaceOverlay(tray: tray, slide: slide, cropped: true) }
                     }
                     .shadow(color: .black.opacity(cropping ? 0 : 0.65), radius: 14, y: 12)
             } else {

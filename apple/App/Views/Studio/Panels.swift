@@ -96,6 +96,7 @@ struct InspectorPanel: View {
     @AppStorage("inspector.curve") private var curveOpen = true
     @AppStorage("inspector.adjust") private var adjustOpen = true
     @AppStorage("inspector.details") private var detailsOpen = false
+    @AppStorage("inspector.people") private var peopleOpen = false
     @AppStorage("inspector.tray") private var trayOpen = false
 
     var body: some View {
@@ -120,6 +121,9 @@ struct InspectorPanel: View {
                                 MetaFields(slide: g, estimated: SlideDates.estimate(tray)[model.selection])
                             }
                         }
+                        ProDisclosureGroup(title: "People", expanded: $peopleOpen, summary: peopleNote(g)) {
+                            SlidePeopleView(tray: tray, slide: g)
+                        }
                         .disabled(g.locked != nil)
                         .opacity(g.locked != nil ? 0.55 : 1)
                     }
@@ -130,6 +134,12 @@ struct InspectorPanel: View {
         }
         .font(.system(size: 12))
         .foregroundStyle(ProTheme.ink)
+    }
+
+    private func peopleNote(_ g: Slide) -> String {
+        guard model.people.enabled else { return "off" }
+        let names = model.people.faces(tray, g).compactMap(\.label)
+        return names.isEmpty ? "" : names.joined(separator: ", ")
     }
 
     private func detailsNote(_ g: Slide) -> String {

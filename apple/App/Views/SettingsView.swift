@@ -1,5 +1,6 @@
 import ProUI
 import SlideAlbums
+import SlideFaces
 import SlideKit
 import SwiftUI
 
@@ -14,6 +15,7 @@ struct SettingsView: View {
     @State private var choosing = false
     @State private var interval = SlideshowSettings.interval
     @State private var shuffle = SlideshowSettings.shuffle
+    @State private var showingPeople = false
 
     var body: some View {
         NavigationStack {
@@ -52,6 +54,20 @@ struct SettingsView: View {
                     Text("To share trays with the Mac app, put its library folder in iCloud Drive (Settings → Library in the Mac app) and pick that folder here — the one with “sessions” in it. Both apps then see the same trays, edits and learning. Switching doesn't move any trays.")
                 }
                 Section {
+                    Toggle("Recognise people", isOn: Binding(get: { model.people.enabled }, set: { on in
+                        model.people.enabled = on
+                        if on && !model.people.modelReady { model.findFaces(everyTray: false) }
+                    }))
+                    if model.people.enabled {
+                        Button("Find faces in every tray") { model.findFaces(everyTray: true) }.disabled(model.busy)
+                        Button("People…") { showingPeople = true }
+                    }
+                } header: { Text("People") } footer: {
+                    Text(model.people.modelReady
+                         ? "Faces are found as you import and look through trays, and grouped into people across your library. Shared with the desktop app when you share its library."
+                         : "Uses the desktop app's face model (\(FaceFinder.modelMB) MB, downloaded once into your library). Everything stays on this device.")
+                }
+                Section {
                     Toggle("Learn from developed slides", isOn: Bindable(model).learningEnabled)
                     Toggle("Keep original scans after upload", isOn: Bindable(model).keepOriginals)
                 } footer: {
@@ -70,6 +86,7 @@ struct SettingsView: View {
             .onChange(of: interval) { SlideshowSettings.interval = interval }
             .onChange(of: shuffle) { SlideshowSettings.shuffle = shuffle }
             .sheet(isPresented: $choosing) { ChooseAlbumsView() }
+            .sheet(isPresented: $showingPeople) { PeopleScreen() }
             .formStyle(.grouped)
             .fileImporter(isPresented: $pickingLibrary, allowedContentTypes: [.folder]) { result in
                 if case .success(let folder) = result { Task { await model.useLibrary(folder) } }
