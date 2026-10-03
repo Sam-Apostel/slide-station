@@ -50,11 +50,24 @@ public struct Uploader: Sendable {
         exif[kCGImagePropertyExifDateTimeDigitized] = when
         props[kCGImagePropertyTIFFDictionary] = tiff
         props[kCGImagePropertyExifDictionary] = exif
+        // the slide's place decides: a scan's own GPS (a phone photo of a slide) never goes up
+        props[kCGImagePropertyGPSDictionary] = g.place.map(Uploader.gps)
         props[kCGImagePropertyOrientation] = 1
         return try Export.fullResolution(scans: urls, rotation: g.rotation, mirror: g.mirror, params: g.params, quality: jpegQuality, properties: props)
     }
 
-    public struct Result: Sendable, Equatable { public var uploaded = 0, lost = 0; public var album = "" }
+    /// EXIF GPS for a place (`workflow.gps_ifd`): Immich reads it as the photo's location.
+    static func gps(_ p: Slide.Place) -> [CFString: Any] {
+        [kCGImagePropertyGPSVersion: [2, 3, 0, 0],
+         kCGImagePropertyGPSLatitude: abs(p.lat), kCGImagePropertyGPSLatitudeRef: p.lat >= 0 ? "N" : "S",
+         kCGImagePropertyGPSLongitude: abs(p.lon), kCGImagePropertyGPSLongitudeRef: p.lon >= 0 ? "E" : "W"]
+    }
+
+    public struct Result: Sendable, Equatable {
+        public var uploaded = 0, lost = 0; public var album = ""
+        /// Why the tags didn't go (an old Immich, a key without tag permissions); the photos did.
+        public var tagProblem: String?
+    }
 
     /// Upload every slide that isn't skipped or already up to date (`onlyReady`: just the developed ones).
     public func finish(trayID: String, settings: ImmichSettings, onlyReady: Bool, keepOriginals: Bool = true,
@@ -79,6 +92,7 @@ public struct Uploader: Sendable {
         tray = try await library.update(trayID) { $0.immichAlbumId = album }
 
         var toTrash: [String] = []
+        var tagged: [String: [String]] = [:]   // tag -> assets uploaded now
         var result = Result(album: albumName)
         for (n, id) in todo.enumerated() {
             try Task.checkCancellation()
@@ -103,8 +117,10 @@ public struct Uploader: Sendable {
                 if let old = fresh.groups[i].immich?.assetId, old != assetID { toTrash.append(old) }
                 fresh.groups[i].immich = UploadRecord(assetId: assetID, key: rkey, meta: meta)
             }
+            for t in g.tags ?? [] { tagged[t, default: []].append(assetID) }
             result.uploaded += 1
         }
+        do { try await client.tagEach(tagged) } catch { result.tagProblem = error.localizedDescription }
         try await library.update(trayID) { fresh in
             // slides merged away or skipped after uploading: their old Immich copies go to the trash
             toTrash += fresh.orphanAssets ?? []

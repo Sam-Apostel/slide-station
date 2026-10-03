@@ -17,6 +17,17 @@ struct SettingsView: View {
     @State private var shuffle = SlideshowSettings.shuffle
     @State private var showingPeople = false
 
+    private var suggestionsNote: String {
+        var s = "Suggested as you look through a tray, never applied by themselves: tags for what's in a slide, a place read on its signs (or from the slides around it), "
+        switch model.insights.captionAvailability {
+        case .ready: s += "and a caption written by Apple Intelligence."
+        case .notEnabled: s += "and a caption once Apple Intelligence is turned on in Settings."
+        case .downloading: s += "and a caption once Apple Intelligence has finished downloading."
+        case .unsupported: s += "and, on a device with Apple Intelligence, a caption."
+        }
+        return s + " All on this device; only a name read on a sign is looked up in Apple Maps."
+    }
+
     var body: some View {
         NavigationStack {
             Form {
@@ -67,6 +78,15 @@ struct SettingsView: View {
                          ? "Faces are found as you import and look through trays, and grouped into people across your library. Shared with the desktop app when you share its library."
                          : "Uses the desktop app's face model (\(FaceFinder.modelMB) MB, downloaded once into your library). Everything stays on this device.")
                 }
+                Section {
+                    Toggle("Scene tags", isOn: Bindable(model.insights).tags)
+                    Toggle("Captions", isOn: Bindable(model.insights).captions)
+                        .disabled(model.insights.captionAvailability == .unsupported)
+                    Toggle("Places from signs", isOn: Bindable(model.insights).places)
+                } header: { Text("Suggestions") } footer: {
+                    Text(suggestionsNote)
+                }
+                .onAppear { model.insights.checkAvailability() }
                 Section {
                     Toggle("Learn from developed slides", isOn: Bindable(model).learningEnabled)
                     Toggle("Keep original scans after upload", isOn: Bindable(model).keepOriginals)

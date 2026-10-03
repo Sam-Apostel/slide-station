@@ -145,7 +145,11 @@ struct InspectorPanel: View {
     private func detailsNote(_ g: Slide) -> String {
         let d = SlideDates.estimate(tray)[model.selection]
         let date = d.value.isEmpty ? "no date" : d.source == .own ? d.value : "≈ \(d.value)"
-        return g.caption.map { "\(date) · \($0)" } ?? date
+        let open = g.tagSuggestions.filter { $0.state == .suggested && !(g.tags ?? []).contains($0.value) }.count
+            + ((g.caption ?? "").isEmpty && g.suggestion(.caption)?.state == .suggested ? 1 : 0)
+            + (g.place == nil && g.suggestion(.place)?.state == .suggested ? 1 : 0)
+        let base = g.caption.map { "\(date) · \($0)" } ?? date
+        return open > 0 ? "\(open) suggested · \(base)" : base
     }
 
     // MARK: footer: develop and upload
@@ -456,9 +460,12 @@ struct MetaFields: View {
                 TextField("Immich description", text: $caption, axis: .vertical).lineLimit(1...4)
                     .onChange(of: caption) { _, v in if v != (slide.caption ?? "") { model.setCaption(v) } }
             }
+            SlideSuggestions(slide: slide)
         }
         .padding(12)
         .task(id: slide.id) { date = slide.date ?? ""; caption = slide.caption ?? ""; writing = slide.writing ?? "" }
+        // a suggested caption taken: show it in the field
+        .onChange(of: slide.caption) { _, v in if (v ?? "") != caption { caption = v ?? "" } }
     }
 
     private func field<C: View>(_ label: String, @ViewBuilder _ c: () -> C) -> some View {

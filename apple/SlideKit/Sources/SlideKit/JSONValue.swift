@@ -287,3 +287,44 @@ public enum JSONValue: Equatable, Hashable, Sendable {
         s += "\""
     }
 }
+
+/// As a field of a Codable type (a slide's `insights`): kept as written, ints and floats apart.
+extension JSONValue: Codable {
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.singleValueContainer()
+        if c.decodeNil() { self = .null }
+        else if let b = try? c.decode(Bool.self) { self = .bool(b) }
+        else if let i = try? c.decode(Int.self) { self = .int(i) }
+        else if let d = try? c.decode(Double.self) { self = .double(d) }
+        else if let s = try? c.decode(String.self) { self = .string(s) }
+        else if let a = try? c.decode([JSONValue].self) { self = .array(a) }
+        else { self = .object(try c.decode([String: JSONValue].self)) }
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.singleValueContainer()
+        switch self {
+        case .null: try c.encodeNil()
+        case .bool(let b): try c.encode(b)
+        case .int(let i): try c.encode(i)
+        case .double(let d): try c.encode(d)
+        case .string(let s): try c.encode(s)
+        case .array(let a): try c.encode(a)
+        case .object(let o): try c.encode(o)
+        }
+    }
+}
+
+extension JSONValue {
+    public var number: Double? {
+        switch self {
+        case .int(let i): Double(i)
+        case .double(let d): d
+        default: nil
+        }
+    }
+    public var text: String? { if case .string(let s) = self { return s }; return nil }
+    public var list: [JSONValue]? { if case .array(let a) = self { return a }; return nil }
+    public var dict: [String: JSONValue]? { if case .object(let o) = self { return o }; return nil }
+    public var flag: Bool { if case .bool(let b) = self { return b }; return false }
+}

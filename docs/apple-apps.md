@@ -99,6 +99,23 @@ in each slide's **People** (a tool on an iPhone, a section beside the photo on a
 A library shared with the desktop app shares its people too: both use the same face model and the
 same files.
 
+## Tags, places and captions
+
+Each slide's **Details** has its tags and where it was taken, besides its date and caption. As you
+look through a tray, the app suggests them, and never fills anything in by itself:
+
+- **Tags** for what is in the slide (a beach, snow, a wedding, boats…). Tap a suggested tag to add
+  it, or its × to dismiss it. Tags you keep dismissing are suggested less often.
+- **A place** read on a sign in the photo ("WELCOME TO ZERMATT"), or one that the slides before and
+  after it share. Tap the place field to search Apple Maps for a town, a region or a landmark, or
+  type coordinates.
+- **A caption** written by Apple Intelligence, on a device that has it turned on.
+
+Long-press a tag or the place (right-click on a Mac) to give it to a run of slides at once. Tags go to Immich as tags, and
+the place as the photo's location. Choose which suggestions you want in *Settings → Suggestions*.
+They all come from Apple's own models on your device, with nothing to download. Only a name read on
+a sign is looked up in Apple Maps.
+
 ## People in albums
 
 An album shows the people Immich recognised in it; tap a face for only their slides (and *Play*

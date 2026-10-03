@@ -173,20 +173,6 @@ public final class FaceFiles: @unchecked Sendable {
     }
 }
 
-extension JSONValue {
-    var number: Double? {
-        switch self {
-        case .int(let i): Double(i)
-        case .double(let d): d
-        default: nil
-        }
-    }
-    var text: String? { if case .string(let s) = self { return s }; return nil }
-    var list: [JSONValue]? { if case .array(let a) = self { return a }; return nil }
-    var dict: [String: JSONValue]? { if case .object(let o) = self { return o }; return nil }
-    var flag: Bool { if case .bool(let b) = self { return b }; return false }
-}
-
 /// Python's round(x, n) on what's stored (boxes, scores).
 func rounded(_ v: Double, _ places: Int) -> Double {
     let p = pow(10, Double(places))
