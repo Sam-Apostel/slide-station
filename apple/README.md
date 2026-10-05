@@ -15,7 +15,8 @@ apple/
   SlideKit/          Swift package. SlideKit: the whole pipeline, no UI, parity-tested against the
                      Python app. SlideAlbums: Immich albums, the keychain, the image cache, the
                      slideshow (shared by the apps, the widget and the TV). SlideFaces: People
-                     (people.py): YuNet + SFace through ONNX Runtime, faces.json / people.json
+                     (people.py): YuNet + SFace through ONNX Runtime, faces.json / people.json.
+                     SlideInsights: suggested tags, places and captions with Apple's models
   Vendor/ProUI/      ProUI SwiftUI source, trimmed to what the app uses (see NOTICE.md)
   Support/           entitlements
   Tools/             make_icons.py: every platform's icons from Tools/icon-art.png
@@ -124,6 +125,34 @@ average-linkage clustering, rename / merge / take out / assign / ignore / birthd
   `Views/People/` (the slide's People, the People screen).
 - Not yet: the Immich People sync (`immich_people.py`) and ages (MiVOLO); the desktop app does both
   on a shared library.
+
+## Suggestions (`SlideInsights`)
+
+The desktop's insights (insights.py, places.py, captions.py) with Apple's own models instead of
+downloads:
+
+| Desktop | Here |
+|---|---|
+| CLIP ViT-B/32 scene tags | Vision's image classifier, mapped onto the same 35 tags (`SceneTags.labels`); portrait and family group from Vision's face boxes |
+| PaddleOCR + the GeoNames list | Vision's text recogniser; a name after a cue, or one Apple's language tagger calls a place, looked up in Apple Maps (`MKGeocodingRequest`), counted only when it is a city of exactly that name |
+| Florence-2 captions | Apple Intelligence's on-device model with the picture attached (iOS / macOS 27) |
+| GeoNames place search | `MKLocalSearchCompleter` |
+
+YuNet and SFace stay: Apple has no face-identity model, and the same features keep a shared
+library's people one library.
+
+- Stored as the desktop stores them: `g["insights"]` with the same states and merge rules
+  (`Insights.swift` in SlideKit: merge, decide, tags typed or taken off, places between two slides
+  with the same place, the per-tag learning in insights.json). The key names Apple's models, so on
+  a shared library each app looks again at what the other suggested, keeping every decision.
+- App: `InsightsModel` looks at one slide at a time in the background (the one on screen first)
+  while no job runs; `Views/Studio/Suggestions.swift` (tags, place picker, caption card).
+- Uploads now carry the place as EXIF GPS and the tags through Immich's tag API (as the desktop).
+- Tests: `InsightsTests` (rules), `SlideInsightsTests` (sign text → place with a made-up Apple
+  Maps, labels → tags); `SLIDEINSIGHTS_REAL=<dir> swift test --filter testRealPhotos` runs the real
+  models on a folder of photos. In the simulator Vision runs on the CPU, gives no scene labels, and
+  there is no Apple Intelligence: check tags and captions on a Mac or a device.
+- Not yet: eyes open (it needs look-alikes, `similar.py`), straightening from the horizon.
 
 ## Simple and Studio
 

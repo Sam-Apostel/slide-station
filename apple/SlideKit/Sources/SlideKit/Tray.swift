@@ -57,11 +57,67 @@ public struct Slide: Codable, Identifiable, Equatable, Sendable {
     /// The slide's own film stock (Python: `g["stock"]`, filmstock.py); nil = the tray's. Kept so a
     /// tray saved here doesn't lose it; this app has no stock UI or guess yet.
     public var stock: String?
-    /// Read for the upload key only (Python: `g["tags"]`, `g["place"]`); `Library` keeps them in the file.
+    /// The slide's own tags (Python: `g["tags"]`): lower case, no repeats; sent to Immich as tags.
     public var tags: [String]?
+    /// Where it was taken (Python: `g["place"]`, places.py): EXIF GPS and Immich's location.
     public var place: Place?
+    /// What the models suggest, and what was decided about it (Python: `g["insights"]`,
+    /// insights.py). Kept as written: the desktop's suggestions (dates, film stock, what its text
+    /// reader read) live here too; `Insights` reads and edits it.
+    public var insights: JSONValue?
 
-    public struct Place: Codable, Equatable, Sendable { public var lat: Double; public var lon: Double }
+    /// A place as places.py keeps it: name, coordinates (5 decimals), country; the region and the
+    /// GeoNames id when it came from the desktop's gazetteer.
+    public struct Place: Codable, Equatable, Hashable, Sendable {
+        public var name: String
+        public var lat: Double
+        public var lon: Double
+        public var country: String
+        public var admin: String?
+        public var id: Int?
+
+        public init(name: String, lat: Double, lon: Double, country: String = "", admin: String? = nil, id: Int? = nil) {
+            func tidy(_ s: String, _ n: Int) -> String { String(s.split(whereSeparator: \.isWhitespace).joined(separator: " ").prefix(n)) }
+            self.lat = (lat * 1e5).rounded() / 1e5; self.lon = (lon * 1e5).rounded() / 1e5
+            self.name = tidy(name, 200).isEmpty ? Place.coordsLabel(self.lat, self.lon) : tidy(name, 200)
+            self.country = tidy(country, 100)
+            self.admin = admin.map { tidy($0, 100) }.flatMap { $0.isEmpty ? nil : $0 }
+            self.id = id
+        }
+
+        public init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            lat = try c.decode(Double.self, forKey: .lat); lon = try c.decode(Double.self, forKey: .lon)
+            name = (try? c.decode(String.self, forKey: .name)) ?? Place.coordsLabel(lat, lon)
+            country = (try? c.decode(String.self, forKey: .country)) ?? ""
+            admin = try? c.decode(String.self, forKey: .admin)
+            id = try? c.decode(Int.self, forKey: .id)
+        }
+
+        public func encode(to encoder: Encoder) throws {
+            var c = encoder.container(keyedBy: CodingKeys.self)
+            try c.encode(name, forKey: .name); try c.encode(lat, forKey: .lat); try c.encode(lon, forKey: .lon)
+            try c.encode(country, forKey: .country)
+            try c.encodeIfPresent(admin, forKey: .admin); try c.encodeIfPresent(id, forKey: .id)
+        }
+
+        enum CodingKeys: String, CodingKey { case name, lat, lon, country, admin, id }
+
+        public static func coordsLabel(_ lat: Double, _ lon: Double) -> String { String(format: "%.4f, %.4f", lat, lon) }
+
+        /// How it reads: "Venice, Italy" (not "Singapore, Singapore").
+        public var label: String {
+            var out: [String] = []
+            for x in [name, country] where !x.isEmpty && !out.contains(x) { out.append(x) }
+            return out.joined(separator: ", ")
+        }
+
+        /// The same place: the same name, within ~100 m (places.same).
+        public func same(_ other: Place?) -> Bool {
+            guard let other else { return false }
+            return name == other.name && abs(lat - other.lat) < 1e-3 && abs(lon - other.lon) < 1e-3
+        }
+    }
 
     /// The slide's stock, else the tray's (Python: `filmstock.effective`).
     public func effectiveStock(in tray: Tray) -> String? {
@@ -74,7 +130,7 @@ public struct Slide: Codable, Identifiable, Equatable, Sendable {
     public var developed: Bool { reviewed || immich != nil }
 
     enum CodingKeys: String, CodingKey {
-        case id, scans, excluded, rotation, mirror, params, reviewed, skip, immich, date, caption, writing, locked, feat, history, mount, stock, tags, place
+        case id, scans, excluded, rotation, mirror, params, reviewed, skip, immich, date, caption, writing, locked, feat, history, mount, stock, tags, place, insights
         case autoExcluded = "auto_excluded", rotReason = "rot_reason", paramsSource = "params_source"
     }
 
@@ -106,6 +162,8 @@ public struct Slide: Codable, Identifiable, Equatable, Sendable {
         stock = try? c.decode(String.self, forKey: .stock)
         tags = try? c.decode([String].self, forKey: .tags)
         place = try? c.decode(Place.self, forKey: .place)
+        insights = try? c.decode(JSONValue.self, forKey: .insights)
+        if insights == .null { insights = nil }
     }
 
     /// Every key, nulls included, like the Python app writes a group (it reads some with `g["immich"]`).
@@ -123,6 +181,9 @@ public struct Slide: Codable, Identifiable, Equatable, Sendable {
         try c.encodeIfPresent(feat, forKey: .feat); try c.encodeIfPresent(history, forKey: .history)
         try c.encodeIfPresent(mount, forKey: .mount)
         try c.encodeIfPresent(stock, forKey: .stock)
+        if let tags, !tags.isEmpty { try c.encode(tags, forKey: .tags) }
+        try c.encodeIfPresent(place, forKey: .place)
+        try c.encodeIfPresent(insights, forKey: .insights)
     }
 
     // MARK: undo
