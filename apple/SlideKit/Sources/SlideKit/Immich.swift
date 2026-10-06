@@ -32,7 +32,7 @@ public struct ImmichClient: Sendable {
     }
 
     func send(_ r: URLRequest) async throws -> Data {
-        let (data, response) = try await session.data(for: r)
+        let (data, response) = try await session.data(for: r, delegate: KeepRequestOnRedirect.shared)
         let code = (response as? HTTPURLResponse)?.statusCode ?? 0
         let path = r.url?.path ?? ""
         switch code {
@@ -102,7 +102,7 @@ public struct ImmichClient: Sendable {
     /// upserts; `immich.tag_each`). Needs tag.create and tag.asset; Immich before v1.113 has none.
     public func tagEach(_ tags: [String: [String]]) async throws {
         guard !tags.isEmpty else { return }
-        let (data, response) = try await session.data(for: request("PUT", "tags", json: ["tags": tags.keys.sorted()]))
+        let (data, response) = try await session.data(for: request("PUT", "tags", json: ["tags": tags.keys.sorted()]), delegate: KeepRequestOnRedirect.shared)
         switch (response as? HTTPURLResponse)?.statusCode ?? 0 {
         case 404: throw SlideKitError.immich("This Immich has no tags yet: update it to v1.113 or later to send tags.")
         case 403: throw SlideKitError.immich("The API key can't tag photos (403): give it tag.create and tag.asset to send tags.")

@@ -64,7 +64,7 @@ public struct AlbumClient: Sendable {
 
     private func send(_ r: URLRequest) async throws -> (Data, Int) {
         let data: Data, response: URLResponse
-        do { (data, response) = try await session.data(for: r) } catch let e as URLError where e.code != .cancelled {
+        do { (data, response) = try await session.data(for: r, delegate: KeepRequestOnRedirect.shared) } catch let e as URLError where e.code != .cancelled {
             throw AlbumError.unreachable(e.localizedDescription)
         }
         let code = (response as? HTTPURLResponse)?.statusCode ?? 0
